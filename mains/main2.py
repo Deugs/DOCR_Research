@@ -85,7 +85,7 @@ def run_mappo_comm(net, total_steps=30000, seed=0, verbose=True, use_pandapower=
 
 def run_single_ppo(net, total_steps=30000, seed=0, verbose=True, use_pandapower=False):
     """Run centralized Single-PPO baseline."""
-    from baselines.single_agent_ppo import run_single_ppo as _run_single_ppo
+    from marl.single_agent_ppo import run_single_ppo as _run_single_ppo
     return _run_single_ppo(net, total_steps=total_steps, seed=seed, verbose=verbose,
                            use_pandapower=use_pandapower, hidden_actor=128, hidden_critic=128)
 
