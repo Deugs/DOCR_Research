@@ -582,6 +582,224 @@ def plot_phase4_comparison(results_dict, out_path):
 
 # ── Main entry point ─────────────────────────────────────────────────────────
 
+
+# ── Phase 5: Large-Scale Training & Scenarios ───────────────────────────────
+
+def run_phase5_experiments(args):
+    """Run Phase 5 large-scale training experiments."""
+    from experiments.scenario_generator import generate_scenario_dataset
+    from experiments.training_pipeline import TrainingPipeline, create_experiment_matrix
+    from experiments.results_aggregator import ResultsAggregator
+    from evaluation.large_scale_eval import LargeScaleEvaluator
+
+    print(f"\n{'█'*70}")
+    print(f"  PHASE 5: LARGE-SCALE TRAINING & SCENARIOS")
+    print(f"{'█'*70}")
+
+    # Step 1: Generate scenarios
+    if not args.skip_scenarios:
+        print("\n  [Step 1] Generating scenario dataset...")
+        train_path, val_path = generate_scenario_dataset(
+            output_dir=os.path.join(args.output_dir, "scenarios"),
+            n_train=args.n_train_scenarios,
+            n_val=args.n_val_scenarios,
+            seed=args.seed,
+        )
+
+    # Step 2: Create experiment configurations
+    print("\n  [Step 2] Creating experiment matrix...")
+    configs = create_experiment_matrix(
+        systems=args.systems,
+        methods=args.methods,
+        pv_levels=args.pv_levels if args.pv_levels else [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+        fault_types=args.fault_types if args.fault_types else ["3ph"],
+        n_runs=args.n_runs,
+        fast=args.fast,
+    )
+
+    # Step 3: Run training pipeline
+    print("\n  [Step 3] Running training pipeline...")
+    pipeline = TrainingPipeline(
+        configs=configs,
+        n_workers=args.n_workers,
+        checkpoint_dir=os.path.join(args.output_dir, "checkpoints"),
+        verbose=args.verbose,
+    )
+    results = pipeline.run_all()
+
+    # Step 4: Save raw results
+    results_path = os.path.join(args.output_dir, "phase5_results.json")
+    pipeline.save_results(results_path)
+
+    # Step 5: Aggregate and analyze
+    print("\n  [Step 4] Aggregating results...")
+    aggregator = ResultsAggregator(results)
+    aggregator.aggregate()
+    aggregator.print_summary_table()
+
+    # Generate plots
+    plot_dir = os.path.join(args.output_dir, "plots")
+    os.makedirs(plot_dir, exist_ok=True)
+
+    aggregator.plot_pv_sweep(os.path.join(plot_dir, "pv_sweep.png"))
+    aggregator.plot_curriculum_progress(os.path.join(plot_dir, "curriculum_progress.png"))
+    aggregator.generate_latex_table(os.path.join(plot_dir, "results_table.tex"))
+    aggregator.save_summary_json(os.path.join(args.output_dir, "summary.json"))
+
+    # Step 6: Comprehensive evaluation
+    print("\n  [Step 5] Computing evaluation metrics...")
+    evaluator = LargeScaleEvaluator(results)
+    report = evaluator.generate_report()
+
+    report_path = os.path.join(args.output_dir, "evaluation_report.txt")
+    with open(report_path, 'w') as f:
+        f.write(report)
+    print(f"  ✓ Evaluation report: {report_path}")
+
+    print(f"\n{'█'*70}")
+    print(f"  PHASE 5 COMPLETE")
+    print(f"  Results saved to: {args.output_dir}")
+    print(f"{'█'*70}")
+
+    return results
+
+
+def run_pv_sweep_analysis(args):
+    """Run PV penetration sweep analysis."""
+    from experiments.training_pipeline import TrainingPipeline, TrainingConfig
+    from experiments.results_aggregator import ResultsAggregator
+
+    print(f"\n{'█'*70}")
+    print(f"  PHASE 5: PV PENETRATION SWEEP ANALYSIS")
+    print(f"{'█'*70}")
+
+    configs = []
+    for system in args.systems:
+        for method in args.methods:
+            for pv_level in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]:
+                for run in range(args.n_runs):
+                    configs.append(TrainingConfig(
+                        method=method,
+                        system=system,
+                        pv_level=pv_level,
+                        fault_type="3ph",
+                        n_runs=args.n_runs,
+                        seed_offset=run * 1000,
+                        ga_pop=30 if args.fast else 100,
+                        ga_gen=50 if args.fast else 200,
+                        meta_pop=20 if args.fast else 30,
+                        meta_iter=200 if args.fast else 500,
+                        marl_steps=5000 if args.fast else 30000,
+                        use_safe_rl="Safe" in method,
+                        use_ewc="EWC" in method,
+                        use_comm="Comm" in method,
+                    ))
+
+    pipeline = TrainingPipeline(configs, n_workers=args.n_workers, verbose=args.verbose)
+    results = pipeline.run_all()
+
+    # Analyze
+    aggregator = ResultsAggregator(results)
+    aggregator.plot_pv_sweep(os.path.join(args.output_dir, "pv_sweep.png"))
+    aggregator.save_summary_json(os.path.join(args.output_dir, "pv_sweep_summary.json"))
+
+    print(f"\n  PV Sweep Analysis Complete!")
+    print(f"  Results: {args.output_dir}")
+
+    return results
+
+
+def run_curriculum_evaluation(args):
+    """Run curriculum learning evaluation."""
+    from experiments.training_pipeline import TrainingPipeline, TrainingConfig
+    from experiments.results_aggregator import ResultsAggregator
+
+    print(f"\n{'█'*70}")
+    print(f"  PHASE 5: CURRICULUM LEARNING EVALUATION")
+    print(f"{'█'*70}")
+
+    configs = []
+    for system in args.systems:
+        for stage, pv_level in enumerate([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]):
+            for run in range(args.n_runs):
+                configs.append(TrainingConfig(
+                    method="MAPPO-Safe-EWC",
+                    system=system,
+                    pv_level=pv_level,
+                    fault_type="3ph",
+                    n_runs=args.n_runs,
+                    seed_offset=run * 1000,
+                    use_curriculum=True,
+                    curriculum_stage=stage,
+                    use_ewc=True,
+                    use_safe_rl=True,
+                    marl_steps=5000 if args.fast else 30000,
+                ))
+
+    pipeline = TrainingPipeline(configs, n_workers=args.n_workers, verbose=args.verbose)
+    results = pipeline.run_all()
+
+    aggregator = ResultsAggregator(results)
+    aggregator.plot_curriculum_progress(os.path.join(args.output_dir, "curriculum_progress.png"))
+    aggregator.save_summary_json(os.path.join(args.output_dir, "curriculum_summary.json"))
+
+    print(f"\n  Curriculum Evaluation Complete!")
+
+    return results
+
+
+def run_topology_robustness(args):
+    """Run topology robustness testing (N-1 contingencies)."""
+    from experiments.training_pipeline import TrainingPipeline, TrainingConfig
+    from experiments.results_aggregator import ResultsAggregator
+
+    print(f"\n{'█'*70}")
+    print(f"  PHASE 5: TOPOLOGY ROBUSTNESS TESTING")
+    print(f"{'█'*70}")
+
+    configs = []
+    for system in args.systems:
+        for method in args.methods:
+            # Baseline (no outage)
+            for run in range(args.n_runs):
+                configs.append(TrainingConfig(
+                    method=method,
+                    system=system,
+                    pv_level=0.5,
+                    fault_type="3ph",
+                    topology_changes={},
+                    n_runs=args.n_runs,
+                    seed_offset=run * 1000,
+                ))
+            # With N-1 outage
+            for run in range(args.n_runs):
+                configs.append(TrainingConfig(
+                    method=method,
+                    system=system,
+                    pv_level=0.5,
+                    fault_type="3ph",
+                    topology_changes={"type": "n1_outage", "line_idx": run % 5, "outage_factor": 0.7},
+                    n_runs=args.n_runs,
+                    seed_offset=run * 1000 + 500,
+                ))
+
+    pipeline = TrainingPipeline(configs, n_workers=args.n_workers, verbose=args.verbose)
+    results = pipeline.run_all()
+
+    aggregator = ResultsAggregator(results)
+    robustness = aggregator.get_topology_robustness()
+
+    print("\n  Topology Robustness Results:")
+    for system, metrics in robustness.items():
+        print(f"    {system}:")
+        print(f"      Baseline OF: {metrics['without_outage_of_mean']:.4f}")
+        print(f"      With N-1 OF: {metrics['with_outage_of_mean']:.4f}")
+        print(f"      Degradation: {metrics['degradation_percent']:.2f}%")
+
+    aggregator.save_summary_json(os.path.join(args.output_dir, "robustness_summary.json"))
+
+    return results
+
 def main():
     parser = argparse.ArgumentParser(description="DOCR-MARL Phase 4 Experiments")
     parser.add_argument("--systems", nargs="+",
@@ -622,6 +840,36 @@ def main():
                         help="Methods to compare")
     parser.add_argument("--n_runs", type=int, default=10,
                         help="Independent runs per method (for benchmark)")
+
+    # Phase 5 arguments
+    parser.add_argument("--phase5", action="store_true",
+                        help="Run Phase 5 large-scale experiments")
+    parser.add_argument("--pv-sweep", action="store_true",
+                        help="Run PV penetration sweep analysis")
+    parser.add_argument("--curriculum-eval", action="store_true",
+                        help="Run curriculum learning evaluation")
+    parser.add_argument("--topology-robustness", action="store_true",
+                        help="Run topology robustness testing")
+    parser.add_argument("--skip-scenarios", action="store_true",
+                        help="Skip scenario generation (use existing)")
+    parser.add_argument("--n-train-scenarios", type=int, default=10000,
+                        help="Number of training scenarios to generate")
+    parser.add_argument("--n-val-scenarios", type=int, default=2000,
+                        help="Number of validation scenarios to generate")
+    parser.add_argument("--pv-levels", nargs="+", type=float,
+                        default=None,
+                        help="PV penetration levels to test")
+    parser.add_argument("--fault-types", nargs="+",
+                        default=None,
+                        choices=["3ph", "LL", "1ph", "2ph-g"],
+                        help="Fault types to test")
+    parser.add_argument("--output-dir", type=str, default="outputs/phase5",
+                        help="Output directory for Phase 5 results")
+    parser.add_argument("--n-workers", type=int, default=-1,
+                        help="Number of parallel workers (-1 = auto)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility")
+
     args = parser.parse_args()
 
     # Hyperparameters
@@ -650,6 +898,26 @@ def main():
             args.methods.append("MAPPO-Safe-EWC")
         if args.comm and "MAPPO-Comm" not in args.methods:
             args.methods.append("MAPPO-Comm")
+
+    # Phase 5: Large-scale experiments
+    if args.phase5:
+        if not any(m in args.methods for m in ["MAPPO-Safe", "MAPPO-Safe-EWC", "HWOA", "JAYA"]):
+            args.methods = ["GA-SQP", "MAPPO", "MAPPO-Safe", "MAPPO-Safe-EWC", "HWOA", "JAYA"]
+        return run_phase5_experiments(args)
+
+    if args.pv_sweep:
+        if not args.methods:
+            args.methods = ["GA-SQP", "MAPPO", "MAPPO-Safe"]
+        return run_pv_sweep_analysis(args)
+
+    if args.curriculum_eval:
+        args.methods = ["MAPPO-Safe-EWC"]
+        return run_curriculum_evaluation(args)
+
+    if args.topology_robustness:
+        if not args.methods:
+            args.methods = ["GA-SQP", "MAPPO-Safe"]
+        return run_topology_robustness(args)
 
     # Benchmark suite mode
     if args.benchmark:

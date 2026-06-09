@@ -1,0 +1,92 @@
+{
+  "n_train": 100,
+  "n_val": 20,
+  "train_stats": {
+    "total": 100,
+    "by_system": {
+      "30bus": 28,
+      "39bus": 24,
+      "8bus": 48
+    },
+    "by_pv_level": {
+      "0.2": 16,
+      "0.8": 15,
+      "1.0": 17,
+      "0.0": 20,
+      "0.6": 16,
+      "0.4": 16
+    },
+    "by_fault_type": {
+      "1ph": 25,
+      "3ph": 25,
+      "2ph-g": 25,
+      "LL": 25
+    },
+    "by_curriculum_stage": {
+      "1": 16,
+      "4": 15,
+      "5": 17,
+      "0": 20,
+      "3": 16,
+      "2": 16
+    },
+    "n1_outage_rate": 0.18,
+    "sensor_noise_rate": 0.21,
+    "edge_case_rate": 0.17,
+    "validation_rate": 0.0
+  },
+  "val_stats": {
+    "total": 20,
+    "by_system": {
+      "8bus": 20
+    },
+    "by_pv_level": {
+      "0.6": 4,
+      "0.4": 4,
+      "0.0": 4,
+      "0.2": 4,
+      "0.8": 4
+    },
+    "by_fault_type": {
+      "2ph-g": 5,
+      "LL": 5,
+      "3ph": 5,
+      "1ph": 5
+    },
+    "by_curriculum_stage": {
+      "3": 4,
+      "2": 4,
+      "0": 4,
+      "1": 4,
+      "4": 4
+    },
+    "n1_outage_rate": 0.15,
+    "sensor_noise_rate": 0.15,
+    "edge_case_rate": 0.0,
+    "validation_rate": 1.0
+  },
+  "stratification": {
+    "pv_levels": [
+      0.0,
+      0.2,
+      0.4,
+      0.6,
+      0.8,
+      1.0
+    ],
+    "fault_types": [
+      "3ph",
+      "LL",
+      "1ph",
+      "2ph-g"
+    ],
+    "systems": [
+      "8bus",
+      "30bus",
+      "39bus"
+    ],
+    "n1_outage_prob": 0.15,
+    "sensor_noise_prob": 0.2,
+    "edge_case_prob": 0.05
+  }
+}
