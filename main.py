@@ -1,7 +1,22 @@
 
 """
 main.py
-───────
+──────    # Phase 7: Robustness & Deployment
+    if args.phase7 or args.robustness:
+        if not args.methods:
+            args.methods = ["GA-SQP", "JAYA"]
+        return run_phase7_robustness(args)
+
+    if args.deployment:
+        if not args.methods:
+            args.methods = ["MAPPO-Comm", "MAPPO-Safe-EWC"]
+        return run_phase7_deployment(args)
+
+    # Phase 8: Statistical Validation & Thesis
+    if args.phase8 or args.validate:
+        return run_phase8_validation(args)
+
+─
 Phase 4 Entry Point for DOCR-MARL Thesis.
 
 Runs comprehensive experiments comparing:
@@ -800,6 +815,196 @@ def run_topology_robustness(args):
 
     return results
 
+
+
+# ── Phase 7: Robustness & Deployment ────────────────────────────────────────
+
+def run_phase7_robustness(args):
+    """Run Phase 7 robustness testing experiments."""
+    from deployment.robustness_tests import RobustnessTester, RobustnessConfig
+    from network.network_data import NETWORKS
+    from baselines.metaheuristics import run_jaya
+    from baselines.ga_sqp import run_ga_sqp
+
+    print(f"\n{'█'*70}")
+    print(f"  PHASE 7: ROBUSTNESS & DEPLOYMENT TESTING")
+    print(f"{'█'*70}")
+
+    results = {}
+
+    for sys_key in args.systems:
+        net = NETWORKS[sys_key]()
+        print(f"\n  System: {net.name} ({net.n_relays} relays)")
+
+        tester = RobustnessTester(RobustnessConfig(seed=args.seed))
+
+        # Test GA-SQP
+        if "GA-SQP" in args.methods:
+            print(f"\n  Testing GA-SQP robustness...")
+            def ga_runner(net, seed=42, config=None):
+                return run_ga_sqp(net, ga_pop=30, ga_gen=50, seed=seed, verbose=False)
+
+            tester.test_method("GA-SQP", ga_runner, net, n_runs=args.n_runs, verbose=args.verbose)
+            results[f"{sys_key}_GA-SQP"] = tester.compute_degradation_metrics("GA-SQP")
+            print(tester.generate_report("GA-SQP"))
+
+        # Test JAYA (fast metaheuristic)
+        if "JAYA" in args.methods:
+            print(f"\n  Testing JAYA robustness...")
+            def jaya_runner(net, seed=42, config=None):
+                return run_jaya(net, n_pop=20, max_iter=100, seed=seed, verbose=False, use_sqp=False)
+
+            tester.test_method("JAYA", jaya_runner, net, n_runs=args.n_runs, verbose=args.verbose)
+            results[f"{sys_key}_JAYA"] = tester.compute_degradation_metrics("JAYA")
+            print(tester.generate_report("JAYA"))
+
+    # Save results
+    import json
+    os.makedirs(args.output_dir, exist_ok=True)
+    with open(os.path.join(args.output_dir, "phase7_robustness.json"), 'w') as f:
+        json.dump(results, f, indent=2)
+
+    print(f"\n{'█'*70}")
+    print(f"  PHASE 7 COMPLETE")
+    print(f"  Results saved to: {args.output_dir}/phase7_robustness.json")
+    print(f"{'█'*70}")
+
+    return results
+
+
+def run_phase7_deployment(args):
+    """Run Phase 7 deployment pipeline experiments."""
+    from deployment.inference_engine import InferenceEngine, InferenceConfig, export_marl_deployment
+    from deployment.hils_bridge import HILSBridge, HILSConfig
+    from deployment.byzantine_resilience import ByzantineResilientAggregator
+    from network.network_data import NETWORKS
+
+    print(f"\n{'█'*70}")
+    print(f"  PHASE 7: DEPLOYMENT PIPELINE")
+    print(f"{'█'*70}")
+
+    for sys_key in args.systems:
+        net = NETWORKS[sys_key]()
+        print(f"\n  System: {net.name} ({net.n_relays} relays)")
+
+        # 1. Inference latency benchmark
+        print(f"\n  [1] Inference Latency Benchmark")
+        config = InferenceConfig(target_latency_ms=100.0, benchmark_runs=100)
+        engine = InferenceEngine("dummy_model.onnx", config)
+
+        if engine.initialize():
+            stats = engine.benchmark(n_runs=100)
+            print(f"    Mean latency: {stats['mean_ms']:.2f} ms")
+            print(f"    P99 latency: {stats['p99_ms']:.2f} ms")
+            print(f"    Meets target (<100ms): {'YES ✓' if stats['meets_target'] else 'NO ✗'}")
+            print(engine.get_latency_report())
+
+        # 2. HILS bridge test
+        print(f"\n  [2] HILS Bridge Test")
+        hils_config = HILSConfig(simulation_time_step_ms=4.0)
+        hils = HILSBridge(hils_config)
+
+        if hils.start():
+            settings = {i: (0.5, 1.2) for i in range(min(5, net.n_relays))}
+            for step in range(20):
+                result = hils.run_step(settings)
+
+            stats = hils.get_statistics()
+            print(f"    Cycles: {stats['cycles']}, Errors: {stats['errors']}")
+            print(hils.generate_report())
+            hils.stop()
+
+        # 3. Byzantine resilience test
+        print(f"\n  [3] Byzantine Resilience Test")
+        agg = ByzantineResilientAggregator(n_agents=net.n_relays)
+
+        # Simulate normal operation
+        for i in range(net.n_relays):
+            neighbors = np.random.normal(1.0, 0.1, min(4, net.n_relays - 1))
+            val, meta = agg.aggregate(i, 1.0 + i * 0.01, neighbors.tolist())
+
+        # Inject Byzantine agent
+        for _ in range(10):
+            val, meta = agg.aggregate(2, 10.0, [1.0, 1.1, 1.2, 1.15])
+
+        health = agg.get_system_health()
+        print(f"    System status: {health['status']}")
+        print(f"    Suspicious agents: {health['trust']['suspicious_agents']}")
+
+    print(f"\n{'█'*70}")
+    print(f"  PHASE 7 DEPLOYMENT COMPLETE")
+    print(f"{'█'*70}")
+
+
+# ── Phase 8: Statistical Validation & Thesis ─────────────────────────────────
+
+def run_phase8_validation(args):
+    """Run Phase 8 thesis validation and reproducibility checks."""
+    from evaluation.thesis_validation import ThesisValidator, ReproducibilityChecklist
+    from evaluation.thesis_validation import generate_dockerfile, generate_github_actions
+
+    print(f"\n{'█'*70}")
+    print(f"  PHASE 8: STATISTICAL VALIDATION & THESIS")
+    print(f"{'█'*70}")
+
+    # 1. Validate all novelty claims
+    print(f"\n  [1] Validating Novelty Claims")
+    validator = ThesisValidator(results_dir=args.output_dir)
+
+    # Load results if available
+    results_file = os.path.join(args.output_dir, "phase5_results.json")
+    if os.path.exists(results_file):
+        validator.load_results()
+    else:
+        print(f"    Warning: No Phase 5 results found at {results_file}")
+        print(f"    Using placeholder validation (run --phase5 first for full validation)")
+
+    results = validator.validate_all_claims()
+
+    # Print report
+    report = validator.generate_validation_report()
+    print(report)
+
+    # Save report
+    report_path = os.path.join(args.output_dir, "phase8_validation_report.txt")
+    with open(report_path, 'w') as f:
+        f.write(report)
+    print(f"  ✓ Validation report: {report_path}")
+
+    # 2. Generate LaTeX tables
+    print(f"\n  [2] Generating LaTeX Tables")
+    latex_path = os.path.join(args.output_dir, "phase8_tables.tex")
+    validator.generate_latex_tables(latex_path)
+
+    # 3. Reproducibility checklist
+    print(f"\n  [3] Reproducibility Checklist")
+    checklist = ReproducibilityChecklist(repo_dir=".")
+    checklist_report = checklist.generate_report()
+    print(checklist_report)
+
+    checklist_path = os.path.join(args.output_dir, "phase8_reproducibility.txt")
+    with open(checklist_path, 'w') as f:
+        f.write(checklist_report)
+    print(f"  ✓ Reproducibility report: {checklist_path}")
+
+    # 4. Generate Docker and CI files
+    print(f"\n  [4] Generating Deployment Files")
+    generate_dockerfile(os.path.join(args.output_dir, "Dockerfile"))
+    generate_github_actions(os.path.join(args.output_dir, ".github/workflows/ci.yml"))
+    print(f"  ✓ Dockerfile and CI config generated")
+
+    # 5. Summary
+    passed = sum(1 for r in results if r.passed)
+    total = len(results)
+
+    print(f"\n{'█'*70}")
+    print(f"  PHASE 8 COMPLETE")
+    print(f"  Novelty Claims: {passed}/{total} validated")
+    print(f"  Output: {args.output_dir}")
+    print(f"{'█'*70}")
+
+    return results
+
 def main():
     parser = argparse.ArgumentParser(description="DOCR-MARL Phase 4 Experiments")
     parser.add_argument("--systems", nargs="+",
@@ -869,6 +1074,20 @@ def main():
                         help="Number of parallel workers (-1 = auto)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
+
+    # Phase 7 arguments
+    parser.add_argument("--phase7", action="store_true",
+                        help="Run Phase 7 robustness & deployment experiments")
+    parser.add_argument("--robustness", action="store_true",
+                        help="Run robustness testing only")
+    parser.add_argument("--deployment", action="store_true",
+                        help="Run deployment pipeline only")
+
+    # Phase 8 arguments
+    parser.add_argument("--phase8", action="store_true",
+                        help="Run Phase 8 thesis validation & reproducibility")
+    parser.add_argument("--validate", action="store_true",
+                        help="Run novelty claim validation only")
 
     args = parser.parse_args()
 
