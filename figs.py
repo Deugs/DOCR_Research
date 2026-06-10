@@ -2110,7 +2110,7 @@ ax.text(6, 0.5, 'Rationale: Projection provides physical safety (hard guarantee)
         bbox=dict(boxstyle='round,pad=0.4', facecolor='#f5f5f5', edgecolor='#999'))
 
 plt.tight_layout()
-plt.savefig('/mnt/agents/output/figures/fig28_safe_rl_dual.png', dpi=150, bbox_inches='tight', facecolor='white')
+plt.savefig(figure_path+'/fig28_safe_rl_dual.png', dpi=150, bbox_inches='tight', facecolor='white')
 plt.close()
 print("✓ Figure 28: Safe RL Dual Approach")
 

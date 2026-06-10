@@ -503,19 +503,73 @@ class ContinualMAPPOTrainer:
         Returns:
             regularized_gradient: Gradient with EWC penalty
         """
-        _, ewc_gradient = self.ewc_regularizer.compute_ewc_penalty(current_params)
+        ewc_penalty, ewc_gradient = self.ewc_regularizer.compute_ewc_penalty(current_params)
+        # ── Tier-2: log penalty for Fig 29 curve ──────────────────────────────
+        self._log_ewc_penalty(ewc_penalty)
         return new_gradient + ewc_gradient
 
     def get_adaptation_stats(self) -> Dict:
         """Get statistics about continual adaptation."""
         stats = self.ewc_regularizer.get_task_stats()
         stats.update({
-            'n_task_transitions': len(self.task_transitions),
-            'task_transitions': self.task_transitions,
-            'avg_adaptation_time': float(np.mean(self.adaptation_times)) if self.adaptation_times else 0.0,
+            'n_task_transitions':          len(self.task_transitions),
+            'task_transitions':            self.task_transitions,
+            'avg_adaptation_time':         float(np.mean(self.adaptation_times)) if self.adaptation_times else 0.0,
             'performance_after_adaptation': self.performance_after_adaptation,
         })
         return stats
+
+    # ── Tier-2: Fig 29 data extraction ────────────────────────────────────────
+    def get_fisher_diagonals(self) -> Dict[str, np.ndarray]:
+        """
+        Return the Fisher Information diagonal for every consolidated task.
+
+        Returns
+        -------
+        dict  {task_name: fisher_ndarray}  — one entry per remembered task.
+        Used for Fig 29 (EWC Fisher diagonal visualisation).
+        """
+        return {
+            name: fisher.copy()
+            for name, _params, fisher, _lw in self.ewc_regularizer.task_memory
+        }
+
+    def get_parameter_drift(self) -> Dict[str, float]:
+        """
+        Compute ||theta - theta*_task||^2 for every remembered task
+        using the *current* policy parameters.
+
+        Returns
+        -------
+        dict  {task_name: drift_scalar}
+        Used for Fig 29 (parameter drift across task transitions).
+        """
+        if not hasattr(self, 'base_trainer') or not hasattr(self.base_trainer, 'actor'):
+            return {}
+        current_params = self.base_trainer.actor.get_all_params()
+        drift = {}
+        for name, opt_params, fisher, _lw in self.ewc_regularizer.task_memory:
+            delta = current_params[:len(opt_params)] - opt_params
+            weighted = float(np.sum(fisher * delta**2))
+            unweighted = float(np.sum(delta**2))
+            drift[name] = {"weighted_l2": weighted, "raw_l2": unweighted}
+        return drift
+
+    def get_ewc_loss_history(self) -> List[float]:
+        """
+        Return per-step EWC penalty history.
+
+        The ContinualMAPPOTrainer logs EWC penalty each time
+        apply_ewc_to_gradient() is called.  Returns the full list
+        for Fig 29 (EWC loss curve during curriculum training).
+        """
+        return list(getattr(self, '_ewc_loss_log', []))
+
+    def _log_ewc_penalty(self, penalty: float):
+        """Internal: accumulate EWC penalty for get_ewc_loss_history()."""
+        if not hasattr(self, '_ewc_loss_log'):
+            self._ewc_loss_log: List[float] = []
+        self._ewc_loss_log.append(float(penalty))
 
     def should_consolidate(self, step: int) -> bool:
         """Check if it's time to consolidate current task."""

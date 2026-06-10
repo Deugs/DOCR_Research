@@ -365,6 +365,17 @@ class MAPPOMARLTrainer:
         self.comm_bandwidth_history = []
         self.comm_attention_history = []
 
+        # ── Tier-2: Attention snapshots (Figs 8, 38) ──────────────────────────
+        # Saved every `attention_checkpoint_interval` rollout steps when use_comm.
+        # Each entry: {"step": int, "attn_matrix": ndarray(n,n), "entropy": float}
+        self.attention_checkpoint_interval = 500
+        self.attention_snapshots: List[Dict] = []
+        self._global_step: int = 0
+
+        # ── Tier-2: Per-agent return log (Fig 37) ─────────────────────────────
+        # per_agent_returns[i] = list of episode mean returns for agent i
+        self.per_agent_returns: List[List[float]] = [[] for _ in range(self.n_agents)]
+
     def _get_neighbor_stats(self, obs):
         """Compute neighbor statistics for global critic input."""
         # Mean and std of neighbor TMS/PS from observations
@@ -483,6 +494,24 @@ class MAPPOMARLTrainer:
                 bw = self.comm_graph.get_bandwidth_usage(steps_per_second=1.0)
                 self.comm_bandwidth_history.append(bw["kbps"])
 
+            # ── Tier-2: save attention snapshot every N steps (Figs 8, 38) ──
+            self._global_step += 1
+            if (self.use_comm and comm_info and
+                    self._global_step % self.attention_checkpoint_interval == 0):
+                attn_raw = comm_info.get("attention")   # (n_agents, n_agents) or None
+                if attn_raw is not None:
+                    attn_mat = np.array(attn_raw)
+                    # Compute mean entropy across agents (measure of selectivity)
+                    eps_e = 1e-9
+                    p = np.clip(attn_mat, eps_e, 1.0)
+                    p /= p.sum(axis=1, keepdims=True) + eps_e
+                    entropy = float(-np.mean(np.sum(p * np.log(p + eps_e), axis=1)))
+                    self.attention_snapshots.append({
+                        "step":        self._global_step,
+                        "attn_matrix": attn_mat.copy(),
+                        "entropy":     entropy,
+                    })
+
             obs = next_obs
             if done:
                 obs = self.env.reset()
@@ -572,6 +601,13 @@ class MAPPOMARLTrainer:
             history.append(OF_now)
             cti_satisfaction_history.append(1.0 if cti_ok else 0.0)
 
+            # ── Tier-2: per-agent return logging (Fig 37) ─────────────────────
+            # buffer.rewards shape: (T, n_agents); mean over time dimension
+            if self.buffer.size > 0:
+                agent_means = self.buffer.rewards[:self.buffer.size].mean(axis=0)
+                for i in range(self.n_agents):
+                    self.per_agent_returns[i].append(float(agent_means[i]))
+
             # Curriculum stage advancement
             if self.curriculum:
                 stage_history[self.current_stage].append(OF_now)
@@ -607,17 +643,21 @@ class MAPPOMARLTrainer:
                 print(f"  Avg comm bandwidth: {avg_bw:.2f} kbps")
 
         return {
-            "method": "MAPPO" + ("-Comm" if self.use_comm else ""),
-            "network": self.env.net.name,
-            "TMS": best_TMS,
-            "PS": best_PS,
-            "OF": best_OF,
-            "history": history,
-            "elapsed": elapsed,
+            "method":           "MAPPO" + ("-Comm" if self.use_comm else ""),
+            "network":          self.env.net.name,
+            "TMS":              best_TMS,
+            "PS":               best_PS,
+            "OF":               best_OF,
+            "history":          history,
+            "elapsed":          elapsed,
             "curriculum_stage": self.current_stage if self.curriculum else 0,
-            "stage_history": stage_history if self.curriculum else {},
-            "use_comm": self.use_comm,
-            "comm_bandwidth": np.mean(self.comm_bandwidth_history) if self.comm_bandwidth_history else 0.0,
+            "stage_history":    stage_history if self.curriculum else {},
+            "use_comm":         self.use_comm,
+            "comm_bandwidth":   np.mean(self.comm_bandwidth_history) if self.comm_bandwidth_history else 0.0,
+            # ── Tier-2 additions ──────────────────────────────────────────────
+            "attention_snapshots": self.attention_snapshots,        # Figs 8, 38
+            "per_agent_returns":   self.per_agent_returns,          # Fig 37
+            "cti_satisfaction_history": cti_satisfaction_history,   # Figs 9, 21
         }
 
 

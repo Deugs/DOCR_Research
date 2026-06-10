@@ -356,12 +356,29 @@ class AugmentedLagrangian:
     def get_constraint_stats(self) -> Dict:
         """Return current constraint statistics."""
         return {
-            "lambda_mean": float(np.mean(self.lambdas)),
-            "lambda_max": float(np.max(self.lambdas)),
-            "lambda_min": float(np.min(self.lambdas)),
-            "rho": self.rho,
-            "violation_rate": float(np.mean(self.violation_history[-100:])) if self.violation_history else 0.0,
-            "avg_cost": float(np.mean(self.constraint_cost_history[-100:])) if self.constraint_cost_history else 0.0,
+            "lambda_mean":     float(np.mean(self.lambdas)),
+            "lambda_max":      float(np.max(self.lambdas)),
+            "lambda_min":      float(np.min(self.lambdas)),
+            "lambda_per_pair": self.lambdas.tolist(),
+            "rho":             self.rho,
+            "violation_rate":  float(np.mean(self.violation_history[-100:])) if self.violation_history else 0.0,
+            "avg_cost":        float(np.mean(self.constraint_cost_history[-100:])) if self.constraint_cost_history else 0.0,
+        }
+
+    def get_lambda_trajectories(self) -> np.ndarray:
+        """Return full per-pair lambda history shape (n_updates, n_pairs).
+        Used for Figs 9 and 10 (CTI violation dynamics, per-pair lambda evolution)."""
+        if not self.lambda_history:
+            return np.zeros((0, self.n_pairs))
+        return np.stack(self.lambda_history, axis=0)
+
+    def get_projection_stats(self) -> Dict:
+        """Summary stats: n_dual_updates, lambda_final, violation_trend."""
+        return {
+            "n_dual_updates":  len(self.lambda_history),
+            "n_pairs":         self.n_pairs,
+            "lambda_final":    self.lambdas.tolist(),
+            "violation_trend": self.violation_history[-20:] if self.violation_history else [],
         }
 
     def reset(self):
@@ -496,15 +513,21 @@ class SafeRLWrapper:
             penalty_per_agent = self.config.reward_penalty_coef * cost / self.n_agents
             rewards -= penalty_per_agent
 
+            # ── Tier-2: projection magnitude (Fig 21) ──────────────────────
+            proj_delta_l2 = float(np.linalg.norm(safe_actions - actions))
+            proj_applied  = bool(proj_delta_l2 > 1e-6)
+
             # Add safe RL info
             info["safe_rl"] = {
-                "constraint_cost": float(cost),
-                "cti_violations": n_viol,
-                "g_mean": float(np.mean(g_values)),
-                "g_max": float(np.max(g_values)),
-                "lambda_mean": float(np.mean(self.lagrangian.lambdas)),
-                "rho": self.lagrangian.rho,
-                "projected_actions": True,
+                "constraint_cost":       float(cost),
+                "cti_violations":        n_viol,
+                "g_mean":                float(np.mean(g_values)),
+                "g_max":                 float(np.max(g_values)),
+                "lambda_mean":           float(np.mean(self.lagrangian.lambdas)),
+                "lambda_per_pair":       self.lagrangian.lambdas.tolist(),   # Fig 10
+                "rho":                   self.lagrangian.rho,
+                "projected_actions":     proj_applied,
+                "projection_magnitude":  proj_delta_l2,                      # Fig 21
                 "action_projection_ratio": float(
                     np.mean(np.abs(safe_actions - actions) < 1e-6)
                 ),
