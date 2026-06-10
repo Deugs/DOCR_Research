@@ -443,6 +443,163 @@ class RobustnessTester:
         return "\n".join(lines)
 
 
+    def apply_stress_to_net(
+        self,
+        net: 'NetworkData',
+        cond_config: 'RobustnessConfig',
+        seed: int = 0,
+    ) -> 'NetworkData':
+        """
+        Return a *new* NetworkData instance with fault currents perturbed
+        according to the stress condition.  This makes test_method produce
+        real, condition-dependent OF and CTI results even when the
+        method_runner itself is unaware of the stress configuration.
+
+        Perturbation rules
+        ──────────────────
+        Sensor noise (gaussian_std > 0):
+            If_pri, If_bkp scaled by N(1, σ) for each pair.
+
+        Missing measurements (missing_rate > 0):
+            A fraction of pairs have their If_bkp replaced by If_pri * 0.10
+            (relay sees almost no current — simulates CT failure on backup).
+
+        False data injection (false_data_rate > 0):
+            A fraction of pairs have If_bkp multiplied by (1 ± magnitude).
+
+        Communication delay (mean_delay_ms > 0):
+            Delays add effective dead-time; approximated as a small upward
+            bias on CTI requirement — modelled by reducing If_bkp by
+            delay_fraction = mean_delay / 1000 (up to 20%).
+
+        N-1 outage:
+            All fault currents scaled by the topology outage factor (0.8).
+        """
+        import copy
+        from dataclasses import replace as dc_replace
+
+        rng   = np.random.default_rng(seed)
+        cfg   = cond_config
+        pairs = copy.deepcopy(net.pairs)
+
+        delay_factor = 1.0
+        if cfg.delay.mean_delay_ms > 0:
+            # Dead-time reduces effective backup current visibility
+            delay_factor = max(0.80, 1.0 - cfg.delay.mean_delay_ms / 5000.0)
+
+        outage_factor = 0.80 if cfg.n1_outage else 1.0
+
+        for i, p in enumerate(pairs):
+            # Combined scale for If_pri
+            scale_pri = outage_factor
+            # Combined scale for If_bkp
+            scale_bkp = outage_factor * delay_factor
+
+            # Gaussian noise on fault current readings
+            if cfg.sensor_noise.gaussian_std > 0:
+                noise_pri = rng.normal(1.0, cfg.sensor_noise.gaussian_std)
+                noise_bkp = rng.normal(1.0, cfg.sensor_noise.gaussian_std)
+                scale_pri *= max(0.5, noise_pri)
+                scale_bkp *= max(0.5, noise_bkp)
+
+            # Missing measurement on backup side
+            if cfg.sensor_noise.missing_rate > 0:
+                if rng.random() < cfg.sensor_noise.missing_rate:
+                    scale_bkp *= 0.10   # backup sees almost nothing
+
+            # False data injection
+            if cfg.sensor_noise.false_data_rate > 0:
+                if rng.random() < cfg.sensor_noise.false_data_rate:
+                    direction  = rng.choice([-1, 1])
+                    fdi_factor = 1.0 + direction * cfg.sensor_noise.false_data_magnitude
+                    scale_bkp *= max(0.1, fdi_factor)
+
+            # Packet loss: lost measurements → relay uses last known (stale) value
+            # Approximated as a 5% random scaling of bkp current
+            if cfg.packet_loss.loss_rate > 0:
+                if rng.random() < cfg.packet_loss.loss_rate:
+                    scale_bkp *= rng.uniform(0.90, 1.10)   # stale ± 10%
+
+            pairs[i] = type(p)(
+                primary=p.primary, backup=p.backup,
+                If_pri=max(1.0, p.If_pri * scale_pri),
+                If_bkp=max(1.0, p.If_bkp * scale_bkp),
+                bus_pri=p.bus_pri, bus_bkp=p.bus_bkp,
+            )
+
+        # Build a new NetworkData with the perturbed pairs
+        stressed_net = type(net)(
+            name=net.name + f"_stressed",
+            n_relays=net.n_relays,
+            pairs=pairs,
+            Iload_max=net.Iload_max.copy(),
+            If_min=net.If_min.copy(),
+            OLF=net.OLF,
+            n_buses=net.n_buses,
+            base_voltage=net.base_voltage,
+            base_mva=net.base_mva,
+            dg_buses=net.dg_buses,
+            line_data=net.line_data,
+            trafo_data=net.trafo_data,
+        )
+        return stressed_net
+
+    def test_method_with_stress(
+        self,
+        method_name: str,
+        method_runner: Callable,
+        net: 'NetworkData',
+        n_runs: int = 5,
+        verbose: bool = True,
+    ) -> Dict:
+        """
+        Like test_method but applies fault-current perturbations directly to
+        the NetworkData so that every condition produces genuinely different
+        OF and CTI outcomes regardless of whether method_runner is stress-aware.
+
+        This is the recommended entry point for Objective 5 robustness testing.
+
+        Returns
+        -------
+        dict  {condition: [run_result, ...]}
+        """
+        conditions = self._generate_conditions()
+
+        if verbose:
+            print(f"\n{'█'*60}")
+            print(f"  ROBUSTNESS TESTING (with fault-current stress): {method_name}")
+            print(f"  System: {net.name}  |  Runs: {n_runs}")
+            print(f"  Conditions: {len(conditions)}")
+            print(f"{'█'*60}")
+
+        for cond_name, cond_config in conditions.items():
+            if verbose:
+                print(f"\n  --- Condition: {cond_name} ---")
+
+            for run_idx in range(n_runs):
+                seed = self.config.seed + run_idx * 100 + (hash(cond_name) & 0xFFF)
+                stressed_net = self.apply_stress_to_net(net, cond_config, seed=seed)
+
+                try:
+                    # method_runner receives the already-stressed network
+                    result = method_runner(stressed_net, seed=seed)
+                    result["condition"] = cond_name
+                    result["run"]       = run_idx
+                    result["stress_applied"] = True
+                    self.results[method_name].append(result)
+
+                    if verbose and run_idx == 0:
+                        cti_ok   = result.get("constraints", {}).get("cti_satisfied", False)
+                        cti_viols = result.get("constraints", {}).get("cti_violations", "?")
+                        print(f"    Run 1: OF={result.get('OF', float('nan')):.4f}  "
+                              f"CTI_ok={cti_ok}  violations={cti_viols}")
+                except Exception as e:
+                    if verbose:
+                        print(f"    ERROR in run {run_idx}: {e}")
+
+        return dict(self.results)
+
+
 def quick_robustness_test(
     method_runner: Callable,
     net: NetworkData,

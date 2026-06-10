@@ -1266,12 +1266,7 @@ def main():
             run_statistical_analysis(results_matrix)
 
     print("\\n  All outputs written to ./outputs/")
-    print("\\n  Phase 4 experiments complete!")
-    print("  Next steps (Phase 5):")
-    print("    1. Large-scale training with 10,000+ scenarios")
-    print("    2. PV penetration sweep analysis (0-100%)")
-    print("    3. Topology robustness testing (N-1 contingencies)")
-    print("    4. Curriculum learning evaluation")
+    print("\\n  Experiment complete!") 
 
 
 if __name__ == "__main__":
