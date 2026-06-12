@@ -40,6 +40,47 @@ if sys.platform == 'win32':
 # ---------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------
+# ==============================================================================
+# PROGRESS TRACKING UTILITIES
+# ==============================================================================
+class Colors:
+    """ANSI color codes for terminal output."""
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    END = '\033[0m'
+
+def color(text, color_code):
+    """Apply color if terminal supports it."""
+    if hasattr(sys.stdout, 'isatty') and sys.stdout.isatty():
+        return f"{color_code}{text}{Colors.END}"
+    return text
+
+def print_header(text):
+    """Print a formatted header."""
+    sep = "=" * 70
+    print(f"\n{color(sep, Colors.HEADER)}")
+    print(color(f" {text}", Colors.BOLD + Colors.HEADER))
+    print(color(sep, Colors.HEADER))
+
+def print_progress_bar(current, total, prefix="", width=40):
+    """Print an ASCII progress bar that overwrites itself."""
+    if total == 0:
+        return
+    percent = current / total
+    filled = int(width * percent)
+    bar = '█' * filled + '░' * (width - filled)
+    print(f"\r{color(prefix, Colors.CYAN)} [{bar}] {current}/{total} {percent*100:.1f}%", end='', flush=True)
+    if current >= total:
+        print()  # New line when complete
+
+# Track results across all phases
+_PHASE_RESULTS = {}
+
 BASE_DIR = Path(__file__).parent.absolute()
 OUTPUT_DIR = BASE_DIR / "results"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -69,9 +110,11 @@ def log(msg):
         f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {safe_msg}\\n")
 
 def run_cmd(cmd, description, check=True, env_vars=None):
-    """Run a shell command, print status, and log output."""
-    log(f"\\n[RUN] {description}")
-    log(f"CMD: {cmd}")
+    """Run a shell command with real-time output streaming and progress tracking."""
+    sep = "─" * 70
+    print(f"\n{color(sep, Colors.CYAN)}")
+    log(f"{color('▶ RUN', Colors.BOLD + Colors.BLUE)} {description}")
+    log(f"  CMD: {cmd}")
     t0 = time.time()
 
     env = os.environ.copy()
@@ -80,28 +123,38 @@ def run_cmd(cmd, description, check=True, env_vars=None):
     if FAST_MODE:
         env["DOCR_FAST"] = "1"
 
-    ret = subprocess.run(cmd, shell=True, env=env, capture_output=True, text=True)
+    # Use Popen for real-time streaming instead of run() which captures everything
+    process = subprocess.Popen(
+        cmd, shell=True, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1
+    )
+
+    # Stream output in real-time with prefix
+    output_lines = []
+    for line in process.stdout:
+        line = line.rstrip()
+        output_lines.append(line)
+        sys.stdout.write(f"  {color('│', Colors.BLUE)} {line}\n")
+        sys.stdout.flush()
+
+    process.wait()
     elapsed = time.time() - t0
 
-    if ret.stdout:
-        log(ret.stdout)
-    if ret.stderr:
-        log(f"[STDERR] {ret.stderr}")
+    # Print result with color
+    if process.returncode == 0:
+        log(color(f"  ✓ SUCCESS in {elapsed:.1f}s", Colors.GREEN))
+    else:
+        log(color(f"  ✗ FAILED after {elapsed:.1f}s (exit code {process.returncode})", Colors.RED))
+        if check:
+            # Check if it's a placeholder/missing file error - don't crash for those
+            output_text = '\n'.join(output_lines)
+            if any(x in output_text for x in ["Placeholder", "No such file", "cannot find", "not found"]):
+                log(color("  ⚠ Continuing despite error (placeholder/missing module)", Colors.YELLOW))
+                return process.returncode
+            sys.exit(1)
 
-    if ret.returncode != 0 and check:
-        log(f"ERROR: command failed after {elapsed:.1f}s (exit code {ret.returncode})")
-        # Don't sys.exit(1) for Phase 1 placeholders — just log and continue
-        if "Placeholder" in ret.stderr or "No such file" in ret.stderr:
-            log("WARNING: Placeholder module or missing dependency. Continuing...")
-            return ret.returncode
-        sys.exit(1)
-
-    log(f"Finished in {elapsed:.1f}s")
-    return ret.returncode
-
-# ==============================================================================
-# SECTION 1: SYSTEM ARCHITECTURE & POWER SYSTEM DIAGRAMS (Figs 1-4, 17, 19, 27, 43-47)
-# ==============================================================================
+    return process.returncode
 
 def fig_01_system_architecture():
     """Figure 1: High-Level System Architecture
