@@ -1,0 +1,53 @@
+[19:43:10] 
+======================================================================
+[19:43:10] PHASE 3: Training Dynamics (Week 4)
+[19:43:10] ======================================================================
+[19:43:10] 
+[RUN] Fig 7: Curriculum Learning Progression
+[19:43:10] CMD: python phase1_scripts/exp_fig07.py --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_01_10"
+[19:43:10] [STDERR] python: can't open file 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\phase1_scripts\\exp_fig07.py': [Errno 2] No such file or directory
+
+[19:43:10] ERROR: command failed after 0.1s (exit code 2)
+[19:43:10] WARNING: Placeholder module or missing dependency. Continuing...
+[19:43:10] 
+[RUN] Fig 9: CTI Violation Dynamics
+[19:43:10] CMD: python phase1_scripts/exp_fig09.py --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_01_10"
+[19:43:10] [STDERR] python: can't open file 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\phase1_scripts\\exp_fig09.py': [Errno 2] No such file or directory
+
+[19:43:10] ERROR: command failed after 0.1s (exit code 2)
+[19:43:10] WARNING: Placeholder module or missing dependency. Continuing...
+[19:43:10] 
+[RUN] Fig 10: Lagrange Multiplier Evolution
+[19:43:10] CMD: python phase1_scripts/exp_fig10.py --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_01_10"
+[19:43:10] [STDERR] python: can't open file 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\phase1_scripts\\exp_fig10.py': [Errno 2] No such file or directory
+
+[19:43:10] ERROR: command failed after 0.1s (exit code 2)
+[19:43:10] WARNING: Placeholder module or missing dependency. Continuing...
+[19:43:10] 
+[RUN] Fig 16: EWC Effectiveness
+[19:43:10] CMD: python phase1_scripts/exp_fig16.py --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_11_20"
+[19:43:10] [STDERR] python: can't open file 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\phase1_scripts\\exp_fig16.py': [Errno 2] No such file or directory
+
+[19:43:10] ERROR: command failed after 0.1s (exit code 2)
+[19:43:10] WARNING: Placeholder module or missing dependency. Continuing...
+[19:43:10] 
+[RUN] Fig 21: Action Projection Efficacy
+[19:43:10] CMD: python phase1_scripts/exp_fig21.py --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_21_30"
+[19:43:10] [STDERR] python: can't open file 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\phase1_scripts\\exp_fig21.py': [Errno 2] No such file or directory
+
+[19:43:10] ERROR: command failed after 0.1s (exit code 2)
+[19:43:10] WARNING: Placeholder module or missing dependency. Continuing...
+[19:43:10] 
+[RUN] Fig 37: Per-Agent Learning Curves
+[19:43:10] CMD: python phase1_scripts/exp_fig37.py --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_31_40"
+[19:43:10] [STDERR] python: can't open file 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\phase1_scripts\\exp_fig37.py': [Errno 2] No such file or directory
+
+[19:43:10] ERROR: command failed after 0.1s (exit code 2)
+[19:43:10] WARNING: Placeholder module or missing dependency. Continuing...
+[19:43:10] 
+[RUN] Fig 38: Attention Weight Evolution
+[19:43:10] CMD: python phase1_scripts/exp_fig38.py --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_31_40"
+[19:43:11] [STDERR] python: can't open file 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\phase1_scripts\\exp_fig38.py': [Errno 2] No such file or directory
+
+[19:43:11] ERROR: command failed after 0.1s (exit code 2)
+[19:43:11] WARNING: Placeholder module or missing dependency. Continuing...
