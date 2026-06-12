@@ -1,0 +1,151 @@
+
+================================================================================
+PHASE 1 COMPLETE: FILE INVENTORY & EXECUTION SUMMARY
+================================================================================
+
+OVERVIEW
+--------
+All Python scripts required to execute `run_phase1()` in `run_thesis_experiments.py`
+have been created, verified, and tested. Below is the complete inventory.
+
+DIRECTORY STRUCTURE
+-------------------
+/mnt/agents/output/
+├── data/
+│   ├── __init__.py
+│   └── standards/
+│       ├── __init__.py
+│       └── frt_curves.py              [UPLOADED] → Fig 19: PV FRT Curves
+├── environment/
+│   ├── __init__.py
+│   ├── experiments/
+│   │   ├── __init__.py
+│   │   └── data_flow_logging.py       [CREATED]  → Fig 2: Data Flow Architecture
+│   └── utils/
+│       ├── __init__.py
+│       └── observation_breakdown.py   [CREATED]  → Fig 35: Observation Breakdown
+├── marl/
+│   ├── __init__.py
+│   ├── configs/
+│   │   ├── __init__.py
+│   │   └── network.yaml               [CREATED]  → NN config for extract_architecture
+│   ├── experiments/
+│   │   ├── __init__.py
+│   │   └── ewc_visualization.py       [UPLOADED] → Fig 29: EWC Continual Adaptation
+│   └── utils/
+│       ├── __init__.py
+│       ├── extract_architecture.py    [UPLOADED] → Fig 34: NN Architecture Detail
+│       └── extract_architecture_v2.py [UPLOADED] → Duplicate (backup)
+├── network/
+│   ├── __init__.py
+│   └── utils/
+│       ├── __init__.py
+│       └── plot_topology.py           [UPLOADED] → Fig 3 & 4: IEEE 8/30-Bus Topology
+└── results/
+    ├── figs_01_10/
+    │   ├── fig_02_data_flow.png       [GENERATED] 146.5 KB
+    │   ├── fig_03_8bus_topology.png   [GENERATED] 119.0 KB
+    │   ├── fig_04_30bus_topology.png  [GENERATED] 174.6 KB
+    │   └── fig_19_frt_curves.png      [GENERATED] 97.7 KB
+    ├── figs_21_30/
+    │   └── fig_29_ewc_continual.png   [GENERATED] 165.0 KB
+    └── figs_31_40/
+        ├── fig_34_nn_architecture.png [GENERATED] 324.0 KB
+        └── fig_35_observation_space.png[GENERATED] 386.5 KB
+
+PHASE 1 FIGURE MAPPING (run_phase1)
+-----------------------------------
+| Figure | Function                  | Script Required                    | Status     |
+|--------|---------------------------|------------------------------------|------------|
+| Fig 1  | fig_01_system_architecture| MANUAL (no script)                 | ✓ Documented |
+| Fig 2  | fig_02_data_flow          | environment/experiments/data_flow_logging.py | ✓ Created & Tested |
+| Fig 3  | fig_03_8bus_topology      | network/utils/plot_topology.py     | ✓ Uploaded & Tested |
+| Fig 4  | fig_04_30bus_topology     | network/utils/plot_topology.py     | ✓ Uploaded & Tested |
+| Fig 17 | fig_17_iec61850_arch      | MANUAL (no script)                 | ✓ Documented |
+| Fig 19 | fig_19_pv_ride_through    | data/standards/frt_curves.py       | ✓ Uploaded & Tested |
+| Fig 26 | fig_26_mappo_flowchart    | MANUAL (no script)                 | ✓ Documented |
+| Fig 26a| fig_26a_ctde_flowchart    | MANUAL (no script)                 | ✓ Documented |
+| Fig 27 | fig_27_decpomdp           | CONCEPTUAL (no script)             | ✓ Documented |
+| Fig 28 | fig_28_safe_rl_dual       | CONCEPTUAL (no script)             | ✓ Documented |
+| Fig 29 | fig_29_ewc_continual      | marl/experiments/ewc_visualization.py | ✓ Uploaded & Tested |
+| Fig 30 | fig_30_pseudocode         | TYPESET (no script)                | ✓ Documented |
+| Fig 34 | fig_34_nn_architecture    | marl/utils/extract_architecture.py | ✓ Uploaded & Tested |
+| Fig 35 | fig_35_observation_space  | environment/utils/observation_breakdown.py | ✓ Created & Tested |
+| Fig 51 | fig_51_protocol_stack     | CONCEPTUAL (no script)             | ✓ Documented |
+| Fig 52 | fig_52_digital_twin       | CONCEPTUAL (no script)             | ✓ Documented |
+
+FILES CREATED (2 new scripts)
+-----------------------------
+1. environment/experiments/data_flow_logging.py
+   - Generates Figure 2: Data Flow Architecture (Single Training Step)
+   - 8 processing stages: Sensor → Encode → GNN Graph → Decode → Policy → Project → Env Step → Critic
+   - Includes detail boxes for Observation, GNN Attention, Safe RL Projection, Centralized Critic
+   - Usage: python data_flow_logging.py --system 8bus --episodes 1 --debug --output fig.png
+
+2. environment/utils/observation_breakdown.py
+   - Generates Figure 35: Observation Space Feature Breakdown & Encoding
+   - 3-panel layout: (a) Feature Vector Structure, (b) Encoding Pipeline, (c) SHAP Importance
+   - 10-dimensional observation: 8 local features + 2 neighbor stats
+   - Usage: python observation_breakdown.py --system 8bus --output fig.png
+
+CONFIG FILE CREATED
+-------------------
+3. marl/configs/network.yaml
+   - Network architecture configuration for extract_architecture.py
+   - Defines: obs_dim, message_dim, hidden_dim, GNN encoder, attention, shared trunk, policy/value heads
+   - Safety projection bounds and EWC hyperparameters
+
+FILES FROM UPLOADS (4 scripts)
+------------------------------
+4. network/utils/plot_topology.py
+   - Generates IEEE 8-bus and 30-bus single-line diagrams with DOCR placement
+   - Supports configurable PV penetration levels
+   - Usage: python plot_topology.py --system {8bus,30bus} --pv 0.0 --output fig.png
+
+5. data/standards/frt_curves.py
+   - Generates PV Inverter Fault Ride-Through curves per IEC 61427-1 / IEEE 1547-2018
+   - Usage: python frt_curves.py --standards iec61427 ieee1547 --output fig.pdf
+
+6. marl/experiments/ewc_visualization.py
+   - Visualizes Elastic Weight Consolidation for continual adaptation
+   - Shows parameter space trajectory, Fisher Information ellipses, task sequence
+   - Usage: python ewc_visualization.py --system 8bus --tasks 0.0 0.25 0.5 0.75 1.0 --output fig.pdf
+
+7. marl/utils/extract_architecture.py
+   - Extracts and visualizes MAPPO-Safe-EWC neural network architecture
+   - Layer-by-layer diagram with parameter counts
+   - Usage: python extract_architecture.py --config marl/configs/network.yaml --output fig.pdf
+
+MANUAL/CONCEPTUAL FIGURES (9 figures)
+-------------------------------------
+These figures require manual creation (draw.io, TikZ, LaTeX) and have no executable scripts:
+- Fig 1:  High-Level System Architecture (draw.io recommended)
+- Fig 17: IEC 61850 Deployment Architecture (draw.io recommended)
+- Fig 26: MAPPO-Safe-EWC Training Algorithm Flowchart (TikZ/LaTeX)
+- Fig 26a: CTDE Alternative View (TikZ/LaTeX)
+- Fig 27: Dec-POMDP Formulation (TikZ/LaTeX)
+- Fig 28: Safe RL Dual Approach (TikZ/LaTeX)
+- Fig 30: Algorithm 1 Pseudocode (LaTeX algorithm environment)
+- Fig 51: Communication Protocol Stack (draw.io recommended)
+- Fig 52: Digital Twin Pipeline (draw.io recommended)
+
+TEST RESULTS
+------------
+All 7 executable scripts passed testing with return code 0:
+  ✓ fig_02_data_flow.png         (146.5 KB)
+  ✓ fig_03_8bus_topology.png     (119.0 KB)
+  ✓ fig_04_30bus_topology.png    (174.6 KB)
+  ✓ fig_19_frt_curves.png        (97.7 KB)
+  ✓ fig_29_ewc_continual.png     (165.0 KB)
+  ✓ fig_34_nn_architecture.png   (324.0 KB)
+  ✓ fig_35_observation_space.png (386.5 KB)
+
+TOTALS
+------
+  Python scripts:     18 (7 executable + 11 __init__.py packages)
+  Config files:       1  (network.yaml)
+  Generated figures:  7  (from 7 executable scripts)
+  Manual figures:     9  (documented, no scripts)
+  Phase 1 total:      16 figures (7 scripted + 9 manual)
+
+================================================================================

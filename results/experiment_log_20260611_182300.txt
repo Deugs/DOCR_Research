@@ -1,0 +1,6 @@
+[18:23:00] 
+======================================================================
+[18:23:00] PHASE 1: Manual Diagrams & Architecture (Week 1)
+[18:23:00] ======================================================================
+[18:23:00] [FIG 1] Manual diagram - create in docs/diagrams/fig_01_system_arch.drawio
+[18:23:00]   -> Reference modules: env/opendss_interface.py, agents/mappo_safe_ewc.py, comm/gnn_layer.py, deploy/iec61850_bridge.py

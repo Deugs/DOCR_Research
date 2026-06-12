@@ -1,0 +1,45 @@
+# MAPPO-Safe-EWC Neural Network Configuration
+# Reference: marl/utils/extract_architecture.py
+
+obs_dim: 10
+message_dim: 8
+enhanced_obs_dim: 18
+hidden_dim: 64
+global_state_dim: 35
+
+gnn_encoder:
+  input_dim: 10
+  hidden_dim: 32
+  output_dim: 8
+  activation: relu
+
+attention:
+  input_dim: 8
+  heads: 1
+  dropout: 0.0
+
+shared_trunk:
+  input_dim: 18
+  hidden_dims: [64, 64]
+  activation: relu
+  layer_norm: true
+
+policy_head:
+  input_dim: 64
+  output_dim: 4
+  activation: tanh
+
+value_head:
+  input_dim: 64
+  output_dim: 1
+  activation: none
+
+safety_projection:
+  tms_min: 0.05
+  tms_max: 1.1
+  cti_threshold: 0.3
+  binary_search_tol: 0.01
+
+ewc:
+  lambda_ewc: 10000.0
+  fisher_samples: 200
