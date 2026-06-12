@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 environment/utils/observation_breakdown.py
@@ -35,7 +36,7 @@ def plot_observation_space(output_path):
     
     colors = {
         'primary': '#1565c0', 'secondary': '#388e3c', 'accent': '#f57c00',
-        'danger': '#c2185b', 'neutral': '#616161',
+        'danger': '#c2185b', 'neutral': '#616161', 'dark': '#212121',
         'light_blue': '#e3f2fd', 'light_green': '#e8f5e9',
         'light_orange': '#fff3e0', 'light_pink': '#fce4ec',
     }

@@ -39,10 +39,16 @@ if sys.platform == 'win32':
 
 # ---------------------------------------------------------------------
 # Configuration
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------
 BASE_DIR = Path(__file__).parent.absolute()
 OUTPUT_DIR = BASE_DIR / "results"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Pre-create all figure subdirectories so they're available everywhere
+# (including when figure functions are called before main() runs)
+for subdir in ["figs_01_10", "figs_11_20", "figs_21_30", "figs_31_40",
+               "figs_41_50", "figs_51_58", "logs", "checkpoints", "cache"]:
+    os.makedirs(OUTPUT_DIR / subdir, exist_ok=True)
 
 # Logging
 LOG_FILE = OUTPUT_DIR / f"experiment_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -113,7 +119,8 @@ def fig_02_data_flow():
 
 def fig_03_8bus_topology():
     """Figure 3: IEEE 8-Bus Test System with DOCR Placement (0% PV)"""
-    out = f'{OUTPUT_DIR} / "figs_01_10" / "fig_03_8bus_topology.png"'
+    # FIX: Use Path operator / instead of f-string with literal quotes
+    out = OUTPUT_DIR / "figs_01_10" / "fig_03_8bus_topology.png"
     run_cmd(
         f'python network/utils/plot_topology.py --system 8bus --pv 0.0 --output "{out}"',
         "Fig 3: IEEE 8-Bus Topology with DOCR Placement"
@@ -121,7 +128,8 @@ def fig_03_8bus_topology():
 
 def fig_04_30bus_topology():
     """Figure 4: IEEE 30-Bus Test System with DOCR Placement"""
-    out = f'{OUTPUT_DIR} / "figs_01_10" / "fig_04_30bus_topology.png"'
+    # FIX: Use Path operator / instead of f-string with literal quotes
+    out = OUTPUT_DIR / "figs_01_10" / "fig_04_30bus_topology.png"
     run_cmd(
         f'python network/utils/plot_topology.py --system 30bus --pv 0.0 --output "{out}"',
         "Fig 4: IEEE 30-Bus Topology with DOCR Placement"
@@ -136,9 +144,10 @@ def fig_17_iec61850_architecture():
 
 def fig_19_pv_ride_through():
     """Figure 19: PV Inverter Fault Ride-Through Curve (IEC 61427-1 / IEEE 1547-2018)"""
+    # FIX: Quote the path in the shell command to handle spaces
     out = OUTPUT_DIR / "figs_01_10" / "fig_19_frt_curves.pdf"
     run_cmd(
-        f"python data/standards/frt_curves.py --standards iec61427 ieee1547 --output {out}",
+        f'python data/standards/frt_curves.py --standards iec61427 ieee1547 --output "{out}"',
         "Fig 19: PV Inverter FRT Curves (IEC 61427-1 / IEEE 1547-2018)"
     )
 
@@ -153,7 +162,7 @@ def fig_43_coordination_diagram():
     """Figure 43: Relay Coordination Time-Distance Diagram"""
     out = OUTPUT_DIR / "figs_41_50" / "fig_43_coordination_diagram.pdf"
     run_cmd(
-        f"python network/utils/coordination_diagram.py --system 8bus --pv 1.0 --output {out}",
+        f'python network/utils/coordination_diagram.py --system 8bus --pv 1.0 --output "{out}"',
         "Fig 43: Relay Coordination Time-Distance Diagram"
     )
 
@@ -161,7 +170,7 @@ def fig_44_fault_contribution():
     """Figure 44: Fault Current Contribution Pie Chart (100% PV)"""
     out = OUTPUT_DIR / "figs_41_50" / "fig_44_fault_contribution.pdf"
     run_cmd(
-        f"python network/utils/fault_contribution.py --system 8bus --pv 1.0 --output {out}",
+        f'python network/utils/fault_contribution.py --system 8bus --pv 1.0 --output "{out}"',
         "Fig 44: Fault Current Contribution Pie Chart (100% PV)"
     )
 
@@ -169,7 +178,7 @@ def fig_45_daily_profile():
     """Figure 45: Daily PV Generation Profile & Adaptive Relay Response"""
     out = OUTPUT_DIR / "figs_41_50" / "fig_45_daily_profile.pdf"
     run_cmd(
-        f"python data/experiments/daily_adaptive_response.py --system 8bus --tmy3 data/tmy3/phoenix_az_tmy3.csv --output {out}",
+        f'python data/experiments/daily_adaptive_response.py --system 8bus --tmy3 data/tmy3/phoenix_az_tmy3.csv --output "{out}"',
         "Fig 45: Daily PV Profile & Adaptive Relay Response"
     )
 
@@ -177,7 +186,7 @@ def fig_46_relay_curves():
     """Figure 46: Relay Operating Characteristic Curves with Learned Settings"""
     out = OUTPUT_DIR / "figs_41_50" / "fig_46_relay_curves.pdf"
     run_cmd(
-        f"python network/utils/relay_curves.py --system 8bus --pv 1.0 --method MAPPO-Safe-EWC --output {out}",
+        f'python network/utils/relay_curves.py --system 8bus --pv 1.0 --method MAPPO-Safe-EWC --output "{out}"',
         "Fig 46: Relay Operating Characteristic Curves"
     )
 
@@ -185,7 +194,7 @@ def fig_47_sympathetic_tripping():
     """Figure 47: Sympathetic Tripping Prevention Analysis"""
     out = OUTPUT_DIR / "figs_41_50" / "fig_47_sympathetic_tripping.pdf"
     run_cmd(
-        f"python network/utils/sympathetic_trip_cases.py --system 8bus --pv 1.0 --output {out}",
+        f'python network/utils/sympathetic_trip_cases.py --system 8bus --pv 1.0 --output "{out}"',
         "Fig 47: Sympathetic Tripping Prevention Analysis"
     )
 
@@ -218,7 +227,7 @@ def fig_29_ewc_continual():
     """Figure 29: Elastic Weight Consolidation (EWC) for Continual Adaptation"""
     out = OUTPUT_DIR / "figs_21_30" / "fig_29_ewc_continual.pdf"
     run_cmd(
-        f"python marl/experiments/ewc_visualization.py --system 8bus --tasks 0.0 0.25 0.5 0.75 1.0 --output {out}",
+        f'python marl/experiments/ewc_visualization.py --system 8bus --tasks 0.0 0.25 0.5 0.75 1.0 --output "{out}"',
         "Fig 29: EWC Continual Adaptation Visualization"
     )
 
@@ -233,7 +242,7 @@ def fig_34_nn_architecture():
     """Figure 34: MAPPO-Safe-EWC Neural Network Architecture Detail"""
     out = OUTPUT_DIR / "figs_31_40" / "fig_34_nn_architecture.pdf"
     run_cmd(
-        f"python marl/utils/extract_architecture.py --config marl/configs/network.yaml --output {out}",
+        f'python marl/utils/extract_architecture.py --config marl/configs/network.yaml --output "{out}"',
         "Fig 34: Neural Network Architecture Detail"
     )
 
@@ -241,7 +250,7 @@ def fig_35_observation_space():
     """Figure 35: Observation Space Feature Breakdown & Encoding"""
     out = OUTPUT_DIR / "figs_31_40" / "fig_35_observation_space.pdf"
     run_cmd(
-        f"python environment/utils/observation_breakdown.py --system 8bus --output {out}",
+        f'python environment/utils/observation_breakdown.py --system 8bus --output "{out}"',
         "Fig 35: Observation Space Feature Breakdown"
     )
 
@@ -249,7 +258,7 @@ def fig_36_action_space_geometry():
     """Figure 36: Action Space Bounds & Safety Projection Geometry"""
     out = OUTPUT_DIR / "figs_31_40" / "fig_36_action_space_geometry.pdf"
     run_cmd(
-        f"python environment/experiments/action_space_geometry.py --system 8bus --grid 100 --output {out}",
+        f'python environment/experiments/action_space_geometry.py --system 8bus --grid 100 --output "{out}"',
         "Fig 36: Action Space Bounds & Safety Projection Geometry (~2h)"
     )
 
@@ -261,7 +270,7 @@ def fig_07_curriculum():
     """Figure 7: Curriculum Learning Progression (MAPPO-Safe-EWC, 8-Bus)"""
     out = OUTPUT_DIR / "figs_01_10" / "fig_07_curriculum.pdf"
     run_cmd(
-        f"python marl/curriculum_trainer.py --system 8bus --tasks 0.0 0.25 0.5 0.75 1.0 --episodes 5000 --n_runs {N_RUNS} --output {out}",
+        f'python marl/curriculum_trainer.py --system 8bus --tasks 0.0 0.25 0.5 0.75 1.0 --episodes 5000 --n_runs {N_RUNS} --output "{out}"',
         "Fig 7: Curriculum Learning Progression"
     )
 
@@ -269,7 +278,7 @@ def fig_08_attention_weights():
     """Figure 8: Learned GNN Attention Weights (8-Bus, 100% PV)"""
     out = OUTPUT_DIR / "figs_01_10" / "fig_08_attention_weights.pdf"
     run_cmd(
-        f"python marl/experiments/extract_attention.py --system 8bus --pv 1.0 --n_scenarios 100 --seed {SEED} --output {out}",
+        f'python marl/experiments/extract_attention.py --system 8bus --pv 1.0 --n_scenarios 100 --seed {SEED} --output "{out}"',
         "Fig 8: Learned GNN Attention Weights"
     )
 
@@ -277,7 +286,7 @@ def fig_09_cti_violations():
     """Figure 9: CTI Violation Dynamics During Training (8-Bus, 100% PV)"""
     out = OUTPUT_DIR / "figs_01_10" / "fig_09_cti_violations.pdf"
     run_cmd(
-        f"python marl/experiments/single_task_training.py --system 8bus --pv 1.0 --method MAPPO-Safe --episodes 5000 --seed {SEED} --output {out}",
+        f'python marl/experiments/single_task_training.py --system 8bus --pv 1.0 --method MAPPO-Safe --episodes 5000 --seed {SEED} --output "{out}"',
         "Fig 9: CTI Violation Dynamics During Training (~4h)"
     )
 
@@ -286,7 +295,7 @@ def fig_10_lagrange_multipliers():
     log_file = OUTPUT_DIR / "logs" / "single_task_8bus_100pv.json"
     out = OUTPUT_DIR / "figs_01_10" / "fig_10_lagrange_multipliers.pdf"
     run_cmd(
-        f"python marl/utils/lagrange_analysis.py --log {log_file} --output {out}",
+        f'python marl/utils/lagrange_analysis.py --log "{log_file}" --output "{out}"',
         "Fig 10: Lagrange Multiplier Evolution (post-process from Fig 9 logs)"
     )
 
@@ -295,7 +304,7 @@ def fig_12_convergence_bands():
     n_runs = "5" if FAST_MODE else "50"
     out = OUTPUT_DIR / "figs_11_20" / "fig_12_convergence_bands.pdf"
     run_cmd(
-        f"python marl/experiments/batch_runs.py --system 8bus --pv 1.0 --method MAPPO-Safe-EWC --n_runs {n_runs} --episodes 5000 --output {out}",
+        f'python marl/experiments/batch_runs.py --system 8bus --pv 1.0 --method MAPPO-Safe-EWC --n_runs {n_runs} --episodes 5000 --output "{out}"',
         f"Fig 12: Convergence Curves with 95% CI ({n_runs} runs, ~2-3 days GPU)"
     )
 
@@ -303,7 +312,7 @@ def fig_16_ewc_effectiveness():
     """Figure 16: EWC Effectiveness — Performance Drop After Task Transition"""
     out = OUTPUT_DIR / "figs_11_20" / "fig_16_ewc_effectiveness.pdf"
     run_cmd(
-        f"python marl/experiments/ewc_ablation.py --system 8bus --tasks 0.0 0.25 0.5 0.75 1.0 --n_runs {N_RUNS_BASELINE} --output {out}",
+        f'python marl/experiments/ewc_ablation.py --system 8bus --tasks 0.0 0.25 0.5 0.75 1.0 --n_runs {N_RUNS_BASELINE} --output "{out}"',
         "Fig 16: EWC Effectiveness Ablation"
     )
 
@@ -312,7 +321,7 @@ def fig_21_action_projection():
     log_file = OUTPUT_DIR / "logs" / "single_task_8bus_100pv.json"
     out = OUTPUT_DIR / "figs_21_30" / "fig_21_action_projection.pdf"
     run_cmd(
-        f"python marl/utils/safety_projection_analysis.py --log {log_file} --output {out}",
+        f'python marl/utils/safety_projection_analysis.py --log "{log_file}" --output "{out}"',
         "Fig 21: Action Projection Efficacy (post-process from Fig 9 logs)"
     )
 
@@ -320,7 +329,7 @@ def fig_37_per_agent_curves():
     """Figure 37: Per-Agent Learning Curves (Individual Convergence)"""
     out = OUTPUT_DIR / "figs_31_40" / "fig_37_per_agent_curves.pdf"
     run_cmd(
-        f"python marl/experiments/per_agent_curves.py --system 8bus --pv 1.0 --episodes 30000 --seed {SEED} --output {out}",
+        f'python marl/experiments/per_agent_curves.py --system 8bus --pv 1.0 --episodes 30000 --seed {SEED} --output "{out}"',
         "Fig 37: Per-Agent Learning Curves"
     )
 
@@ -328,7 +337,7 @@ def fig_38_attention_evolution():
     """Figure 38: Attention Weight Evolution During Training"""
     out = OUTPUT_DIR / "figs_31_40" / "fig_38_attention_evolution.pdf"
     run_cmd(
-        f"python marl/experiments/attention_evolution.py --system 8bus --pv 1.0 --snapshots 0 100 500 1000 5000 --seed {SEED} --output {out}",
+        f'python marl/experiments/attention_evolution.py --system 8bus --pv 1.0 --snapshots 0 100 500 1000 5000 --seed {SEED} --output "{out}"',
         "Fig 38: Attention Weight Evolution During Training"
     )
 
@@ -341,7 +350,7 @@ def fig_05_objective_vs_pv():
     n_runs = "2" if FAST_MODE else "50"
     out = OUTPUT_DIR / "figs_01_10" / "fig_05_objective_vs_pv.pdf"
     run_cmd(
-        f"python baselines/experiments/pv_sweep_evaluation.py --system 8bus --methods MAPPO-Safe-EWC MAPPO-Safe MAPPO IPPO QMIX IQL Traditional --pv-levels 0.0 0.25 0.5 0.75 1.0 --n_runs {n_runs} --output {out}",
+        f'python baselines/experiments/pv_sweep_evaluation.py --system 8bus --methods MAPPO-Safe-EWC MAPPO-Safe MAPPO IPPO QMIX IQL Traditional --pv-levels 0.0 0.25 0.5 0.75 1.0 --n_runs {n_runs} --output "{out}"',
         f"Fig 5: Objective vs. PV Penetration ({n_runs} seeds, 1750 runs full)"
     )
 
@@ -349,7 +358,7 @@ def fig_06_cti_vs_pv():
     """Figure 6: CTI Violation Rate vs. PV Penetration (8-Bus System)"""
     out = OUTPUT_DIR / "figs_01_10" / "fig_06_cti_vs_pv.pdf"
     run_cmd(
-        f"python evaluation/utils/cti_analysis.py --data {OUTPUT_DIR}/pv_sweep_results.pkl --output {out}",
+        f'python evaluation/utils/cti_analysis.py --data "{OUTPUT_DIR}/pv_sweep_results.pkl" --output "{out}"',
         "Fig 6: CTI Violation Rate vs. PV (post-process from Fig 5 data)"
     )
 
@@ -361,7 +370,7 @@ def fig_11_nemenyi():
     """Figure 11: Nemenyi Critical Difference Diagram (alpha = 0.05)"""
     out = OUTPUT_DIR / "figs_11_20" / "fig_11_nemenyi.pdf"
     run_cmd(
-        f"python evaluation/utils/nemenyi_test.py --data {OUTPUT_DIR}/pv_sweep_results.pkl --alpha 0.05 --output {out}",
+        f'python evaluation/utils/nemenyi_test.py --data "{OUTPUT_DIR}/pv_sweep_results.pkl" --alpha 0.05 --output "{out}"',
         "Fig 11: Nemenyi Critical Difference Diagram"
     )
 
@@ -369,7 +378,7 @@ def fig_31_multi_metric_ranking():
     """Figure 31: Overall Performance Ranking with Critical Difference"""
     out = OUTPUT_DIR / "figs_31_40" / "fig_31_multi_metric_ranking.pdf"
     run_cmd(
-        f"python evaluation/utils/multi_metric_ranking.py --data {OUTPUT_DIR}/benchmark_results.pkl --weights 0.3 0.3 0.2 0.2 --output {out}",
+        f'python evaluation/utils/multi_metric_ranking.py --data "{OUTPUT_DIR}/benchmark_results.pkl" --weights 0.3 0.3 0.2 0.2 --output "{out}"',
         "Fig 31: Overall Performance Ranking with CD"
     )
 
@@ -377,7 +386,7 @@ def fig_32_effect_size():
     """Figure 32: Effect Size Analysis — MAPPO-Safe-EWC vs. Baselines"""
     out = OUTPUT_DIR / "figs_31_40" / "fig_32_effect_size.pdf"
     run_cmd(
-        f"python evaluation/utils/effect_size.py --data {OUTPUT_DIR}/pv_sweep_results.pkl --baseline MAPPO-Safe-EWC --output {out}",
+        f'python evaluation/utils/effect_size.py --data "{OUTPUT_DIR}/pv_sweep_results.pkl" --baseline MAPPO-Safe-EWC --output "{out}"',
         "Fig 32: Effect Size Analysis (Cohen's d, Cliff's Delta)"
     )
 
@@ -385,7 +394,7 @@ def fig_33_radar_chart():
     """Figure 33: Multi-Dimensional Method Comparison (8-Bus, 100% PV)"""
     out = OUTPUT_DIR / "figs_31_40" / "fig_33_radar_chart.pdf"
     run_cmd(
-        f"python evaluation/utils/radar_chart.py --data {OUTPUT_DIR}/benchmark_results.pkl --system 8bus --pv 1.0 --output {out}",
+        f'python evaluation/utils/radar_chart.py --data "{OUTPUT_DIR}/benchmark_results.pkl" --system 8bus --pv 1.0 --output "{out}"',
         "Fig 33: Multi-Dimensional Method Comparison"
     )
 
@@ -393,7 +402,7 @@ def fig_55_comparison_table():
     """Figure 55: Comprehensive Method Comparison Table"""
     out = OUTPUT_DIR / "figs_51_58" / "fig_55_comparison_table.tex"
     run_cmd(
-        f"python evaluation/utils/comparison_table.py --data {OUTPUT_DIR}/benchmark_results.pkl --output {out}",
+        f'python evaluation/utils/comparison_table.py --data "{OUTPUT_DIR}/benchmark_results.pkl" --output "{out}"',
         "Fig 55: Comprehensive Method Comparison Table (LaTeX)"
     )
 
@@ -401,7 +410,7 @@ def fig_56_pareto_front():
     """Figure 56: Multi-Objective Pareto Front (Speed vs. Selectivity)"""
     out = OUTPUT_DIR / "figs_51_58" / "fig_56_pareto_front.pdf"
     run_cmd(
-        f"python evaluation/utils/pareto_front.py --data {OUTPUT_DIR}/pv_sweep_results.pkl --output {out}",
+        f'python evaluation/utils/pareto_front.py --data "{OUTPUT_DIR}/pv_sweep_results.pkl" --output "{out}"',
         "Fig 56: Multi-Objective Pareto Front"
     )
 
@@ -409,7 +418,7 @@ def fig_57_bootstrap_ci():
     """Figure 57: Bootstrap Confidence Interval Convergence"""
     out = OUTPUT_DIR / "figs_51_58" / "fig_57_bootstrap_ci.pdf"
     run_cmd(
-        f"python evaluation/utils/bootstrap_convergence.py --data {OUTPUT_DIR}/logs/batch_runs_8bus_100pv.json --output {out}",
+        f'python evaluation/utils/bootstrap_convergence.py --data "{OUTPUT_DIR}/logs/batch_runs_8bus_100pv.json" --output "{out}"',
         "Fig 57: Bootstrap CI Convergence"
     )
 
@@ -421,7 +430,7 @@ def fig_13_communication_stress():
     """Figure 13: Performance Degradation under Communication Stress"""
     out = OUTPUT_DIR / "figs_11_20" / "fig_13_communication_stress.pdf"
     run_cmd(
-        f"python evaluation/experiments/communication_stress.py --system 8bus --pv 1.0 --method MAPPO-Safe-EWC --packet-loss 0.0 0.1 0.2 0.3 0.4 0.5 --latency 0 100 200 300 400 500 --output {out}",
+        f'python evaluation/experiments/communication_stress.py --system 8bus --pv 1.0 --method MAPPO-Safe-EWC --packet-loss 0.0 0.1 0.2 0.3 0.4 0.5 --latency 0 100 200 300 400 500 --output "{out}"',
         "Fig 13: Communication Stress Robustness"
     )
 
@@ -429,7 +438,7 @@ def fig_14_n1_contingency():
     """Figure 14: N-1 Contingency Impact and Recovery (30-Bus)"""
     out = OUTPUT_DIR / "figs_11_20" / "fig_14_n1_contingency.pdf"
     run_cmd(
-        f"python evaluation/experiments/n1_contingency.py --system 30bus --method MAPPO-Safe-EWC --finetune-episodes 50 --output {out}",
+        f'python evaluation/experiments/n1_contingency.py --system 30bus --method MAPPO-Safe-EWC --finetune-episodes 50 --output "{out}"',
         "Fig 14: N-1 Contingency Impact & Recovery (~6h)"
     )
 
@@ -437,7 +446,7 @@ def fig_20_byzantine():
     """Figure 20: Byzantine Agent Detection via Trust Score Evolution"""
     out = OUTPUT_DIR / "figs_11_20" / "fig_20_byzantine.pdf"
     run_cmd(
-        f"python evaluation/experiments/byzantine_resilience.py --system 8bus --pv 1.0 --n_byzantine 2 --attack-types random collusion fdi --episodes 100 --seed {SEED} --output {out}",
+        f'python evaluation/experiments/byzantine_resilience.py --system 8bus --pv 1.0 --n_byzantine 2 --attack-types random collusion fdi --episodes 100 --seed {SEED} --output "{out}"',
         "Fig 20: Byzantine Agent Detection"
     )
 
@@ -445,7 +454,7 @@ def fig_22_bandwidth_tradeoff():
     """Figure 22: Bandwidth vs. Performance Trade-off"""
     out = OUTPUT_DIR / "figs_21_30" / "fig_22_bandwidth_tradeoff.pdf"
     run_cmd(
-        f"python evaluation/experiments/bandwidth_tradeoff.py --system 8bus --pv 1.0 --gnn-depths 1 2 3 4 --compressions none int8 topk50 --output {out}",
+        f'python evaluation/experiments/bandwidth_tradeoff.py --system 8bus --pv 1.0 --gnn-depths 1 2 3 4 --compressions none int8 topk50 --output "{out}"',
         "Fig 22: Bandwidth vs. Performance Trade-off"
     )
 
@@ -453,7 +462,7 @@ def fig_24_sensor_robustness():
     """Figure 24: Sensor Robustness — Performance Under Measurement Degradation"""
     out = OUTPUT_DIR / "figs_21_30" / "fig_24_sensor_robustness.pdf"
     run_cmd(
-        f"python environment/experiments/sensor_degradation.py --system 8bus --pv 1.0 --noise-levels 0.0 0.05 0.1 0.15 0.2 --bias-levels 0.0 0.05 0.1 --missing-rates 0.0 0.1 0.2 --output {out}",
+        f'python environment/experiments/sensor_degradation.py --system 8bus --pv 1.0 --noise-levels 0.0 0.05 0.1 0.15 0.2 --bias-levels 0.0 0.05 0.1 --missing-rates 0.0 0.1 0.2 --output "{out}"',
         "Fig 24: Sensor Robustness"
     )
 
@@ -461,7 +470,7 @@ def fig_54_adversarial():
     """Figure 54: Adversarial Robustness — Perturbed Observation Response"""
     out = OUTPUT_DIR / "figs_51_58" / "fig_54_adversarial.pdf"
     run_cmd(
-        f"python environment/experiments/adversarial_robustness.py --system 8bus --pv 1.0 --attack-types fgsm pgd --epsilons 0.01 0.05 0.1 0.2 --n_eval 100 --output {out}",
+        f'python environment/experiments/adversarial_robustness.py --system 8bus --pv 1.0 --attack-types fgsm pgd --epsilons 0.01 0.05 0.1 0.2 --n_eval 100 --output "{out}"',
         "Fig 54: Adversarial Robustness"
     )
 
@@ -474,7 +483,7 @@ def fig_15_scalability():
     systems = "8bus 14bus 30bus" if FAST_MODE else "8bus 14bus 30bus 57bus 118bus"
     out = OUTPUT_DIR / "figs_11_20" / "fig_15_scalability.pdf"
     run_cmd(
-        f"python evaluation/experiments/scalability_sweep.py --systems {systems} --method MAPPO-Safe-EWC --output {out}",
+        f'python evaluation/experiments/scalability_sweep.py --systems {systems} --method MAPPO-Safe-EWC --output "{out}"',
         f"Fig 15: Scalability Analysis ({systems})"
     )
 
@@ -482,7 +491,7 @@ def fig_23_unseen_faults():
     """Figure 23: Generalization to Unseen Fault Types"""
     out = OUTPUT_DIR / "figs_21_30" / "fig_23_unseen_faults.pdf"
     run_cmd(
-        f"python environment/experiments/unseen_faults.py --system 8bus --pv 1.0 --fault-types bolted high-impedance evolving simultaneous --n_eval 100 --output {out}",
+        f'python environment/experiments/unseen_faults.py --system 8bus --pv 1.0 --fault-types bolted high-impedance evolving simultaneous --n_eval 100 --output "{out}"',
         "Fig 23: Generalization to Unseen Fault Types"
     )
 
@@ -490,7 +499,7 @@ def fig_25_zero_shot_transfer():
     """Figure 25: Zero-Shot Transfer — 8-Bus → 30-Bus (100% PV)"""
     out = OUTPUT_DIR / "figs_21_30" / "fig_25_zero_shot_transfer.pdf"
     run_cmd(
-        f"python evaluation/experiments/zero_shot_transfer.py --source-system 8bus --target-system 30bus --pv 1.0 --finetune-steps 500 --scratch-steps 5000 --output {out}",
+        f'python evaluation/experiments/zero_shot_transfer.py --source-system 8bus --target-system 30bus --pv 1.0 --finetune-steps 500 --scratch-steps 5000 --output "{out}"',
         "Fig 25: Zero-Shot Transfer 8→30 Bus"
     )
 
@@ -510,7 +519,7 @@ def fig_18_inference_latency():
     """Figure 18: Inference Latency Distribution (Intel NUC i5, 1000 runs)"""
     out = OUTPUT_DIR / "figs_11_20" / "fig_18_inference_latency.pdf"
     run_cmd(
-        f"python deployment/benchmark_latency.py --model results/checkpoints/best_model_8bus_100pv.pt --n_calls 1000 --hardware nuc_i5 --output {out}",
+        f'python deployment/benchmark_latency.py --model results/checkpoints/best_model_8bus_100pv.pt --n_calls 1000 --hardware nuc_i5 --output "{out}"',
         "Fig 18: Inference Latency Distribution (Intel NUC i5)"
     )
 
@@ -525,7 +534,7 @@ def fig_53_model_compression():
     """Figure 53: Model Compression & Quantization Impact"""
     out = OUTPUT_DIR / "figs_51_58" / "fig_53_model_compression.pdf"
     run_cmd(
-        f"python evaluation/experiments/model_compression.py --model results/checkpoints/best_model_8bus_100pv.pt --methods int8 pruning distillation --n_eval 100 --output {out}",
+        f'python evaluation/experiments/model_compression.py --model results/checkpoints/best_model_8bus_100pv.pt --methods int8 pruning distillation --n_eval 100 --output "{out}"',
         "Fig 53: Model Compression & Quantization Impact"
     )
 
@@ -538,7 +547,7 @@ def fig_48_shap():
     """Figure 48: SHAP Feature Importance for Relay Decisions"""
     out = OUTPUT_DIR / "figs_41_50" / "fig_48_shap.pdf"
     run_cmd(
-        f"python evaluation/experiments/shap_analysis.py --system 8bus --pv 1.0 --n_background 100 --agents all --output {out}",
+        f'python evaluation/experiments/shap_analysis.py --system 8bus --pv 1.0 --n_background 100 --agents all --output "{out}"',
         "Fig 48: SHAP Feature Importance (~10min/agent on CPU)"
     )
 
@@ -546,7 +555,7 @@ def fig_49_decision_boundary():
     """Figure 49: Decision Boundary Visualization (2D Projection)"""
     out = OUTPUT_DIR / "figs_41_50" / "fig_49_decision_boundary.pdf"
     run_cmd(
-        f"python evaluation/experiments/decision_boundary.py --system 8bus --pv 1.0 --n_obs 5000 --method tsne --output {out}",
+        f'python evaluation/experiments/decision_boundary.py --system 8bus --pv 1.0 --n_obs 5000 --method tsne --output "{out}"',
         "Fig 49: Decision Boundary Visualization (t-SNE/UMAP)"
     )
 
@@ -554,7 +563,7 @@ def fig_50_critical_pairs():
     """Figure 50: Critical P/B Pair Identification & Priority Ranking"""
     out = OUTPUT_DIR / "figs_41_50" / "fig_50_critical_pairs.pdf"
     run_cmd(
-        f"python network/utils/critical_pairs.py --system 8bus --pv 1.0 --lambda-data {OUTPUT_DIR}/logs/lagrange_8bus_100pv.json --violation-data {OUTPUT_DIR}/pv_sweep_results.pkl --output {out}",
+        f'python network/utils/critical_pairs.py --system 8bus --pv 1.0 --lambda-data "{OUTPUT_DIR}/logs/lagrange_8bus_100pv.json" --violation-data "{OUTPUT_DIR}/pv_sweep_results.pkl" --output "{out}"',
         "Fig 50: Critical P/B Pair Identification"
     )
 
@@ -567,7 +576,7 @@ def fig_39_ablation():
     """Figure 39: Systematic Ablation Study — Component Contribution"""
     out = OUTPUT_DIR / "figs_31_40" / "fig_39_ablation.pdf"
     run_cmd(
-        f"python marl/experiments/ablation_study.py --system 8bus --pv 1.0 --configs MAPPO MAPPO-GNN MAPPO-GNN-Safety MAPPO-GNN-Safety-EWC MAPPO-Safe-EWC-Curriculum --n_runs {N_RUNS_BASELINE} --output {out}",
+        f'python marl/experiments/ablation_study.py --system 8bus --pv 1.0 --configs MAPPO MAPPO-GNN MAPPO-GNN-Safety MAPPO-GNN-Safety-EWC MAPPO-Safe-EWC-Curriculum --n_runs {N_RUNS_BASELINE} --output "{out}"',
         "Fig 39: Systematic Ablation Study"
     )
 
@@ -577,7 +586,7 @@ def fig_40_hyperparameter():
     episodes = "500" if FAST_MODE else "2000"
     out = OUTPUT_DIR / "figs_31_40" / "fig_40_hyperparameter.pdf"
     run_cmd(
-        f"python marl/experiments/hyperparameter_grid.py --system 8bus --pv 1.0 --lambda-ewc 1e2 1e3 1e4 1e5 1e6 --alpha-lambda 1e-5 1e-4 1e-3 1e-2 --hidden-dims 16 32 64 128 --n_runs {n_runs} --episodes {episodes} --output {out}",
+        f'python marl/experiments/hyperparameter_grid.py --system 8bus --pv 1.0 --lambda-ewc 1e2 1e3 1e4 1e5 1e6 --alpha-lambda 1e-5 1e-4 1e-3 1e-2 --hidden-dims 16 32 64 128 --n_runs {n_runs} --episodes {episodes} --output "{out}"',
         f"Fig 40: Hyperparameter Sensitivity Heatmap ({n_runs} seeds, {episodes} eps)"
     )
 
@@ -585,7 +594,7 @@ def fig_41_sample_efficiency():
     """Figure 41: Sample Efficiency Comparison"""
     out = OUTPUT_DIR / "figs_31_40" / "fig_41_sample_efficiency.pdf"
     run_cmd(
-        f"python marl/utils/sample_efficiency.py --data {OUTPUT_DIR}/logs/batch_runs_8bus_100pv.json --output {out}",
+        f'python marl/utils/sample_efficiency.py --data "{OUTPUT_DIR}/logs/batch_runs_8bus_100pv.json" --output "{out}"',
         "Fig 41: Sample Efficiency Comparison (post-process from Fig 12)"
     )
 
@@ -593,7 +602,7 @@ def fig_42_warm_start():
     """Figure 42: Warm-Start vs. Cold-Start Initialization"""
     out = OUTPUT_DIR / "figs_31_40" / "fig_42_warm_start.pdf"
     run_cmd(
-        f"python marl/experiments/warm_start.py --system 8bus --pv 1.0 --n_runs {N_RUNS_BASELINE} --episodes 5000 --output {out}",
+        f'python marl/experiments/warm_start.py --system 8bus --pv 1.0 --n_runs {N_RUNS_BASELINE} --episodes 5000 --output "{out}"',
         "Fig 42: Warm-Start vs. Cold-Start Initialization"
     )
 
@@ -606,7 +615,7 @@ def fig_58_seasonal():
     """Figure 58: Seasonal/Weather Generalization (Extended PV Profiles)"""
     out = OUTPUT_DIR / "figs_51_58" / "fig_58_seasonal.pdf"
     run_cmd(
-        f"python evaluation/experiments/seasonal_generalization.py --system 8bus --seasons spring summer autumn winter --n_eval 100 --output {out}",
+        f'python evaluation/experiments/seasonal_generalization.py --system 8bus --seasons spring summer autumn winter --n_eval 100 --output "{out}"',
         "Fig 58: Seasonal/Weather Generalization"
     )
 
@@ -936,10 +945,7 @@ Examples:
         os.environ["DOCR_FAST"] = "1"
         log("\\n[FAST MODE] Using reduced iterations for testing.\\n")
 
-    # Create output subdirectories
-    for subdir in ["figs_01_10", "figs_11_20", "figs_21_30", "figs_31_40", 
-                   "figs_41_50", "figs_51_58", "logs", "checkpoints", "cache"]:
-        os.makedirs(OUTPUT_DIR / subdir, exist_ok=True)
+    # Output subdirectories already created at module load time
 
     # Route to appropriate runner
     if args.all:
