@@ -1,0 +1,46 @@
+[20:49:39] \n======================================================================\n[20:49:39] PHASE 3: Training Dynamics (Week 4)\n[20:49:39] ======================================================================\n[20:49:39] \n[RUN] Fig 7: Curriculum Learning Progression\n[20:49:39] CMD: python marl/curriculum_trainer.py --system 8bus --tasks 0.0 0.25 0.5 0.75 1.0 --episodes 5000 --n_runs 50 --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_01_10\fig_07_curriculum.pdf"\n[20:49:39] [STDERR] Traceback (most recent call last):
+  File "C:\Users\de1ug\Documents\Python Project\DOCR_Research\marl\curriculum_trainer.py", line 26, in <module>
+    spec.loader.exec_module(exp_fig09)
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1132, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1190, in get_data
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\marl\\..\\exp_fig09_cti_violation_dynamics.py'
+\n[20:49:39] ERROR: command failed after 0.1s (exit code 1)\n[20:49:39] WARNING: Placeholder module or missing dependency. Continuing...\n[20:49:39] \n[RUN] Fig 9: CTI Violation Dynamics During Training (~4h)\n[20:49:39] CMD: python marl/experiments/single_task_training.py --system 8bus --pv 1.0 --method MAPPO-Safe --episodes 5000 --seed 42 --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_01_10\fig_09_cti_violations.pdf"\n[20:49:39] [STDERR] Traceback (most recent call last):
+  File "C:\Users\de1ug\Documents\Python Project\DOCR_Research\marl\experiments\single_task_training.py", line 22, in <module>
+    spec.loader.exec_module(exp_fig09)
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1132, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1190, in get_data
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\marl\\experiments\\..\\exp_fig09_cti_violation_dynamics.py'
+\n[20:49:39] ERROR: command failed after 0.1s (exit code 1)\n[20:49:39] WARNING: Placeholder module or missing dependency. Continuing...\n[20:49:39] \n[RUN] Fig 10: Lagrange Multiplier Evolution (post-process from Fig 9 logs)\n[20:49:39] CMD: python marl/utils/lagrange_analysis.py --log "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\logs\single_task_8bus_100pv.json" --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_01_10\fig_10_lagrange_multipliers.pdf"\n[20:49:39] [STDERR] Traceback (most recent call last):
+  File "C:\Users\de1ug\Documents\Python Project\DOCR_Research\marl\utils\lagrange_analysis.py", line 24, in <module>
+    spec.loader.exec_module(exp_fig10)
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1132, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1190, in get_data
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\marl\\utils\\..\\exp_fig10_lagrange_evolution.py'
+\n[20:49:39] ERROR: command failed after 0.1s (exit code 1)\n[20:49:39] WARNING: Placeholder module or missing dependency. Continuing...\n[20:49:39] \n[RUN] Fig 16: EWC Effectiveness Ablation\n[20:49:39] CMD: python marl/experiments/ewc_ablation.py --system 8bus --tasks 0.0 0.25 0.5 0.75 1.0 --n_runs 10 --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_11_20\fig_16_ewc_effectiveness.pdf"\n[20:49:39] [STDERR] Traceback (most recent call last):
+  File "C:\Users\de1ug\Documents\Python Project\DOCR_Research\marl\experiments\ewc_ablation.py", line 22, in <module>
+    spec.loader.exec_module(exp_fig16)
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1132, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1190, in get_data
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\marl\\experiments\\..\\exp_fig16_ewc_effectiveness.py'
+\n[20:49:39] ERROR: command failed after 0.1s (exit code 1)\n[20:49:39] WARNING: Placeholder module or missing dependency. Continuing...\n[20:49:39] \n[RUN] Fig 21: Action Projection Efficacy (post-process from Fig 9 logs)\n[20:49:39] CMD: python marl/utils/safety_projection_analysis.py --log "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\logs\single_task_8bus_100pv.json" --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_21_30\fig_21_action_projection.pdf"\n[20:49:40] [STDERR] Traceback (most recent call last):
+  File "C:\Users\de1ug\Documents\Python Project\DOCR_Research\marl\utils\safety_projection_analysis.py", line 22, in <module>
+    spec.loader.exec_module(exp_fig21)
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1132, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1190, in get_data
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\marl\\utils\\..\\exp_fig21_action_projection.py'
+\n[20:49:40] ERROR: command failed after 0.2s (exit code 1)\n[20:49:40] WARNING: Placeholder module or missing dependency. Continuing...\n[20:49:40] \n[RUN] Fig 37: Per-Agent Learning Curves\n[20:49:40] CMD: python marl/experiments/per_agent_curves.py --system 8bus --pv 1.0 --episodes 30000 --seed 42 --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_31_40\fig_37_per_agent_curves.pdf"\n[20:49:40] [STDERR] Traceback (most recent call last):
+  File "C:\Users\de1ug\Documents\Python Project\DOCR_Research\marl\experiments\per_agent_curves.py", line 26, in <module>
+    spec.loader.exec_module(exp_fig37)
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1132, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1190, in get_data
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\marl\\experiments\\..\\exp_fig37_per_agent_curves.py'
+\n[20:49:40] ERROR: command failed after 0.1s (exit code 1)\n[20:49:40] WARNING: Placeholder module or missing dependency. Continuing...\n[20:49:40] \n[RUN] Fig 38: Attention Weight Evolution During Training\n[20:49:40] CMD: python marl/experiments/attention_evolution.py --system 8bus --pv 1.0 --snapshots 0 100 500 1000 5000 --seed 42 --output "C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_31_40\fig_38_attention_evolution.pdf"\n[20:49:45] [Adapter] Fig 38 Attention Evolution -> STUB (no actual attention tracking in codebase)
+  Generating synthetic attention evolution visualization...
+[Adapter] Saved stub visualization: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figs_31_40\fig_38_attention_evolution.pdf
+\n[20:49:45] Finished in 4.9s\n
