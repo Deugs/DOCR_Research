@@ -1,4 +1,3 @@
-
 """
 exp_fig12_convergence_curves.py  —  Figure 12 (IMPROVED)
 ───────────────────────────────────────────────────────────
@@ -51,6 +50,13 @@ METHOD_COLORS = {
 }
 
 
+def _ensure_scalar(val):
+    """Ensure reward/return is a scalar float."""
+    if isinstance(val, np.ndarray):
+        return float(np.sum(val))
+    return float(val)
+
+
 def run_single_training(method: str, seed: int, n_episodes: int = 2000) -> Tuple[np.ndarray, float]:
     """Run one training run and return episode returns + wall-clock time."""
     net = get_8bus()
@@ -80,7 +86,7 @@ def run_single_training(method: str, seed: int, n_episodes: int = 2000) -> Tuple
     for ep in range(n_episodes):
         obs = env.reset(seed=seed + ep)
         done = False
-        ep_return = 0
+        ep_return = 0.0
         ep_steps = 0
         
         while not done:
@@ -89,13 +95,13 @@ def run_single_training(method: str, seed: int, n_episodes: int = 2000) -> Tuple
                 a, _ = trainer.actor.sample(obs[i], rng)
                 actions[i] = a
             obs, reward, done, info = env.step(actions)
-            ep_return += reward
+            ep_return += _ensure_scalar(reward)
             ep_steps += 1
         
         returns.append(ep_return)
     
     wall_time = time.perf_counter() - t0
-    return np.array(returns), wall_time
+    return np.array(returns, dtype=np.float64), wall_time
 
 
 def evaluate_traditional(env, net, n_episodes: int, seed: int) -> np.ndarray:
@@ -112,15 +118,15 @@ def evaluate_traditional(env, net, n_episodes: int, seed: int) -> np.ndarray:
         obs = env.reset(seed=seed + ep)
         env.set_relay_settings(fixed_TDS, fixed_PSM)
         done = False
-        ep_return = 0
+        ep_return = 0.0
         
         while not done:
             obs, reward, done, info = env.step(np.zeros((env.n_agents, env.ACT_DIM)))
-            ep_return += reward
+            ep_return += _ensure_scalar(reward)
         
         returns.append(ep_return)
     
-    return np.array(returns)
+    return np.array(returns, dtype=np.float64)
 
 
 def compute_convergence_time(returns: np.ndarray, threshold: float = 0.95,
@@ -130,13 +136,19 @@ def compute_convergence_time(returns: np.ndarray, threshold: float = 0.95,
     First episode where moving average stays above threshold*final_mean
     for at least `window` consecutive episodes, and after min_episodes.
     """
+    # Ensure 1D array of scalars
+    returns = np.asarray(returns, dtype=np.float64).flatten()
+    
+    if len(returns) < window * 2:
+        return len(returns)
+    
     final_mean = np.mean(returns[-window:])
     target = threshold * final_mean
     
     # Moving average
     ma = np.convolve(returns, np.ones(window)/window, mode='valid')
     
-    for i in range(min_episodes, len(ma)):
+    for i in range(min_episodes, len(ma) - window + 1):
         if np.all(ma[i:i+window] >= target):
             return i + window // 2
     return len(returns)
@@ -171,7 +183,7 @@ def main(n_runs: int = 50, n_episodes: int = 2000, seed_base: int = 0,
     all_results = {}
     
     for method in METHODS:
-        logger.info("\\n=== Method: %s ===", method)
+        logger.info("\n=== Method: %s ===", method)
         all_returns = []
         convergence_times = []
         wall_times = []
@@ -189,7 +201,7 @@ def main(n_runs: int = 50, n_episodes: int = 2000, seed_base: int = 0,
             
             wall_times.append(wall_time)
         
-        all_returns = np.array(all_returns)  # (n_runs, n_episodes)
+        all_returns = np.stack(all_returns)  # (n_runs, n_episodes)
         
         # Statistics
         mean_returns = all_returns.mean(axis=0)
@@ -329,7 +341,7 @@ def main(n_runs: int = 50, n_episodes: int = 2000, seed_base: int = 0,
     logger.info("Saved: %s", out_path / "fig12_convergence.png")
     
     # Summary
-    print("\\n" + "=" * 70)
+    print("\n" + "=" * 70)
     print("CONVERGENCE ANALYSIS SUMMARY")
     print("=" * 70)
     print(f"{'Method':>20} {'Final Return':>14} {'Conv@Ep':>10} {'Time(s)':>10} {'Std':>10}")

@@ -52,7 +52,7 @@ def run_training_with_logging(env, trainer, n_episodes: int = 2000, seed: int = 
     for ep in range(n_episodes):
         obs = env.reset(seed=seed + ep)
         done = False
-        ep_reward = 0
+        ep_reward = 0.0
         ep_violations = 0
         ep_safety_acts = 0
         
@@ -74,7 +74,8 @@ def run_training_with_logging(env, trainer, n_episodes: int = 2000, seed: int = 
                     actions_safe[i] = a_raw
             
             obs, reward, done, info = env.step(actions_safe)
-            ep_reward += reward
+            # FIX: reward may be a per-agent array; collapse to scalar
+            ep_reward += float(np.mean(reward))
         
         # Check CTI violations
         TMS, PS = env.get_state()
@@ -114,7 +115,7 @@ def main(n_episodes: int = 2000, seed: int = 42, output_dir: str = "outputs"):
     net = get_8bus()
     
     # Run MAPPO-Safe
-    logger.info("\\n[1/2] Training MAPPO-Safe...")
+    logger.info("\n[1/2] Training MAPPO-Safe...")
     env_safe = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
                                  fault_type="3ph", curriculum_stage=5)
     trainer_safe = MAPPOMARLTrainer(env_safe, use_comm=False, seed=seed)
@@ -123,7 +124,7 @@ def main(n_episodes: int = 2000, seed: int = 42, output_dir: str = "outputs"):
     log_safe = run_training_with_logging(env_safe, trainer_safe, n_episodes, seed)
     
     # Run unconstrained MAPPO
-    logger.info("\\n[2/2] Training unconstrained MAPPO...")
+    logger.info("\n[2/2] Training unconstrained MAPPO...")
     env_unsafe = DynamicDOCREnv(net, seed=seed+1000, use_pandapower=False,
                                  fault_type="3ph", curriculum_stage=5)
     trainer_unsafe = MAPPOMARLTrainer(env_unsafe, use_comm=False, seed=seed+1000)
@@ -202,7 +203,7 @@ def main(n_episodes: int = 2000, seed: int = 42, output_dir: str = "outputs"):
     logger.info("Saved: %s", out_path / "fig09_cti_dynamics.png")
     
     # Summary
-    print("\\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("CTI DYNAMICS SUMMARY")
     print("=" * 60)
     print(f"{'Metric':>30} {'MAPPO-Safe':>14} {'Unconstrained':>14}")

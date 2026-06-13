@@ -1,0 +1,38 @@
+2026-06-13 14:49:56,498 | INFO     | 
+2026-06-13 14:49:56,498 | INFO     | ======================================================================
+2026-06-13 14:49:56,498 | INFO     | [1m[96mPHASE 1: Manual Diagrams & Architecture[0m
+2026-06-13 14:49:56,498 | INFO     | ======================================================================
+2026-06-13 14:49:56,498 | INFO     | Phase 1: 15 auto-generatable + 2 truly manual figures
+2026-06-13 14:49:56,498 | INFO     | Output directory: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_01_10
+2026-06-13 14:49:57,779 | INFO     | [92m  [Fig 01] ✓ Generated in 1.28s[0m
+2026-06-13 14:49:58,342 | INFO     | [92m  [Fig 02] ✓ Generated in 0.56s[0m
+2026-06-13 14:49:59,008 | INFO     | [92m  [Fig 03] ✓ Generated in 0.67s[0m
+2026-06-13 14:49:59,562 | INFO     | [92m  [Fig 04] ✓ Generated in 0.55s[0m
+2026-06-13 14:50:00,739 | INFO     | [92m  [Fig 17] ✓ Generated in 1.18s[0m
+2026-06-13 14:50:01,735 | INFO     | [92m  [Fig 19] ✓ Generated in 1.00s[0m
+2026-06-13 14:50:03,001 | INFO     | [92m  [Fig 26] ✓ Generated in 1.27s[0m
+2026-06-13 14:50:03,786 | INFO     | [92m  [Fig 27] ✓ Generated in 0.79s[0m
+2026-06-13 14:50:04,648 | INFO     | [92m  [Fig 28] ✓ Generated in 0.86s[0m
+2026-06-13 14:50:05,604 | INFO     | [92m  [Fig 29] ✓ Generated in 0.96s[0m
+2026-06-13 14:50:06,806 | INFO     | [92m  [Fig 30] ✓ Generated in 1.20s[0m
+2026-06-13 14:50:08,172 | INFO     | [92m  [Fig 34] ✓ Generated in 1.37s[0m
+2026-06-13 14:50:09,526 | INFO     | [92m  [Fig 35] ✓ Generated in 1.35s[0m
+2026-06-13 14:50:10,873 | INFO     | [92m  [Fig 51] ✓ Generated in 1.35s[0m
+2026-06-13 14:50:11,516 | INFO     | [92m  [Fig 52] ✓ Generated in 0.64s[0m
+2026-06-13 14:50:11,516 | INFO     |   [Fig 36] ○ Truly manual - create in docs/diagrams/ or LaTeX
+2026-06-13 14:50:11,516 | INFO     |   [Fig 26a] ○ Truly manual - create in docs/diagrams/ or LaTeX
+2026-06-13 14:50:11,516 | INFO     | Phase 1 complete: 15 generated, 0 failed, 2 manual
+2026-06-13 14:50:11,516 | INFO     | [92m✓ Phase 1 Manual Diagrams & Architecture: COMPLETE (0:00:15)[0m
+2026-06-13 14:50:11,516 | INFO     | 
+2026-06-13 14:50:11,516 | INFO     | ======================================================================
+2026-06-13 14:50:11,516 | INFO     | [1m[95mEXPERIMENT SUITE SUMMARY[0m
+2026-06-13 14:50:11,516 | INFO     | ======================================================================
+2026-06-13 14:50:11,516 | INFO     | Total elapsed: 0:00:15
+2026-06-13 14:50:11,516 | INFO     | Mode: FULL
+2026-06-13 14:50:11,516 | INFO     | ETA: -1 day, 23:59:51
+2026-06-13 14:50:11,516 | INFO     | ----------------------------------------------------------------------
+2026-06-13 14:50:11,516 | INFO     | [92m  ✓ Phase 1: Manual Diagrams & Architecture COMPLETE   0:00:15[0m
+2026-06-13 14:50:11,516 | INFO     | ----------------------------------------------------------------------
+2026-06-13 14:50:11,516 | INFO     | Figures: 15 generated, 0 failed, -15 pending
+2026-06-13 14:50:11,516 | INFO     | ======================================================================
+2026-06-13 14:50:11,516 | INFO     | Report saved to: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\reports\experiment_report_20260613_144956.json
