@@ -1,0 +1,42 @@
+2026-06-13 18:49:53,829 | INFO     | 
+2026-06-13 18:49:53,829 | INFO     | ======================================================================
+2026-06-13 18:49:53,829 | INFO     | [1m[96mPHASE 3: Training Dynamics[0m
+2026-06-13 18:49:53,829 | INFO     | ======================================================================
+2026-06-13 18:49:53,830 | INFO     | Generating 7 figures from Core A/B cached data: [9, 10, 16, 21, 37, 38, 41]
+2026-06-13 18:49:55,848 | ERROR    | [91m  [Fig 09] ✗ Failed: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,848 | ERROR    | [91mFig 9 error: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,848 | ERROR    | [91m  [Fig 10] ✗ Failed: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,848 | ERROR    | [91mFig 10 error: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,848 | ERROR    | [91m  [Fig 16] ✗ Failed: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,848 | ERROR    | [91mFig 16 error: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,863 | ERROR    | [91m  [Fig 21] ✗ Failed: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,863 | ERROR    | [91mFig 21 error: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,864 | ERROR    | [91m  [Fig 37] ✗ Failed: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,864 | ERROR    | [91mFig 37 error: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,864 | ERROR    | [91m  [Fig 38] ✗ Failed: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,865 | ERROR    | [91mFig 38 error: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,865 | ERROR    | [91m  [Fig 41] ✗ Failed: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,865 | ERROR    | [91mFig 41 error: unsupported operand type(s) for /: 'function' and 'str'[0m
+2026-06-13 18:49:55,866 | INFO     | Phase 3 complete: 7 generated, 0 failed
+2026-06-13 18:49:55,866 | INFO     | [92m✓ Phase 3 Training Dynamics: COMPLETE (0:00:02)[0m
+2026-06-13 18:49:55,866 | INFO     | 
+2026-06-13 18:49:55,867 | INFO     | ======================================================================
+2026-06-13 18:49:55,867 | INFO     | [1m[95mEXPERIMENT SUITE SUMMARY[0m
+2026-06-13 18:49:55,867 | INFO     | ======================================================================
+2026-06-13 18:49:55,867 | INFO     | Total elapsed: 0:00:02
+2026-06-13 18:49:55,867 | INFO     | Mode: FULL
+2026-06-13 18:49:55,868 | INFO     | ETA: 0:00:01
+2026-06-13 18:49:55,868 | INFO     | ----------------------------------------------------------------------
+2026-06-13 18:49:55,868 | INFO     | [92m  ✓ Phase 3: Training Dynamics              COMPLETE   0:00:02 [7 failed][0m
+2026-06-13 18:49:55,868 | INFO     | ----------------------------------------------------------------------
+2026-06-13 18:49:55,868 | INFO     | Figures: 0 generated, 7 failed, 0 pending
+2026-06-13 18:49:55,869 | INFO     | Failed figures:
+2026-06-13 18:49:55,869 | ERROR    |   Fig 09: unsupported operand type(s) for /: 'function' and 'str'
+2026-06-13 18:49:55,869 | ERROR    |   Fig 10: unsupported operand type(s) for /: 'function' and 'str'
+2026-06-13 18:49:55,869 | ERROR    |   Fig 16: unsupported operand type(s) for /: 'function' and 'str'
+2026-06-13 18:49:55,869 | ERROR    |   Fig 21: unsupported operand type(s) for /: 'function' and 'str'
+2026-06-13 18:49:55,870 | ERROR    |   Fig 37: unsupported operand type(s) for /: 'function' and 'str'
+2026-06-13 18:49:55,870 | ERROR    |   Fig 38: unsupported operand type(s) for /: 'function' and 'str'
+2026-06-13 18:49:55,870 | ERROR    |   Fig 41: unsupported operand type(s) for /: 'function' and 'str'
+2026-06-13 18:49:55,870 | INFO     | ======================================================================
+2026-06-13 18:49:55,872 | INFO     | Report saved to: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\reports\experiment_report_20260613_184953.json

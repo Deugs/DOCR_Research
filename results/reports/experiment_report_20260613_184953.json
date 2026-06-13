@@ -1,0 +1,97 @@
+{
+  "timestamp": "2026-06-13T18:49:55.870597",
+  "fast_mode": false,
+  "total_elapsed_seconds": 2.0407583713531494,
+  "eta": "0:00:01",
+  "phases": {
+    "3": {
+      "name": "Training Dynamics",
+      "status": "complete",
+      "duration_seconds": 2.0367698669433594,
+      "figures_generated": [],
+      "figures_failed": [
+        {
+          "fig": 9,
+          "error": "unsupported operand type(s) for /: 'function' and 'str'"
+        },
+        {
+          "fig": 10,
+          "error": "unsupported operand type(s) for /: 'function' and 'str'"
+        },
+        {
+          "fig": 16,
+          "error": "unsupported operand type(s) for /: 'function' and 'str'"
+        },
+        {
+          "fig": 21,
+          "error": "unsupported operand type(s) for /: 'function' and 'str'"
+        },
+        {
+          "fig": 37,
+          "error": "unsupported operand type(s) for /: 'function' and 'str'"
+        },
+        {
+          "fig": 38,
+          "error": "unsupported operand type(s) for /: 'function' and 'str'"
+        },
+        {
+          "fig": 41,
+          "error": "unsupported operand type(s) for /: 'function' and 'str'"
+        }
+      ],
+      "details": {}
+    }
+  },
+  "figures": {
+    "9": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.0,
+      "error": "unsupported operand type(s) for /: 'function' and 'str'"
+    },
+    "10": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.0,
+      "error": "unsupported operand type(s) for /: 'function' and 'str'"
+    },
+    "16": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.0,
+      "error": "unsupported operand type(s) for /: 'function' and 'str'"
+    },
+    "21": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.0,
+      "error": "unsupported operand type(s) for /: 'function' and 'str'"
+    },
+    "37": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.0009441375732421875,
+      "error": "unsupported operand type(s) for /: 'function' and 'str'"
+    },
+    "38": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.0,
+      "error": "unsupported operand type(s) for /: 'function' and 'str'"
+    },
+    "41": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.0,
+      "error": "unsupported operand type(s) for /: 'function' and 'str'"
+    }
+  },
+  "summary": {
+    "total_phases": 1,
+    "completed_phases": 1,
+    "failed_phases": 0,
+    "total_figures": 7,
+    "completed_figures": 0,
+    "failed_figures": 7
+  }
+}

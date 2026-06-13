@@ -1,0 +1,7 @@
+2026-06-13 17:07:08,490 | INFO     | [93mClearing all caches...[0m
+2026-06-13 17:07:08,490 | INFO     | 
+2026-06-13 17:07:08,490 | INFO     | [96m──────────────────────────────────────────────────────────────────────[0m
+2026-06-13 17:07:08,490 | INFO     | [1m[94m▶ Clear core training cache[0m
+2026-06-13 17:07:08,490 | INFO     |   CMD: python run_core_training.py --clear-cache
+2026-06-13 17:07:08,782 | INFO     | [92m  ✓ SUCCESS in 0.3s[0m
+2026-06-13 17:07:09,805 | INFO     | [92m✓ All caches cleared[0m

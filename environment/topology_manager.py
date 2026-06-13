@@ -5,7 +5,7 @@ Topology management for distribution network reconfiguration.
 Handles N-1 contingencies, sectionalizing switch operations,
 and feeder reconfiguration for relay coordination studies.
 
-Phase 1: Dynamic topology changes for robustness testing.
+Refactored for full IEEE test system support: 3, 8, 14, 30, 39, 57, 118 buses.
 """
 
 import numpy as np
@@ -42,6 +42,7 @@ class TopologyManager:
     - Sectionalizing switch operations
     - Bus splitting (ring-main to radial)
     - Automatic feeder reconfiguration
+    - Full IEEE test system range (3, 8, 14, 30, 39, 57, 118 buses)
     """
 
     def __init__(self, n_buses: int, n_lines: int, n_switches: int = 0):

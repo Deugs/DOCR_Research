@@ -4,7 +4,7 @@ relay_sensor.py
 Current Transformer (CT) and Potential Transformer (PT) simulation
 with realistic noise models, saturation effects, and measurement errors.
 
-Phase 1: Sensor modeling for robustness testing and realistic relay input.
+Refactored for full IEEE test system support: 3, 8, 14, 30, 39, 57, 118 buses.
 """
 
 import numpy as np

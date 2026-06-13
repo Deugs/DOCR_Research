@@ -1,0 +1,20 @@
+2026-06-13 17:11:39,272 | INFO     | 
+2026-06-13 17:11:39,272 | INFO     | ======================================================================
+2026-06-13 17:11:39,272 | INFO     | [1m[96mPHASE 2: Core Training Runs (A-K)[0m
+2026-06-13 17:11:39,272 | INFO     | ======================================================================
+2026-06-13 17:11:39,272 | INFO     | Running unified core training via run_core_training.py...
+2026-06-13 17:11:39,272 | INFO     |   Core A: MAPPO-Safe-EWC 8-bus 100% PV
+2026-06-13 17:11:39,272 | INFO     |   Core B: Curriculum 0%->100% PV
+2026-06-13 17:11:39,288 | INFO     |   Core C: Baseline comparison
+2026-06-13 17:11:39,288 | INFO     |   Core D: Ablation study
+2026-06-13 17:11:39,288 | INFO     |   Core E: Hyperparameter grid
+2026-06-13 17:11:39,288 | INFO     |   Core F: Scalability sweep
+2026-06-13 17:11:39,288 | INFO     |   Core G: Robustness evaluation
+2026-06-13 17:11:39,288 | INFO     |   Core H: Transfer learning
+2026-06-13 17:11:39,288 | INFO     |   Core I: Deployment benchmark
+2026-06-13 17:11:39,288 | INFO     |   Core J: Protection engineering
+2026-06-13 17:11:39,288 | INFO     |   Core K: Seasonal generalization
+2026-06-13 17:11:39,288 | INFO     | 
+2026-06-13 17:11:39,288 | INFO     | [96m──────────────────────────────────────────────────────────────────────[0m
+2026-06-13 17:11:39,288 | INFO     | [1m[94m▶ Phase 2: Unified Core Training (all 11 cores A-K)[0m
+2026-06-13 17:11:39,288 | INFO     |   CMD: python run_core_training.py --all

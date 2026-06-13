@@ -62,17 +62,29 @@ class PandapowerNetwork:
         pp.create_ext_grid(net, bus=bus_map[0], vm_pu=1.0, va_degree=0.0)
 
         # Add lines (simplified radial/ring topology)
-        # For 8-bus: typical distribution feeder
-        if self.net_data.n_buses == 8:
+        # Topology definitions for all supported test systems
+        n = self.net_data.n_buses
+        if n == 3:
+            line_pairs = [(0,1), (1,2)]
+        elif n == 8:
             line_pairs = [(0,1), (1,2), (2,3), (1,4), (4,5), (5,6), (6,7), (3,7)]
-        elif self.net_data.n_buses == 30:
-            # 30-bus simplified topology
+        elif n == 14:
+            # IEEE 14-bus standard topology
+            line_pairs = [(0,1), (0,4), (1,2), (1,3), (1,4), (2,3), (3,4),
+                         (3,6), (3,8), (4,5), (5,10), (5,11), (5,12),
+                         (6,7), (7,8), (8,13), (9,10), (11,12), (12,13)]
+        elif n == 30:
             line_pairs = [(i, i+1) for i in range(29)] + [(0, 29), (5, 10), (10, 15), (15, 20)]
-        elif self.net_data.n_buses == 39:
-            # 39-bus simplified (New England)
+        elif n == 39:
             line_pairs = [(i, i+1) for i in range(38)] + [(0, 10), (10, 20), (20, 30)]
+        elif n == 57:
+            # IEEE 57-bus simplified ring-radial topology
+            line_pairs = [(i, i+1) for i in range(56)] + [(0, 28), (14, 42), (28, 56)]
+        elif n == 118:
+            # IEEE 118-bus simplified topology
+            line_pairs = [(i, i+1) for i in range(117)] + [(0, 39), (39, 78), (78, 117)]
         else:
-            line_pairs = [(i, (i+1) % self.net_data.n_buses) for i in range(self.net_data.n_buses)]
+            line_pairs = [(i, (i+1) % n) for i in range(n)]
 
         for from_bus, to_bus in line_pairs:
             if from_bus < self.net_data.n_buses and to_bus < self.net_data.n_buses:
@@ -188,25 +200,42 @@ class PandapowerNetwork:
         return fc
 
     def _apply_topology_changes(self, changes: Dict):
-        """Apply N-1 contingencies, line outages, etc."""
+        """Apply N-1 contingencies, line outages, bus splits, and outage factors."""
         if not PANDAPOWER_AVAILABLE or self.pp_net is None:
             return
 
         # Line outages
         if "line_outages" in changes:
             for line_idx in changes["line_outages"]:
-                if line_idx < len(self.pp_net.line):
+                if isinstance(line_idx, int) and 0 <= line_idx < len(self.pp_net.line):
                     self.pp_net.line.at[line_idx, "in_service"] = False
+                elif isinstance(line_idx, str) and line_idx.startswith("L"):
+                    # Handle "L1", "L2" format
+                    try:
+                        idx = int(line_idx[1:]) - 1
+                        if 0 <= idx < len(self.pp_net.line):
+                            self.pp_net.line.at[idx, "in_service"] = False
+                    except ValueError:
+                        pass
 
         # Bus splits (open switches)
         if "bus_splits" in changes:
             for bus_idx in changes["bus_splits"]:
                 if bus_idx in self.bus_map:
-                    # Disconnect all lines connected to this bus
+                    pp_bus = self.bus_map[bus_idx]
                     for line_idx in range(len(self.pp_net.line)):
-                        if (self.pp_net.line.at[line_idx, "from_bus"] == self.bus_map[bus_idx] or
-                            self.pp_net.line.at[line_idx, "to_bus"] == self.bus_map[bus_idx]):
+                        if (self.pp_net.line.at[line_idx, "from_bus"] == pp_bus or
+                            self.pp_net.line.at[line_idx, "to_bus"] == pp_bus):
                             self.pp_net.line.at[line_idx, "in_service"] = False
+
+        # Outage factor (scale all line impedances)
+        if "outage_factor" in changes:
+            factor = changes["outage_factor"]
+            if isinstance(factor, (int, float)) and factor > 0:
+                for line_idx in range(len(self.pp_net.line)):
+                    if self.pp_net.line.at[line_idx, "in_service"]:
+                        self.pp_net.line.at[line_idx, "r_ohm_per_km"] *= factor
+                        self.pp_net.line.at[line_idx, "x_ohm_per_km"] *= factor
 
     def update_pv_penetration(self, pv_level: float):
         """Update PV generation scaling for all DG buses."""
@@ -242,6 +271,23 @@ class PandapowerNetwork:
         return loadings
 
 
+# Supported network sizes for validation
+SUPPORTED_NETWORK_SIZES = {3, 8, 14, 30, 39, 57, 118}
+
+
 def build_pandapower_network(net_data: NetworkData) -> PandapowerNetwork:
     """Factory function to create PandapowerNetwork from NetworkData."""
+    if net_data.n_buses not in SUPPORTED_NETWORK_SIZES:
+        raise ValueError(
+            f"Network size {net_data.n_buses} not supported. "
+            f"Supported: {sorted(SUPPORTED_NETWORK_SIZES)}"
+        )
     return PandapowerNetwork(net_data)
+
+
+def get_supported_networks() -> Dict[str, int]:
+    """Return mapping of network names to bus counts."""
+    return {
+        "3bus": 3, "8bus": 8, "14bus": 14, "30bus": 30,
+        "39bus": 39, "57bus": 57, "118bus": 118,
+    }

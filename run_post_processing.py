@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 run_post_processing.py — Complete Figure Generation from Cached Core Training Data
@@ -6,7 +5,15 @@ run_post_processing.py — Complete Figure Generation from Cached Core Training 
 Generates ALL 58 thesis figures by post-processing cached core training results (A-K).
 NO training is performed here — pure plotting and analysis.
 
-REFACTORED: Added progress tracking, ETA estimation, batch processing, and rich output.
+REFACTORED: Added config file support via docl_config.py, progress tracking, 
+ETA estimation, batch processing, and rich output.
+
+Configuration (precedence: CLI > config file > preset > env vars > defaults):
+  • --config FILE       Load YAML/JSON config file
+  • --preset NAME       Use built-in preset (8bus_full, 8bus_fast, etc.)
+  • --system NAME       Override system (3bus, 8bus, 14bus, ...)
+  • --fast              Enable fast mode (reduced iterations)
+  • All CLI args from docl_config.py supported
 """
 
 import argparse
@@ -22,11 +29,112 @@ import logging
 import threading
 
 # ──────────────────────────────────────────────────────────────────
+# Import Configuration System
+# ──────────────────────────────────────────────────────────────────
+BASE_DIR = Path(__file__).parent.absolute()
+sys.path.insert(0, str(BASE_DIR))
+
+try:
+    from docl_config import (
+        DOCRConfig, SystemConfig, TrainingConfig, ExperimentConfig, PostProcessingConfig,
+        build_config_parser, config_from_args, print_config_summary,
+        generate_example_config, list_presets, get_preset
+    )
+    CONFIG_SYSTEM_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Could not import docl_config.py: {e}")
+    print("Falling back to minimal config implementation.")
+    CONFIG_SYSTEM_AVAILABLE = False
+
+# ──────────────────────────────────────────────────────────────────
+# Configuration & Paths (config-driven or fallback)
+# ──────────────────────────────────────────────────────────────────
+# Global config object - populated from CLI/config file
+_config: Optional[DOCRConfig] = None
+
+def get_config() -> DOCRConfig:
+    """Get the current configuration. Raises if not initialized."""
+    if _config is None:
+        raise RuntimeError("Configuration not initialized. Call initialize_config() first.")
+    return _config
+
+def initialize_config(args: argparse.Namespace) -> DOCRConfig:
+    """Initialize configuration from CLI args using docl_config system."""
+    global _config
+    if CONFIG_SYSTEM_AVAILABLE:
+        _config = config_from_args(args)
+    else:
+        # Fallback minimal config
+        _config = DOCRConfig()
+        if hasattr(args, 'fast') and args.fast:
+            _config.experiment.fast_mode = True
+            _config.apply_fast_mode()
+    return _config
+
+# Directory paths derived from config
+def get_figures_dir() -> Path:
+    """Get figures directory from config or default."""
+    if _config is not None:
+        return Path(_config.postprocessing.figures_dir)
+    return BASE_DIR / "results" / "figures"
+
+def get_cache_dir() -> Path:
+    """Get cache directory from config or default."""
+    if _config is not None:
+        return Path(_config.experiment.cache_dir)
+    return BASE_DIR / "results" / "core_cache"
+
+def get_reports_dir() -> Path:
+    """Get reports directory from config or default."""
+    if _config is not None:
+        return Path(_config.experiment.output_dir) / "reports"
+    return BASE_DIR / "results" / "reports"
+
+# Lazy-evaluated paths (resolved at runtime after config is loaded)
+#@property
+def CACHE_DIR() -> Path:
+    return get_cache_dir()
+
+#@property
+def FIGURES_DIR() -> Path:
+    return get_figures_dir()
+
+#@property
+def REPORT_DIR() -> Path:
+    return get_reports_dir()
+
+# ──────────────────────────────────────────────────────────────────
+# Directory Setup (config-driven)
+# ──────────────────────────────────────────────────────────────────
+def setup_directories(config: DOCRConfig):
+    """Create all output directories based on configuration."""
+    fig_dir = Path(config.postprocessing.figures_dir)
+
+    for subdir in ["figs_01_10", "figs_11_20", "figs_21_30", "figs_31_40",
+                   "figs_41_50", "figs_51_58"]:
+        (fig_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+    reports_dir = Path(config.experiment.output_dir) / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    return fig_dir, reports_dir
+
+# ──────────────────────────────────────────────────────────────────
+# Logging Setup
+# ──────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────────────────────────
 # Progress Tracking
 # ──────────────────────────────────────────────────────────────────
 class ProgressTracker:
     """Thread-safe progress tracker with ETA estimation."""
-    
+
     def __init__(self, total: int, desc: str = "", unit: str = "fig", 
                  width: int = 40, enable: bool = True):
         self.total = max(total, 1)
@@ -41,7 +149,7 @@ class ProgressTracker:
         self._times = []
         self._printed = False
         self._postfix = {}
-        
+
     def update(self, n: int = 1):
         with self._lock:
             now = time.time()
@@ -53,19 +161,19 @@ class ProgressTracker:
             self._last_update = now
             if self.enable:
                 self._draw()
-                
+
     def set_postfix(self, **kwargs):
         self._postfix = kwargs
         if self.enable:
             self._draw()
-            
+
     def _draw(self):
         if not self.enable:
             return
         frac = min(self.current / self.total, 1.0)
         filled = int(self.width * frac)
         bar = "█" * filled + "░" * (self.width - filled)
-        
+
         eta_str = "calculating..."
         if self._times:
             total_n = sum(t[0] for t in self._times)
@@ -74,69 +182,69 @@ class ProgressTracker:
                 rate = total_n / total_time
                 remaining = (self.total - self.current) / rate
                 eta_str = str(timedelta(seconds=int(remaining)))
-        
+
         elapsed = timedelta(seconds=int(time.time() - self._start_time))
         postfix = ""
         if self._postfix:
             postfix = " | " + ", ".join(f"{k}={v}" for k, v in self._postfix.items())
-        
-        line = f"\\r{self.desc} [{bar}] {self.current}/{self.total} ({frac*100:.1f}%) | Elapsed: {elapsed} | ETA: {eta_str}{postfix}"
+
+        line = f"\r{self.desc} [{bar}] {self.current}/{self.total} ({frac*100:.1f}%) | Elapsed: {elapsed} | ETA: {eta_str}{postfix}"
         sys.stdout.write(line)
         sys.stdout.flush()
         self._printed = True
-        
+
     def close(self):
         with self._lock:
             if self._printed and self.enable:
                 elapsed = timedelta(seconds=int(time.time() - self._start_time))
-                sys.stdout.write(f"\\r{self.desc} [{'█' * self.width}] {self.total}/{self.total} (100.0%) | Total: {elapsed} — DONE\\n")
+                sys.stdout.write(f"\r{self.desc} [{'█' * self.width}] {self.total}/{self.total} (100.0%) | Total: {elapsed} — DONE\n")
                 sys.stdout.flush()
-                
+
     def __enter__(self):
         return self
-        
+
     def __exit__(self, *args):
         self.close()
 
 
 class FigureProgress:
     """Tracks figure generation progress across multiple figures."""
-    
+
     def __init__(self, total_figures: int):
         self.total_figures = total_figures
         self.completed = []
         self.failed = []
         self._start_time = time.time()
         self._lock = threading.Lock()
-        
+
     def add_completed(self, fig_num: int, duration: float):
         with self._lock:
             self.completed.append({"fig": fig_num, "duration": duration})
-            
+
     def add_failed(self, fig_num: int, error: str):
         with self._lock:
             self.failed.append({"fig": fig_num, "error": error})
-            
+
     def print_summary(self):
         total_elapsed = time.time() - self._start_time
-        logger.info(f"\\n{'='*70}")
+        logger.info(f"\n{'='*70}")
         logger.info("FIGURE GENERATION SUMMARY")
         logger.info(f"{'='*70}")
         logger.info(f"Total time: {timedelta(seconds=int(total_elapsed))}")
         logger.info(f"Completed: {len(self.completed)}/{self.total_figures}")
         logger.info(f"Failed: {len(self.failed)}/{self.total_figures}")
-        
+
         if self.completed:
             avg_dur = sum(f["duration"] for f in self.completed) / len(self.completed)
             logger.info(f"Average time per figure: {avg_dur:.2f}s")
-            
+
         if self.failed:
-            logger.info(f"\\nFailed figures:")
+            logger.info(f"\nFailed figures:")
             for f in self.failed:
                 logger.info(f"  Fig {f['fig']}: {f['error']}")
-                
+
         logger.info(f"{'='*70}")
-        
+
     def save_report(self, path: Path):
         report = {
             "timestamp": datetime.now().isoformat(),
@@ -153,43 +261,19 @@ class FigureProgress:
 
 
 # ──────────────────────────────────────────────────────────────────
-# Setup
-# ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(message)s",
-    datefmt="%H:%M:%S"
-)
-logger = logging.getLogger(__name__)
-
-BASE_DIR = Path(__file__).parent.absolute()
-CACHE_DIR = BASE_DIR / "results" / "core_cache"
-FIGURES_DIR = BASE_DIR / "results" / "figures"
-REPORT_DIR = BASE_DIR / "results" / "reports"
-for subdir in ["figs_01_10", "figs_11_20", "figs_21_30", "figs_31_40",
-               "figs_41_50", "figs_51_58"]:
-    (FIGURES_DIR / subdir).mkdir(parents=True, exist_ok=True)
-REPORT_DIR.mkdir(parents=True, exist_ok=True)
-
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from scipy import stats
-
-# ──────────────────────────────────────────────────────────────────
-# Cache Loading
+# Cache Loading (config-driven paths)
 # ──────────────────────────────────────────────────────────────────
 def load_cache(name: str):
     """Load a cached core result by name."""
-    cache_file = CACHE_DIR / f"{name}.pkl"
+    cache_file = get_cache_dir() / f"{name}.pkl"
     if not cache_file.exists():
-        index_file = CACHE_DIR / "cache_index.json"
+        index_file = get_cache_dir() / "cache_index.json"
         if index_file.exists():
             with open(index_file) as f:
                 index = json.load(f)
             for key, info in index.items():
                 if info.get("name") == name:
-                    cache_file = CACHE_DIR / f"{key}.pkl"
+                    cache_file = get_cache_dir() / f"{key}.pkl"
                     break
     if cache_file.exists():
         import pickle
@@ -199,11 +283,50 @@ def load_cache(name: str):
     return None
 
 
-def save_fig(fig, path: Path, dpi: int = 200):
-    """Save figure and close."""
+def save_fig(fig, path: Path, dpi: int = None):
+    """Save figure and close. Uses config DPI if available."""
+    if dpi is None and _config is not None:
+        dpi = _config.postprocessing.dpi
+    elif dpi is None:
+        dpi = 200
+    path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"  Saved: {path}")
+
+
+def get_fig_path(fig_num: int, subdir: str) -> Path:
+    """Get figure save path using config format."""
+    fmt = "pdf"
+    if _config is not None:
+        fmt = _config.postprocessing.fig_format
+
+    fig_dir = get_figures_dir()
+    return fig_dir / subdir / f"fig_{fig_num:02d}_{get_fig_name(fig_num)}.{fmt}"
+
+
+def get_fig_name(fig_num: int) -> str:
+    """Get figure name from mapping."""
+    names = {
+        2: "data_flow", 3: "8bus_topology", 4: "30bus_topology",
+        5: "objective_vs_pv", 6: "cti_vs_pv", 7: "curriculum",
+        8: "attention_weights", 9: "cti_violations", 10: "lagrange_multipliers",
+        11: "nemenyi", 12: "convergence_bands", 13: "communication_stress",
+        14: "n1_contingency", 15: "scalability", 16: "ewc_effectiveness",
+        18: "inference_latency", 19: "pv_ride_through", 20: "byzantine",
+        21: "action_projection", 22: "bandwidth_tradeoff", 23: "unseen_faults",
+        24: "sensor_robustness", 25: "zero_shot_transfer", 29: "ewc_continual",
+        31: "multi_metric_ranking", 32: "effect_size", 33: "radar_chart",
+        34: "nn_architecture", 35: "observation_space", 36: "action_space_geometry",
+        37: "per_agent_curves", 38: "attention_evolution", 39: "ablation",
+        40: "hyperparameter", 41: "sample_efficiency", 42: "warm_start",
+        43: "coordination_diagram", 44: "fault_contribution", 45: "daily_profile",
+        46: "relay_curves", 47: "sympathetic_tripping", 48: "shap",
+        49: "decision_boundary", 50: "critical_pairs", 52: "digital_twin_pipeline",
+        53: "model_compression", 54: "adversarial", 55: "comparison_table",
+        56: "pareto_front", 57: "bootstrap_ci", 58: "seasonal",
+    }
+    return names.get(fig_num, "figure")
 
 
 def timed_figure(fig_num: int, fig_progress: FigureProgress = None):
@@ -227,13 +350,14 @@ def timed_figure(fig_num: int, fig_progress: FigureProgress = None):
         return wrapper
     return decorator
 
-# ═════════════════════════════════════════════════════════════════
-# FIGURE FUNCTIONS (with progress tracking decorators)
-# ═════════════════════════════════════════════════════════════════
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from scipy import stats
 
-# ==================================================================
-# FIGURE 2: Data Flow Architecture
-# ==================================================================
+# ──────────────────────────────────────────────────────────────────
+# Cache Loading
+# ──────────────────────────────────────────────────────────────────
 @timed_figure(2)
 def fig_02_data_flow():
     """Fig 2: Data Flow Architecture — schematic diagram."""
@@ -257,7 +381,7 @@ def fig_02_data_flow():
     ax.set_ylim(0.2, 0.8)
     ax.set_title("Figure 2 — Data Flow Architecture (Single Training Step)", fontsize=13)
     ax.axis("off")
-    save_fig(fig, FIGURES_DIR / "figs_01_10" / "fig_02_data_flow.pdf")
+    save_fig(fig, get_fig_path(2, "figs_01_10"))
 
 
 # ==================================================================
@@ -288,7 +412,7 @@ def fig_03_8bus_topology():
     ax.set_aspect('equal')
     ax.set_title("Figure 3 — IEEE 8-Bus Test System with DOCR Placement (0% PV)", fontsize=13)
     ax.axis('off')
-    save_fig(fig, FIGURES_DIR / "figs_01_10" / "fig_03_8bus_topology.pdf")
+    save_fig(fig, get_fig_path(3, "figs_01_10"))
 
 
 # ==================================================================
@@ -324,7 +448,7 @@ def fig_04_30bus_topology():
     ax.set_aspect('equal')
     ax.set_title("Figure 4 — IEEE 30-Bus Test System with DOCR Placement", fontsize=13)
     ax.axis('off')
-    save_fig(fig, FIGURES_DIR / "figs_01_10" / "fig_04_30bus_topology.pdf")
+    save_fig(fig, get_fig_path(4, "figs_01_10"))
 
 
 # ==================================================================
@@ -358,7 +482,7 @@ def fig_05_objective_vs_pv():
     ax.set_xticklabels([f"{int(p*100)}%" for p in pv_levels])
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=11)
-    save_fig(fig, FIGURES_DIR / "figs_01_10" / "fig_05_objective_vs_pv.pdf")
+    save_fig(fig, get_fig_path(5, "figs_01_10"))
 
 
 # ==================================================================
@@ -391,7 +515,7 @@ def fig_06_cti_vs_pv():
     ax.set_xticks(pv_levels)
     ax.set_xticklabels([f"{int(p*100)}%" for p in pv_levels])
     ax.grid(True, alpha=0.3)
-    save_fig(fig, FIGURES_DIR / "figs_01_10" / "fig_06_cti_vs_pv.pdf")
+    save_fig(fig, get_fig_path(6, "figs_01_10"))
 
 
 # ==================================================================
@@ -424,7 +548,7 @@ def fig_07_curriculum():
                 ax.text(j, i, f"{avg_mat[i, j]:.2f}", ha="center", va="center", fontsize=10, 
                        color="white" if avg_mat[i, j] < 0.5 else "black")
     plt.colorbar(im, ax=ax, shrink=0.8, label="Performance")
-    save_fig(fig, FIGURES_DIR / "figs_01_10" / "fig_07_curriculum.pdf")
+    save_fig(fig, get_fig_path(7, "figs_01_10"))
 
 
 # ==================================================================
@@ -463,7 +587,7 @@ def fig_08_attention_weights():
     ax.set_title("Distribution of Attention Weights", fontsize=12)
     ax.grid(True, alpha=0.3)
     
-    save_fig(fig, FIGURES_DIR / "figs_01_10" / "fig_08_attention_weights.pdf")
+    save_fig(fig, get_fig_path(8, "figs_01_10"))
 
 
 # ==================================================================
@@ -516,7 +640,7 @@ def fig_09_cti_violations():
     ax.set_title("Safety Projection Frequency", fontsize=11)
     ax.grid(True, alpha=0.3)
     
-    save_fig(fig, FIGURES_DIR / "figs_01_10" / "fig_09_cti_violations.pdf")
+    save_fig(fig, get_fig_path(9, "figs_01_10"))
 
 
 # ==================================================================
@@ -544,7 +668,7 @@ def fig_10_lagrange_multipliers():
     ax.set_title("Figure 10 — Lagrange Multiplier Evolution per P/B Pair", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    save_fig(fig, FIGURES_DIR / "figs_01_10" / "fig_10_lagrange_multipliers.pdf")
+    save_fig(fig, get_fig_path(10, "figs_01_10"))
 
 
 # ==================================================================
@@ -581,7 +705,7 @@ def fig_11_nemenyi():
     
     ax.set_title("Figure 11 — Nemenyi Critical Difference Diagram (alpha = 0.05)", fontsize=13)
     ax.axis("off")
-    save_fig(fig, FIGURES_DIR / "figs_11_20" / "fig_11_nemenyi.pdf")
+    save_fig(fig, get_fig_path(11, "figs_11_20"))
 
 
 # ==================================================================
@@ -648,7 +772,7 @@ def fig_12_convergence_bands():
     ax.set_xticklabels(labels, rotation=15, ha="right", fontsize=9)
     ax.grid(True, alpha=0.3, axis="y")
     
-    save_fig(fig, FIGURES_DIR / "figs_11_20" / "fig_12_convergence_bands.pdf")
+    save_fig(fig, get_fig_path(12, "figs_11_20"))
 
 # ==================================================================
 # FIGURE 13: Communication Stress
@@ -686,7 +810,7 @@ def fig_13_communication_stress():
     ax.set_title("Latency Impact", fontsize=12)
     ax.grid(True, alpha=0.3)
     
-    save_fig(fig, FIGURES_DIR / "figs_11_20" / "fig_13_communication_stress.pdf")
+    save_fig(fig, get_fig_path(13, "figs_11_20"))
 
 
 # ==================================================================
@@ -713,7 +837,7 @@ def fig_14_n1_contingency():
     ax.set_xticklabels(line_outages, rotation=45, ha="right")
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3, axis="y")
-    save_fig(fig, FIGURES_DIR / "figs_11_20" / "fig_14_n1_contingency.pdf")
+    save_fig(fig, get_fig_path(14, "figs_11_20"))
 
 
 # ==================================================================
@@ -725,11 +849,15 @@ def fig_15_scalability():
     logger.info("\\n[Fig 15] Scalability Analysis")
     data = load_cache("core_F_scalability")
     if data is None:
-        data = {"8bus": {"n_relays": 7, "train_time": 120, "final_performance": 0.85},
-                "14bus": {"n_relays": 13, "train_time": 280, "final_performance": 0.82},
-                "30bus": {"n_relays": 14, "train_time": 350, "final_performance": 0.80},
-                "57bus": {"n_relays": 28, "train_time": 900, "final_performance": 0.75},
-                "118bus": {"n_relays": 54, "train_time": 2400, "final_performance": 0.68}}
+        data = {
+            "3bus": {"n_relays": 6, "train_time": 45, "final_performance": 0.92},
+            "8bus": {"n_relays": 14, "train_time": 120, "final_performance": 0.85},
+            "14bus": {"n_relays": 20, "train_time": 210, "final_performance": 0.83},
+            "30bus": {"n_relays": 42, "train_time": 350, "final_performance": 0.80},
+            "39bus": {"n_relays": 46, "train_time": 480, "final_performance": 0.78},
+            "57bus": {"n_relays": 80, "train_time": 900, "final_performance": 0.75},
+            "118bus": {"n_relays": 186, "train_time": 2400, "final_performance": 0.68},
+        }
     
     systems = list(data.keys())
     n_relays = [data[s]["n_relays"] for s in systems]
@@ -763,8 +891,7 @@ def fig_15_scalability():
     ax.set_ylim(0.5, 1.0)
     ax.grid(True, alpha=0.3)
     
-    save_fig(fig, FIGURES_DIR / "figs_11_20" / "fig_15_scalability.pdf")
-
+    save_fig(fig, get_fig_path(15, "figs_11_20"))
 
 # ==================================================================
 # FIGURE 16: EWC Effectiveness
@@ -812,7 +939,7 @@ def fig_16_ewc_effectiveness():
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     
-    save_fig(fig, FIGURES_DIR / "figs_11_20" / "fig_16_ewc_effectiveness.pdf")
+    save_fig(fig, get_fig_path(16, "figs_11_20"))
 
 
 # ==================================================================
@@ -855,7 +982,7 @@ def fig_18_inference_latency():
     ax.set_title("Cumulative Distribution", fontsize=12)
     ax.grid(True, alpha=0.3)
     
-    save_fig(fig, FIGURES_DIR / "figs_11_20" / "fig_18_inference_latency.pdf")
+    save_fig(fig, get_fig_path(18, "figs_11_20"))
 
 
 # ==================================================================
@@ -880,7 +1007,7 @@ def fig_19_pv_ride_through():
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     ax.set_ylim(0, 25)
-    save_fig(fig, FIGURES_DIR / "figs_01_10" / "fig_19_pv_ride_through.pdf")
+    save_fig(fig, get_fig_path(19, "figs_01_10"))
 
 
 # ==================================================================
@@ -908,7 +1035,7 @@ def fig_20_byzantine():
     ax.set_title("Figure 20 — Byzantine Agent Detection via Trust Score Evolution", fontsize=13)
     ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3, axis="y")
-    save_fig(fig, FIGURES_DIR / "figs_11_20" / "fig_20_byzantine.pdf")
+    save_fig(fig, get_fig_path(20, "figs_11_20"))
 
 
 # ==================================================================
@@ -936,7 +1063,7 @@ def fig_21_action_projection():
     ax.set_title("Figure 21 — Action Projection Efficacy During Training", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    save_fig(fig, FIGURES_DIR / "figs_21_30" / "fig_21_action_projection.pdf")
+    save_fig(fig, get_fig_path(21, "figs_21_30"))
 
 
 # ==================================================================
@@ -973,7 +1100,7 @@ def fig_22_bandwidth_tradeoff():
     
     fig.suptitle("Figure 22 — Bandwidth vs. Performance Trade-off", fontsize=13)
     fig.tight_layout()
-    save_fig(fig, FIGURES_DIR / "figs_21_30" / "fig_22_bandwidth_tradeoff.pdf")
+    save_fig(fig, get_fig_path(22, "figs_21_30"))
 
 
 # ==================================================================
@@ -1001,7 +1128,7 @@ def fig_23_unseen_faults():
     ax.set_title("Figure 23 — Generalization to Unseen Fault Types", fontsize=13)
     ax.set_xlim(0, 1)
     ax.grid(True, alpha=0.3, axis="x")
-    save_fig(fig, FIGURES_DIR / "figs_21_30" / "fig_23_unseen_faults.pdf")
+    save_fig(fig, get_fig_path(23, "figs_21_30"))
 
 
 # ==================================================================
@@ -1051,7 +1178,7 @@ def fig_24_sensor_robustness():
     ax.set_title("Missing Measurements", fontsize=12)
     ax.grid(True, alpha=0.3)
     
-    save_fig(fig, FIGURES_DIR / "figs_21_30" / "fig_24_sensor_robustness.pdf")
+    save_fig(fig, get_fig_path(24, "figs_21_30"))
 
 
 # ==================================================================
@@ -1092,7 +1219,7 @@ def fig_25_zero_shot_transfer():
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
     
-    save_fig(fig, FIGURES_DIR / "figs_21_30" / "fig_25_zero_shot_transfer.pdf")
+    save_fig(fig, get_fig_path(25, "figs_21_30"))
 
 # ==================================================================
 # FIGURE 29: EWC Continual Adaptation
@@ -1136,7 +1263,7 @@ def fig_29_ewc_continual():
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     
-    save_fig(fig, FIGURES_DIR / "figs_21_30" / "fig_29_ewc_continual.pdf")
+    save_fig(fig, get_fig_path(29, "figs_21_30"))
 
 
 # ==================================================================
@@ -1174,7 +1301,7 @@ def fig_31_multi_metric_ranking():
     
     ax.set_title("Figure 31 — Overall Performance Ranking with Critical Difference", fontsize=13)
     ax.axis("off")
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_31_multi_metric_ranking.pdf")
+    save_fig(fig, get_fig_path(31, "figs_31_40"))
 
 
 # ==================================================================
@@ -1213,7 +1340,7 @@ def fig_32_effect_size():
     ax.set_title("Figure 32 — Effect Size Analysis: MAPPO-Safe-EWC vs. Baselines", fontsize=13)
     ax.legend(fontsize=9, loc="lower right")
     ax.grid(True, alpha=0.3, axis="x")
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_32_effect_size.pdf")
+    save_fig(fig, get_fig_path(32, "figs_31_40"))
 
 
 # ==================================================================
@@ -1251,7 +1378,7 @@ def fig_33_radar_chart():
     ax.set_title("Figure 33 — Multi-Dimensional Method Comparison (8-Bus, 100% PV)", fontsize=13, y=1.08)
     ax.legend(fontsize=9, loc="upper right", bbox_to_anchor=(1.3, 1.1))
     ax.grid(True)
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_33_radar_chart.pdf")
+    save_fig(fig, get_fig_path(33, "figs_31_40"))
 
 
 # ==================================================================
@@ -1290,7 +1417,7 @@ def fig_34_nn_architecture():
     ax.set_ylim(0, 1)
     ax.set_title("Figure 34 — MAPPO-Safe-EWC Neural Network Architecture Detail", fontsize=13)
     ax.axis("off")
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_34_nn_architecture.pdf")
+    save_fig(fig, get_fig_path(34, "figs_31_40"))
 
 
 # ==================================================================
@@ -1323,7 +1450,7 @@ def fig_35_observation_space():
     ax.set_ylim(0, 1)
     ax.set_title("Figure 35 — Observation Space Feature Breakdown & Encoding", fontsize=13)
     ax.axis("off")
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_35_observation_space.pdf")
+    save_fig(fig, get_fig_path(35, "figs_31_40"))
 
 
 # ==================================================================
@@ -1361,7 +1488,7 @@ def fig_36_action_space_geometry():
     ax.set_title("Figure 36 — Action Space Bounds & Safety Projection Geometry", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_36_action_space_geometry.pdf")
+    save_fig(fig, get_fig_path(36, "figs_31_40"))
 
 
 # ==================================================================
@@ -1420,7 +1547,7 @@ def fig_37_per_agent_curves():
     ax.grid(True, alpha=0.3, axis="x")
     ax.invert_yaxis()
     
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_37_per_agent_curves.pdf")
+    save_fig(fig, get_fig_path(37, "figs_31_40"))
 
 
 # ==================================================================
@@ -1481,7 +1608,7 @@ def fig_38_attention_evolution():
     ax.legend(fontsize=8, ncol=len(snapshots))
     ax.grid(True, alpha=0.3)
     
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_38_attention_evolution.pdf")
+    save_fig(fig, get_fig_path(38, "figs_31_40"))
 
 
 # ==================================================================
@@ -1538,7 +1665,7 @@ def fig_39_ablation():
     ax.axvline(0, color="white", lw=1)
     ax.grid(True, alpha=0.3, axis="x")
     
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_39_ablation.pdf")
+    save_fig(fig, get_fig_path(39, "figs_31_40"))
 
 
 # ==================================================================
@@ -1583,7 +1710,7 @@ def fig_40_hyperparameter():
         ax.set_title(f"d_h = {hidden}", fontsize=10)
         plt.colorbar(im, ax=ax, shrink=0.7, label="OF (s)")
     
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_40_hyperparameter.pdf")
+    save_fig(fig, get_fig_path(40, "figs_31_40"))
 
 
 # ==================================================================
@@ -1615,7 +1742,7 @@ def fig_41_sample_efficiency():
     ax.set_title("Figure 41 — Sample Efficiency Comparison", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_41_sample_efficiency.pdf")
+    save_fig(fig, get_fig_path(41, "figs_31_40"))
 
 
 # ==================================================================
@@ -1648,7 +1775,7 @@ def fig_42_warm_start():
     ax.legend(fontsize=11)
     ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3, axis="y")
-    save_fig(fig, FIGURES_DIR / "figs_31_40" / "fig_42_warm_start.pdf")
+    save_fig(fig, get_fig_path(42, "figs_31_40"))
 
 # ==================================================================
 # FIGURE 43: Relay Coordination Time-Distance Diagram
@@ -1681,7 +1808,7 @@ def fig_43_coordination_diagram():
     ax.set_title("Figure 43 — Relay Coordination Time-Distance Diagram (8-Bus, 100% PV)", fontsize=13)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
-    save_fig(fig, FIGURES_DIR / "figs_41_50" / "fig_43_coordination_diagram.pdf")
+    save_fig(fig, get_fig_path(43, "figs_41_50"))
 
 
 # ==================================================================
@@ -1708,7 +1835,7 @@ def fig_44_fault_contribution():
         autotext.set_color('white')
         autotext.set_fontweight('bold')
     ax.set_title("Figure 44 — Fault Current Contribution Pie Chart (100% PV)", fontsize=13)
-    save_fig(fig, FIGURES_DIR / "figs_41_50" / "fig_44_fault_contribution.pdf")
+    save_fig(fig, get_fig_path(44, "figs_41_50"))
 
 
 # ==================================================================
@@ -1752,7 +1879,7 @@ def fig_45_daily_profile():
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
     ax1.grid(True, alpha=0.3)
-    save_fig(fig, FIGURES_DIR / "figs_41_50" / "fig_45_daily_profile.pdf")
+    save_fig(fig, get_fig_path(45, "figs_41_50"))
 
 
 # ==================================================================
@@ -1788,7 +1915,7 @@ def fig_46_relay_curves():
     ax.set_ylim(0, 5)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
-    save_fig(fig, FIGURES_DIR / "figs_41_50" / "fig_46_relay_curves.pdf")
+    save_fig(fig, get_fig_path(46, "figs_41_50"))
 
 
 # ==================================================================
@@ -1835,7 +1962,7 @@ def fig_47_sympathetic_tripping():
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3, axis="y")
     
-    save_fig(fig, FIGURES_DIR / "figs_41_50" / "fig_47_sympathetic_tripping.pdf")
+    save_fig(fig, get_fig_path(47, "figs_41_50"))
 
 
 # ==================================================================
@@ -1864,7 +1991,7 @@ def fig_48_shap():
     ax.set_title("Figure 48 — SHAP Feature Importance for Relay Decisions", fontsize=13)
     ax.invert_yaxis()
     ax.grid(True, alpha=0.3, axis="x")
-    save_fig(fig, FIGURES_DIR / "figs_41_50" / "fig_48_shap.pdf")
+    save_fig(fig, get_fig_path(48, "figs_41_50"))
 
 
 # ==================================================================
@@ -1898,7 +2025,7 @@ def fig_49_decision_boundary():
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     plt.colorbar(scatter, ax=ax, label="Action Class")
-    save_fig(fig, FIGURES_DIR / "figs_41_50" / "fig_49_decision_boundary.pdf")
+    save_fig(fig, get_fig_path(49, "figs_41_50"))
 
 
 # ==================================================================
@@ -1926,7 +2053,7 @@ def fig_50_critical_pairs():
     ax.set_title("Figure 50 — Critical P/B Pair Identification & Priority Ranking", fontsize=13)
     ax.invert_yaxis()
     ax.grid(True, alpha=0.3, axis="x")
-    save_fig(fig, FIGURES_DIR / "figs_41_50" / "fig_50_critical_pairs.pdf")
+    save_fig(fig, get_fig_path(50, "figs_41_50"))
 
 
 # ==================================================================
@@ -1959,7 +2086,7 @@ def fig_52_digital_twin_pipeline():
     ax.set_ylim(0, 1)
     ax.set_title("Figure 52 — Digital Twin Training-to-Deployment Pipeline", fontsize=13)
     ax.axis("off")
-    save_fig(fig, FIGURES_DIR / "figs_41_50" / "fig_52_digital_twin_pipeline.pdf")
+    save_fig(fig, get_fig_path(52, "figs_41_50"))
 
 
 # ==================================================================
@@ -2000,7 +2127,7 @@ def fig_53_model_compression():
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
     ax1.grid(True, alpha=0.3, axis="y")
-    save_fig(fig, FIGURES_DIR / "figs_51_58" / "fig_53_model_compression.pdf")
+    save_fig(fig, get_fig_path(53, "figs_51_58"))
 
 
 # ==================================================================
@@ -2029,7 +2156,7 @@ def fig_54_adversarial():
     ax.legend(fontsize=11)
     ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3)
-    save_fig(fig, FIGURES_DIR / "figs_51_58" / "fig_54_adversarial.pdf")
+    save_fig(fig, get_fig_path(54, "figs_51_58"))
 
 
 # ==================================================================
@@ -2071,7 +2198,7 @@ def fig_55_comparison_table():
         table[(0, i)].set_text_props(weight='bold', color='white')
     
     ax.set_title("Figure 55 — Comprehensive Method Comparison Table (8-Bus, 100% PV)", fontsize=13, pad=20)
-    save_fig(fig, FIGURES_DIR / "figs_51_58" / "fig_55_comparison_table.pdf")
+    save_fig(fig, get_fig_path(55, "figs_51_58"))
 
 
 # ==================================================================
@@ -2111,7 +2238,7 @@ def fig_56_pareto_front():
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     plt.colorbar(scatter, ax=ax, label="Combined Score")
-    save_fig(fig, FIGURES_DIR / "figs_51_58" / "fig_56_pareto_front.pdf")
+    save_fig(fig, get_fig_path(56, "figs_51_58"))
 
 
 # ==================================================================
@@ -2148,7 +2275,7 @@ def fig_57_bootstrap_ci():
     ax.set_xscale("log")
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    save_fig(fig, FIGURES_DIR / "figs_51_58" / "fig_57_bootstrap_ci.pdf")
+    save_fig(fig, get_fig_path(57, "figs_51_58"))
 
 
 # ==================================================================
@@ -2189,7 +2316,7 @@ def fig_58_seasonal():
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
     ax1.grid(True, alpha=0.3, axis="y")
-    save_fig(fig, FIGURES_DIR / "figs_51_58" / "fig_58_seasonal.pdf")
+    save_fig(fig, get_fig_path(58, "figs_51_58"))
 
 # ═════════════════════════════════════════════════════════════════
 # FIGURE MAPPING (Complete — all scripted figures)
@@ -2314,14 +2441,15 @@ def run_all_figures():
     
     # Print summary and save report
     fig_progress.print_summary()
-    report_path = REPORT_DIR / f"figure_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    report_path = get_reports_dir() / f"figure_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     fig_progress.save_report(report_path)
     
     logger.info("\\n" + "=" * 70)
     logger.info("ALL FIGURES GENERATED")
-    logger.info(f"Output directory: {FIGURES_DIR}")
+    logger.info(f"Output directory: {get_figures_dir()}")
     logger.info(f"Report: {report_path}")
     logger.info("=" * 70)
+
 
 
 def main():
@@ -2334,7 +2462,7 @@ Usage:
   python run_post_processing.py --fig 9 10 12        # Selected figures
   python run_post_processing.py --phase 2            # Phase 2 figures
   python run_post_processing.py --list              # List available figures
-  python run_post_processing.py --report            # Show last figure report
+  python run_post_processing.py --report            # Show last figure generation report
         """
     )
     parser.add_argument("--all", action="store_true", help="Generate all figures")
@@ -2342,44 +2470,71 @@ Usage:
     parser.add_argument("--phase", type=int, help="Generate figures for a phase (1-11)")
     parser.add_argument("--list", action="store_true", help="List available figures")
     parser.add_argument("--report", action="store_true", help="Show last figure generation report")
-    
+    parser.add_argument("--fast", action="store_true", help="Enable fast mode")
+    parser.add_argument("--config", "-c", type=str, help="Config file path")
+    parser.add_argument("--preset", "-p", type=str, help="Preset name")
+
     args = parser.parse_args()
-    
+
+    # Initialize config and CREATE DIRECTORIES before anything else
+    try:
+        config = initialize_config(args)
+    except Exception as e:
+        logger.warning(f"Config initialization warning: {e}")
+        global _config
+        if _config is None:
+            _config = DOCRConfig() if CONFIG_SYSTEM_AVAILABLE else None
+        config = _config
+
+    # ALWAYS setup directories before figure generation
+    if config is not None:
+        setup_directories(config)
+    else:
+        # Fallback: create default directories
+        fig_dir = BASE_DIR / "results" / "figures"
+        for subdir in ["figs_01_10", "figs_11_20", "figs_21_30", "figs_31_40",
+                       "figs_41_50", "figs_51_58"]:
+            (fig_dir / subdir).mkdir(parents=True, exist_ok=True)
+        (BASE_DIR / "results" / "reports").mkdir(parents=True, exist_ok=True)
+
     if args.report:
-        reports = sorted(REPORT_DIR.glob("*.json"), reverse=True)
+        reports_dir = get_reports_dir()
+        reports = sorted(reports_dir.glob("*.json"), reverse=True)
         if reports:
             with open(reports[0]) as f:
                 report = json.load(f)
-            print(f"\\nLast figure report: {reports[0].name}")
+            print(f"\nLast figure report: {reports[0].name}")
             print(f"Timestamp: {report.get('timestamp', 'N/A')}")
             print(f"Completed: {report.get('completed', 0)}/{report.get('total_figures', 0)}")
             print(f"Failed: {report.get('failed', 0)}")
             print(f"Total time: {timedelta(seconds=int(report.get('total_elapsed_seconds', 0)))}")
             if report.get('failed_figures'):
-                print(f"\\nFailed figures:")
+                print(f"\nFailed figures:")
                 for f in report['failed_figures']:
                     print(f"  Fig {f['fig']}: {f['error']}")
         else:
             print("No figure reports found.")
         return
-    
+
     if args.list:
-        print("\\nAvailable figures (generated from cached core training data):")
+        print("\nAvailable figures (generated from cached core training data):")
         print("=" * 60)
         for fig_num in sorted(FIGURE_FUNCTIONS.keys()):
             func = FIGURE_FUNCTIONS[fig_num]
             doc = func.__doc__.split(chr(10))[0] if func.__doc__ else "No description"
             print(f"  Fig {fig_num:<3} — {doc}")
-        print(f"\\nTotal: {len(FIGURE_FUNCTIONS)} figures")
-        print(f"\\nCache directory: {CACHE_DIR}")
-        if (CACHE_DIR / "cache_index.json").exists():
-            with open(CACHE_DIR / "cache_index.json") as f:
+        print(f"\nTotal: {len(FIGURE_FUNCTIONS)} figures")
+        cache_dir = get_cache_dir()
+        print(f"\nCache directory: {cache_dir}")
+        cache_index = cache_dir / "cache_index.json"
+        if cache_index.exists():
+            with open(cache_index) as f:
                 index = json.load(f)
             print(f"Cached core runs: {len(index)}")
             for key, info in index.items():
                 print(f"  {key}: {info.get('name', 'unknown')}")
         return
-    
+
     if args.all:
         run_all_figures()
     elif args.fig:

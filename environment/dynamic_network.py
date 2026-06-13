@@ -8,14 +8,18 @@ Dynamic Network wrapper that combines:
 - Scenario generator for training/validation data
 - Sensor array for realistic measurements
 
-Phase 1: Unified DistributionNetwork class for dynamic DOCR studies.
+Refactored for full IEEE test system support: 3, 8, 14, 30, 39, 57, 118 buses.
+All systems accessible via load_network() from network_data.py.
 """
 
 import numpy as np
 from typing import Dict, Tuple, Optional, List
 from dataclasses import dataclass
 
-from network.network_data import NetworkData, DGConfig, get_8bus, get_30bus, get_39bus
+from network.network_data import (
+    NetworkData, DGConfig, load_network, get_network_metadata,
+    get_3bus, get_8bus, get_14bus, get_30bus, get_39bus, get_57bus, get_118bus
+)
 from network.relay_physics import (
     compute_fault_currents_dynamic, FAULT_TYPES, 
     compute_operating_times, objective_function, check_constraints
@@ -50,6 +54,12 @@ class DynamicState:
     temperature: float  # °C
     load_pu: float      # Per-unit load
 
+    # System metadata (for multi-system training)
+    system_name: str = ""
+    n_buses: int = 0
+    n_relays: int = 0
+    n_pairs: int = 0
+
 
 class DistributionNetwork:
     """
@@ -61,6 +71,8 @@ class DistributionNetwork:
     3. Topology manager (N-1, reconfiguration)
     4. Scenario generator (profiles, fault scenarios)
     5. Sensor array (CT/PT with noise)
+
+    Supports all IEEE test systems: 3, 8, 14, 30, 39, 57, 118 buses.
 
     Usage:
         net = DistributionNetwork(get_8bus())
@@ -76,13 +88,18 @@ class DistributionNetwork:
     ):
         self.net_data = net_data
         self.name = net_data.name
+        self.n_buses = net_data.n_buses
+        self.n_relays = net_data.n_relays
+        self.n_pairs = net_data.n_pairs
 
-        # Pandapower network (if available)
+        # ── Pandapower network (if available) ─────────────────────────────────
         self.use_pandapower = use_pandapower
         if use_pandapower:
             try:
                 self.pp_net = build_pandapower_network(net_data)
-                self.pp_available = self.pp_net.pp_net is not None
+                self.pp_available = self.pp_net is not None and hasattr(self.pp_net, 'pp_net')
+                if self.pp_available:
+                    self.pp_available = self.pp_net.pp_net is not None
             except Exception:
                 self.pp_available = False
                 self.pp_net = None
@@ -90,7 +107,7 @@ class DistributionNetwork:
             self.pp_available = False
             self.pp_net = None
 
-        # PV plants (one per DG bus)
+        # ── PV plants (one per DG bus) ────────────────────────────────────────
         self.pv_plants = {}
         for dg in net_data.dg_buses:
             self.pv_plants[dg.bus_idx] = PVPlant(
@@ -99,27 +116,40 @@ class DistributionNetwork:
                 rated_voltage_kv=net_data.base_voltage,
             )
 
-        # Topology manager
-        n_lines = max(1, net_data.n_buses - 1)
+        # ── Topology manager ──────────────────────────────────────────────────
+        # n_lines: for line-based systems (14, 30, 39, 57, 118), n_relays = 2 * n_lines
+        # For hardcoded systems (3, 8), estimate from n_buses
+        if net_data.n_relays % 2 == 0 and net_data.n_relays >= 2 * (net_data.n_buses - 1):
+            n_lines = net_data.n_relays // 2
+        else:
+            n_lines = max(1, net_data.n_buses - 1)
+
+        n_switches = max(0, n_lines - 3)
+
         self.topology = TopologyManager(
             n_buses=net_data.n_buses,
             n_lines=n_lines,
-            n_switches=max(0, n_lines - 3),
+            n_switches=n_switches,
         )
 
-        # Scenario generator
+        # ── Scenario generator ────────────────────────────────────────────────
         self.scenario_gen = ScenarioGenerator(seed=42)
 
-        # Sensor array
+        # ── Sensor array ──────────────────────────────────────────────────────
         self.sensors = SensorArray(net_data.n_relays, seed=sensor_seed)
 
-        # Current state
+        # ── Current state ───────────────────────────────────────────────────────
         self.current_state = None
         self.time = 0.0
 
-        # Relay settings (initialized to defaults)
+        # ── Relay settings (initialized to defaults) ──────────────────────────
+        ps_min, ps_max = net_data.ps_bounds()
         self.TMS = np.full(net_data.n_relays, 0.5)
-        self.PS = (net_data.ps_bounds()[0] + net_data.ps_bounds()[1]) / 2
+        self.PS = (ps_min + ps_max) / 2.0
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Public API
+    # ═══════════════════════════════════════════════════════════════════════
 
     def reset(
         self,
@@ -186,11 +216,12 @@ class DistributionNetwork:
             pv_level, fault_type, self.topology.current_state
         )
 
-        # Initialize relay settings if not set
-        if self.TMS is None:
+        # Ensure relay settings are initialized
+        if self.TMS is None or len(self.TMS) != self.net_data.n_relays:
             self.TMS = np.full(self.net_data.n_relays, 0.5)
-        if self.PS is None:
-            self.PS = (self.net_data.ps_bounds()[0] + self.net_data.ps_bounds()[1]) / 2
+        if self.PS is None or len(self.PS) != self.net_data.n_relays:
+            ps_min, ps_max = self.net_data.ps_bounds()
+            self.PS = (ps_min + ps_max) / 2.0
 
         self.current_state = DynamicState(
             TMS=self.TMS.copy(),
@@ -205,6 +236,10 @@ class DistributionNetwork:
             irradiance=irradiance,
             temperature=temperature,
             load_pu=load_pu,
+            system_name=self.name,
+            n_buses=self.n_buses,
+            n_relays=self.n_relays,
+            n_pairs=self.n_pairs,
         )
 
         self.time = 0.0
@@ -342,6 +377,55 @@ class DistributionNetwork:
 
         return self.sensors.measure_all(true_currents, true_voltages, fault_condition)
 
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Scenario Generation
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def get_scenario_batch(
+        self,
+        n_scenarios: int = 10,
+        split: str = "train",
+    ) -> List[DynamicState]:
+        """Generate a batch of scenarios for training/validation."""
+        scenarios = []
+        for _ in range(n_scenarios):
+            scenario = self.scenario_gen._generate_single_scenario(split)
+            state = self.reset(
+                pv_level=scenario["pv_level"],
+                fault_type=scenario["fault_type"],
+                topology_changes=scenario["topology"],
+            )
+            scenarios.append(state)
+        return scenarios
+
+    def get_curriculum_batch(
+        self,
+        stage: int = 0,
+        n_scenarios: int = 100,
+    ) -> List[DynamicState]:
+        """Generate curriculum learning scenarios for a specific stage."""
+        pv_levels = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        pv_level = pv_levels[min(stage, len(pv_levels) - 1)]
+
+        scenarios = []
+        for _ in range(n_scenarios):
+            topology = {"line_outages": [], "switch_outages": []}
+            if stage >= 4 and np.random.random() < 0.3:
+                max_line = max(1, self.topology.n_lines)
+                topology["line_outages"] = [int(np.random.randint(0, max_line))]
+
+            state = self.reset(
+                pv_level=pv_level,
+                fault_type="3ph",
+                topology_changes=topology,
+            )
+            scenarios.append(state)
+        return scenarios
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Internal helpers
+    # ═══════════════════════════════════════════════════════════════════════
+
     def _update_pv_output(self, pv_level: float, irradiance: float, temperature: float):
         """Update all PV plant outputs."""
         for bus_idx, plant in self.pv_plants.items():
@@ -392,93 +476,61 @@ class DistributionNetwork:
         return fc
 
 
-    def evaluate_current_settings(
-        self,
-        TMS: Optional[np.ndarray] = None,
-        PS: Optional[np.ndarray] = None,
-    ) -> Dict:
-        """
-        Evaluate relay settings against current network state.
-
-        Returns:
-            Dict with OF, constraints, operating times, etc.
-        """
-        tms = TMS if TMS is not None else self.TMS
-        ps = PS if PS is not None else self.PS
-
-        topology_state = {"fault_currents": self.current_state.fault_currents} if self.current_state else None
-
-        OF, sum_top, penalty = objective_function(
-            self.net_data, tms, ps,
-            fault_type=self.current_state.fault_type if self.current_state else "3ph",
-            topology_state=topology_state,
-        )
-
-        constraints = check_constraints(
-            self.net_data, tms, ps,
-            fault_type=self.current_state.fault_type if self.current_state else "3ph",
-            topology_state=topology_state,
-        )
-
-        return {
-            "OF": OF,
-            "sum_top": sum_top,
-            "penalty": penalty,
-            "constraints": constraints,
-            "TMS": tms,
-            "PS": ps,
-        }
-
-    def get_scenario_batch(
-        self,
-        n_scenarios: int = 10,
-        split: str = "train",
-    ) -> List[DynamicState]:
-        """Generate a batch of scenarios for training/validation."""
-        scenarios = []
-        for _ in range(n_scenarios):
-            scenario = self.scenario_gen._generate_single_scenario(split)
-            state = self.reset(
-                pv_level=scenario["pv_level"],
-                fault_type=scenario["fault_type"],
-                topology_changes=scenario["topology"],
-            )
-            scenarios.append(state)
-        return scenarios
-
-    def get_curriculum_batch(
-        self,
-        stage: int = 0,
-        n_scenarios: int = 100,
-    ) -> List[DynamicState]:
-        """Generate curriculum learning scenarios for a specific stage."""
-        pv_levels = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
-        pv_level = pv_levels[min(stage, len(pv_levels) - 1)]
-
-        scenarios = []
-        for _ in range(n_scenarios):
-            topology = {"line_outages": [], "switch_outages": []}
-            if stage >= 4 and np.random.random() < 0.3:
-                topology["line_outages"] = [int(np.random.randint(0, max(1, self.net_data.n_buses - 1)))]
-
-            state = self.reset(
-                pv_level=pv_level,
-                fault_type="3ph",
-                topology_changes=topology,
-            )
-            scenarios.append(state)
-        return scenarios
-
+# ═══════════════════════════════════════════════════════════════════════════
+#  Factory functions — all IEEE test systems
+# ═══════════════════════════════════════════════════════════════════════════
 
 def create_network(
     system_name: str = "8bus",
     use_pandapower: bool = True,
+    sensor_seed: int = 42,
 ) -> DistributionNetwork:
-    """Factory function to create DistributionNetwork by name."""
-    from network.network_data import NETWORKS
+    """
+    Factory function to create DistributionNetwork by name.
 
-    if system_name not in NETWORKS:
-        raise ValueError(f"Unknown system: {system_name}. Available: {list(NETWORKS.keys())}")
+    Parameters:
+        system_name: One of "3bus", "8bus", "14bus", "30bus", "39bus",
+                     "57bus", "118bus" (case-insensitive, aliases supported)
+        use_pandapower: Whether to build pandapower network
+        sensor_seed: Random seed for sensor noise
 
-    net_data = NETWORKS[system_name]()
-    return DistributionNetwork(net_data, use_pandapower=use_pandapower)
+    Returns:
+        DistributionNetwork instance
+
+    Raises:
+        ValueError: If system_name is not recognised.
+    """
+    net_data = load_network(system_name)
+    return DistributionNetwork(net_data, use_pandapower=use_pandapower, sensor_seed=sensor_seed)
+
+
+def create_all_networks(
+    use_pandapower: bool = True,
+    sensor_seed: int = 42,
+) -> Dict[str, DistributionNetwork]:
+    """
+    Create DistributionNetwork instances for ALL available IEEE test systems.
+
+    Returns:
+        Dict mapping system name to DistributionNetwork instance.
+        Keys: "3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"
+    """
+    systems = {}
+    for key in ["3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"]:
+        try:
+            systems[key] = create_network(key, use_pandapower, sensor_seed)
+        except Exception as e:
+            systems[key] = None
+            print(f"Warning: Failed to create {key} network: {e}")
+    return systems
+
+
+def get_system_summary() -> Dict[str, Dict]:
+    """
+    Get summary of all available IEEE test systems.
+
+    Returns:
+        Dict with metadata for each system (n_buses, n_relays, n_pairs,
+        base_voltage, base_mva, description).
+    """
+    return get_network_metadata()

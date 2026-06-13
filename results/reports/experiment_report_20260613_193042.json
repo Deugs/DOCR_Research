@@ -1,0 +1,92 @@
+{
+  "timestamp": "2026-06-13T19:30:49.500684",
+  "fast_mode": false,
+  "total_elapsed_seconds": 6.6935999393463135,
+  "eta": "0:00:02",
+  "phases": {
+    "3": {
+      "name": "Training Dynamics",
+      "status": "complete",
+      "duration_seconds": 6.6935999393463135,
+      "figures_generated": [
+        9,
+        10
+      ],
+      "figures_failed": [
+        {
+          "fig": 16,
+          "error": "[Errno 2] No such file or directory: 'C:\\\\Users\\\\de1ug\\\\Documents\\\\Python Project\\\\DOCR_Research\\\\results\\\\figures\\\\figs_11_20\\\\fig_16_ewc_effectiveness.pdf'"
+        },
+        {
+          "fig": 21,
+          "error": "[Errno 2] No such file or directory: 'C:\\\\Users\\\\de1ug\\\\Documents\\\\Python Project\\\\DOCR_Research\\\\results\\\\figures\\\\figs_21_30\\\\fig_21_action_projection.pdf'"
+        },
+        {
+          "fig": 37,
+          "error": "[Errno 2] No such file or directory: 'C:\\\\Users\\\\de1ug\\\\Documents\\\\Python Project\\\\DOCR_Research\\\\results\\\\figures\\\\figs_31_40\\\\fig_37_per_agent_curves.pdf'"
+        },
+        {
+          "fig": 38,
+          "error": "[Errno 2] No such file or directory: 'C:\\\\Users\\\\de1ug\\\\Documents\\\\Python Project\\\\DOCR_Research\\\\results\\\\figures\\\\figs_31_40\\\\fig_38_attention_evolution.pdf'"
+        },
+        {
+          "fig": 41,
+          "error": "[Errno 2] No such file or directory: 'C:\\\\Users\\\\de1ug\\\\Documents\\\\Python Project\\\\DOCR_Research\\\\results\\\\figures\\\\figs_31_40\\\\fig_41_sample_efficiency.pdf'"
+        }
+      ],
+      "details": {}
+    }
+  },
+  "figures": {
+    "9": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 1.2486319541931152,
+      "error": null
+    },
+    "10": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.542773962020874,
+      "error": null
+    },
+    "16": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.4555821418762207,
+      "error": "[Errno 2] No such file or directory: 'C:\\\\Users\\\\de1ug\\\\Documents\\\\Python Project\\\\DOCR_Research\\\\results\\\\figures\\\\figs_11_20\\\\fig_16_ewc_effectiveness.pdf'"
+    },
+    "21": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.11402440071105957,
+      "error": "[Errno 2] No such file or directory: 'C:\\\\Users\\\\de1ug\\\\Documents\\\\Python Project\\\\DOCR_Research\\\\results\\\\figures\\\\figs_21_30\\\\fig_21_action_projection.pdf'"
+    },
+    "37": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.40212130546569824,
+      "error": "[Errno 2] No such file or directory: 'C:\\\\Users\\\\de1ug\\\\Documents\\\\Python Project\\\\DOCR_Research\\\\results\\\\figures\\\\figs_31_40\\\\fig_37_per_agent_curves.pdf'"
+    },
+    "38": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 1.488255262374878,
+      "error": "[Errno 2] No such file or directory: 'C:\\\\Users\\\\de1ug\\\\Documents\\\\Python Project\\\\DOCR_Research\\\\results\\\\figures\\\\figs_31_40\\\\fig_38_attention_evolution.pdf'"
+    },
+    "41": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.17763519287109375,
+      "error": "[Errno 2] No such file or directory: 'C:\\\\Users\\\\de1ug\\\\Documents\\\\Python Project\\\\DOCR_Research\\\\results\\\\figures\\\\figs_31_40\\\\fig_41_sample_efficiency.pdf'"
+    }
+  },
+  "summary": {
+    "total_phases": 1,
+    "completed_phases": 1,
+    "failed_phases": 0,
+    "total_figures": 7,
+    "completed_figures": 2,
+    "failed_figures": 5
+  }
+}

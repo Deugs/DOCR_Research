@@ -15,7 +15,7 @@ import numpy as np
 from typing import Dict, Tuple, Optional, List
 from dataclasses import dataclass
 
-from network.network_data import NetworkData, DGConfig, get_8bus, get_30bus, get_39bus
+from network.network_data import NetworkData, DGConfig, get_3bus, get_8bus, get_14bus, get_30bus, get_39bus, get_57bus, get_118bus
 from network.relay_physics import (
     compute_fault_currents_dynamic, FAULT_TYPES, 
     compute_operating_times, objective_function, check_constraints
@@ -474,11 +474,64 @@ def create_network(
     system_name: str = "8bus",
     use_pandapower: bool = True,
 ) -> DistributionNetwork:
-    """Factory function to create DistributionNetwork by name."""
+    """Factory function to create DistributionNetwork by name.
+
+    Supports all IEEE test systems: 3, 8, 14, 30, 39, 57, 118 buses.
+    """
     from network.network_data import NETWORKS
 
     if system_name not in NETWORKS:
-        raise ValueError(f"Unknown system: {system_name}. Available: {list(NETWORKS.keys())}")
+        raise ValueError(
+            f"Unknown system: {system_name}. "
+            f"Available: {sorted(NETWORKS.keys())}"
+        )
 
     net_data = NETWORKS[system_name]()
     return DistributionNetwork(net_data, use_pandapower=use_pandapower)
+
+
+# Convenience factory functions for each network size
+def create_3bus_network(use_pandapower: bool = True) -> DistributionNetwork:
+    """Create IEEE 3-bus test system."""
+    return DistributionNetwork(get_3bus(), use_pandapower=use_pandapower)
+
+
+def create_8bus_network(use_pandapower: bool = True) -> DistributionNetwork:
+    """Create IEEE 8-bus test system (primary development target)."""
+    return DistributionNetwork(get_8bus(), use_pandapower=use_pandapower)
+
+
+def create_14bus_network(use_pandapower: bool = True) -> DistributionNetwork:
+    """Create IEEE 14-bus test system."""
+    return DistributionNetwork(get_14bus(), use_pandapower=use_pandapower)
+
+
+def create_30bus_network(use_pandapower: bool = True) -> DistributionNetwork:
+    """Create IEEE 30-bus test system."""
+    return DistributionNetwork(get_30bus(), use_pandapower=use_pandapower)
+
+
+def create_39bus_network(use_pandapower: bool = True) -> DistributionNetwork:
+    """Create IEEE 39-bus New England test system."""
+    return DistributionNetwork(get_39bus(), use_pandapower=use_pandapower)
+
+
+def create_57bus_network(use_pandapower: bool = True) -> DistributionNetwork:
+    """Create IEEE 57-bus test system."""
+    return DistributionNetwork(get_57bus(), use_pandapower=use_pandapower)
+
+
+def create_118bus_network(use_pandapower: bool = True) -> DistributionNetwork:
+    """Create IEEE 118-bus test system."""
+    return DistributionNetwork(get_118bus(), use_pandapower=use_pandapower)
+
+
+# Scalability test helper
+SCALABILITY_NETWORKS = {
+    "8bus": 8,
+    "14bus": 14,
+    "30bus": 30,
+    "39bus": 39,
+    "57bus": 57,
+    "118bus": 118,
+}

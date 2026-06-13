@@ -2,8 +2,8 @@
 """
 run_thesis_experiments.py — Master Experiment Orchestrator for DOCR-MARL Thesis
 ══════════════════════════════════════════════════════════════════════════════════
-Refactored with comprehensive progress tracking, ETA estimation, and intelligent
-caching. Replaces per-figure subprocess spawning with direct post-processing calls.
+Refactored with comprehensive progress tracking, ETA estimation, intelligent
+caching, and unified config file support via docl_config.py.
 
 Architecture:
   • Phase 1: Manual diagrams (no code execution)
@@ -11,13 +11,16 @@ Architecture:
   • Phases 3-8: Post-processing — direct Python calls (no subprocess overhead)
   • Phase 9: Final compilation & report generation
 
-Progress Tracking:
-  • Phase-level: ETA per phase, step counting
-  • Figure-level: Individual timing, success/failure tracking
-  • Overall: Suite-level summary with elapsed time, cache stats
+Configuration (precedence: CLI > config file > preset > env vars > defaults):
+  • --config FILE       Load YAML/JSON config file
+  • --preset NAME       Use built-in preset (8bus_full, 8bus_fast, etc.)
+  • --system NAME       Override system (3bus, 8bus, 14bus, ...)
+  • --fast              Enable fast mode (reduced iterations)
+  • All CLI args from docl_config.py supported
 
 Usage:
     python run_thesis_experiments.py --all                       # full suite
+    python run_thesis_experiments.py --all --config my_config.yaml  # custom config
     python run_thesis_experiments.py --train-only                  # just training
     python run_thesis_experiments.py --figures-only                # just figures
     python run_thesis_experiments.py --phase 2                     # specific phase
@@ -46,6 +49,25 @@ from contextlib import contextmanager
 import logging
 
 # ──────────────────────────────────────────────────────────────────
+# Import Configuration System
+# ──────────────────────────────────────────────────────────────────
+# Add parent directory to path for config import
+BASE_DIR = Path(__file__).parent.absolute()
+sys.path.insert(0, str(BASE_DIR))
+
+try:
+    from docl_config import (
+        DOCRConfig, SystemConfig, TrainingConfig, ExperimentConfig, PostProcessingConfig,
+        build_config_parser, config_from_args, print_config_summary,
+        generate_example_config, list_presets, get_preset
+    )
+    CONFIG_SYSTEM_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Could not import docl_config.py: {e}")
+    print("Falling back to minimal config implementation.")
+    CONFIG_SYSTEM_AVAILABLE = False
+
+# ──────────────────────────────────────────────────────────────────
 # Windows Unicode Fix
 # ──────────────────────────────────────────────────────────────────
 if sys.platform == 'win32':
@@ -53,24 +75,54 @@ if sys.platform == 'win32':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # ──────────────────────────────────────────────────────────────────
-# Configuration & Paths
+# Configuration & Paths (config-driven or fallback)
 # ──────────────────────────────────────────────────────────────────
-BASE_DIR = Path(__file__).parent.absolute()
-OUTPUT_DIR = BASE_DIR / "results"
-FIGURES_DIR = OUTPUT_DIR / "figures"
-REPORT_DIR = OUTPUT_DIR / "reports"
-CACHE_DIR = OUTPUT_DIR / "core_cache"
-PROGRESS_DIR = OUTPUT_DIR / "progress"
-LOG_DIR = OUTPUT_DIR / "logs"
+# Global config object - populated from CLI/config file
+_config: Optional[DOCRConfig] = None
 
-for subdir in ["figs_01_10", "figs_11_20", "figs_21_30", "figs_31_40",
-               "figs_41_50", "figs_51_58", "logs", "checkpoints", "cache", "reports", "progress"]:
-    (OUTPUT_DIR / subdir).mkdir(parents=True, exist_ok=True)
+def get_config() -> DOCRConfig:
+    """Get the current configuration. Raises if not initialized."""
+    if _config is None:
+        raise RuntimeError("Configuration not initialized. Call initialize_config() first.")
+    return _config
 
-LOG_FILE = LOG_DIR / f"experiment_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-REPORT_FILE = REPORT_DIR / f"experiment_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+def initialize_config(args: argparse.Namespace) -> DOCRConfig:
+    """Initialize configuration from CLI args using docl_config system."""
+    global _config
+    if CONFIG_SYSTEM_AVAILABLE:
+        _config = config_from_args(args)
+    else:
+        # Fallback minimal config
+        _config = DOCRConfig()
+        if hasattr(args, 'fast') and args.fast:
+            _config.experiment.fast_mode = True
+            _config.apply_fast_mode()
+    return _config
+
+# Directory paths derived from config
+OUTPUT_DIR: Path = BASE_DIR / "results"
+FIGURES_DIR: Path = OUTPUT_DIR / "figures"
+REPORT_DIR: Path = OUTPUT_DIR / "reports"
+CACHE_DIR: Path = OUTPUT_DIR / "core_cache"
+PROGRESS_DIR: Path = OUTPUT_DIR / "progress"
+LOG_DIR: Path = OUTPUT_DIR / "logs"
 
 FAST_MODE = False
+
+# ──────────────────────────────────────────────────────────────────
+# Directory Setup
+# ──────────────────────────────────────────────────────────────────
+def setup_directories(config: DOCRConfig):
+    """Create all output directories based on configuration."""
+    output = Path(config.experiment.output_dir)
+    fig_dir = output / "figures"
+
+    subdirs = ["figs_01_10", "figs_11_20", "figs_21_30", "figs_31_40",
+               "figs_41_50", "figs_51_58", "logs", "checkpoints", "cache", "reports", "progress"]
+    for subdir in subdirs:
+        (output / subdir).mkdir(parents=True, exist_ok=True)
+
+    return output, fig_dir
 
 # ──────────────────────────────────────────────────────────────────
 # Logging Setup
@@ -81,6 +133,9 @@ logging.basicConfig(
     datefmt="%H:%M:%S"
 )
 logger = logging.getLogger(__name__)
+
+LOG_FILE = LOG_DIR / f"experiment_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+REPORT_FILE = REPORT_DIR / f"experiment_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
 # File handler for persistent logging
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
@@ -130,7 +185,7 @@ class PhaseResult:
     """Result of a single phase execution."""
     phase_num: int
     phase_name: str
-    status: str = "not_started"  # not_started, running, complete, failed, skipped
+    status: str = "not_started"
     start_time: Optional[float] = None
     end_time: Optional[float] = None
     figures_generated: List[int] = field(default_factory=list)
@@ -271,7 +326,7 @@ class ExperimentProgress:
             elapsed = time.time() - self._start_time
 
             # Weight phases and figures
-            total_work = self.total_phases * 10 + self.total_figures  # phases weighted more
+            total_work = self.total_phases * 10 + self.total_figures
             completed_work = completed_phases * 10 + completed_figs
 
             if completed_work == 0:
@@ -299,7 +354,7 @@ class ExperimentProgress:
         # Phase summary
         for phase_num in sorted(self.phases.keys()):
             p = self.phases[phase_num]
-            icon = {"complete": "✓", "failed": "✗", "running": "▶", 
+            icon = {"complete": "✓", "failed": "✗", "running": "▶",
                     "not_started": "○", "skipped": "⊘"}.get(p.status, "?")
             color = {"complete": Colors.GREEN, "failed": Colors.RED, "running": Colors.CYAN,
                      "not_started": Colors.DIM, "skipped": Colors.YELLOW}.get(p.status, Colors.END)
@@ -451,7 +506,7 @@ def timed_figure(fig_num: int, phase: int, progress: ExperimentProgress):
 # ──────────────────────────────────────────────────────────────────
 # Subprocess Runner (with live output)
 # ──────────────────────────────────────────────────────────────────
-def run_subprocess(cmd: str, description: str, check: bool = True, 
+def run_subprocess(cmd: str, description: str, check: bool = True,
                    env_vars: Dict = None, timeout: Optional[int] = None) -> int:
     """
     Run a subprocess command with live output streaming and progress tracking.
@@ -493,7 +548,7 @@ def run_subprocess(cmd: str, description: str, check: bool = True,
             log(colorize(f"  ✗ FAILED after {elapsed:.1f}s (exit {process.returncode})", Colors.RED), level="error")
             if check:
                 output_text = '\n'.join(output_lines)
-                if any(x in output_text for x in ["Placeholder", "No such file", "cannot find", 
+                if any(x in output_text for x in ["Placeholder", "No such file", "cannot find",
                                                    "not found", "ModuleNotFoundError", "ImportError"]):
                     log(colorize("  ⚠ Continuing despite error (placeholder/missing module)", Colors.YELLOW), level="warning")
                     return process.returncode
@@ -530,7 +585,7 @@ def load_post_processing_module() -> Optional[Any]:
     return module
 
 
-def generate_figure_direct(fig_num: int, pp_module: Any, progress: ExperimentProgress, 
+def generate_figure_direct(fig_num: int, pp_module: Any, progress: ExperimentProgress,
                            phase: int) -> bool:
     """
     Generate a single figure by calling the post-processing module directly.
@@ -650,40 +705,32 @@ def clear_all_caches():
 # ──────────────────────────────────────────────────────────────────
 
 # Mapping from figure number to standalone script path.
-# Each script exports generate_figure(output_dir) and is self-contained.
 MANUAL_FIGURE_SCRIPTS: Dict[Union[int, str], Path] = {
-    1:   BASE_DIR / "phase1_scripts" / "exp_fig01.py",   # High-Level System Architecture
-    2:   BASE_DIR / "phase1_scripts" / "exp_fig02.py",   # Data Flow Architecture
-    3:   BASE_DIR / "phase1_scripts" / "exp_fig03.py",   # IEEE 8-Bus Single-Line Diagram
-    4:   BASE_DIR / "phase1_scripts" / "exp_fig04.py",   # IEEE 30-Bus Single-Line Diagram
-    17:  BASE_DIR / "phase1_scripts" / "exp_fig17.py",  # IEC 61850 Deployment Architecture
-    19:  BASE_DIR / "phase1_scripts" / "exp_fig19.py",  # PV Inverter FRT Curve
-    26:  BASE_DIR / "phase1_scripts" / "exp_fig26.py",  # Algorithm Flowchart
-    27:  BASE_DIR / "phase1_scripts" / "exp_fig27.py",  # Dec-POMDP Formulation
-    28:  BASE_DIR / "phase1_scripts" / "exp_fig28.py",  # Safe RL Dual Approach
-    29:  BASE_DIR / "phase1_scripts" / "exp_fig29.py",  # EWC Continual Learning Mechanism
-    30:  BASE_DIR / "phase1_scripts" / "exp_fig30.py",  # Algorithm Pseudocode
-    34:  BASE_DIR / "phase1_scripts" / "exp_fig34.py",  # Neural Network Architecture
-    35:  BASE_DIR / "phase1_scripts" / "exp_fig35.py",  # Observation Space Breakdown
-    51:  BASE_DIR / "phase1_scripts" / "exp_fig51.py",  # Protocol Stack
-    52:  BASE_DIR / "phase1_scripts" / "exp_fig52.py",  # Digital Twin Pipeline
+    1:   BASE_DIR / "phase1_scripts" / "exp_fig01.py",
+    2:   BASE_DIR / "phase1_scripts" / "exp_fig02.py",
+    3:   BASE_DIR / "phase1_scripts" / "exp_fig03.py",
+    4:   BASE_DIR / "phase1_scripts" / "exp_fig04.py",
+    17:  BASE_DIR / "phase1_scripts" / "exp_fig17.py",
+    19:  BASE_DIR / "phase1_scripts" / "exp_fig19.py",
+    26:  BASE_DIR / "phase1_scripts" / "exp_fig26.py",
+    27:  BASE_DIR / "phase1_scripts" / "exp_fig27.py",
+    28:  BASE_DIR / "phase1_scripts" / "exp_fig28.py",
+    29:  BASE_DIR / "phase1_scripts" / "exp_fig29.py",
+    30:  BASE_DIR / "phase1_scripts" / "exp_fig30.py",
+    34:  BASE_DIR / "phase1_scripts" / "exp_fig34.py",
+    35:  BASE_DIR / "phase1_scripts" / "exp_fig35.py",
+    51:  BASE_DIR / "phase1_scripts" / "exp_fig51.py",
+    52:  BASE_DIR / "phase1_scripts" / "exp_fig52.py",
 }
 
-# Figures that have no corresponding script (truly manual / LaTeX-only)
 TRULY_MANUAL_FIGURES: Set[Union[int, str]] = {"26a", 36}
 
 
-def generate_manual_figure(fig_num: Union[int, str], output_dir: Path, 
+def generate_manual_figure(fig_num: Union[int, str], output_dir: Path,
                            progress: ExperimentProgress) -> bool:
-    """
-    Generate a single manual/conceptual figure by dynamically importing its
-    standalone script and calling generate_figure(output_dir).
-    
-    Returns True on success, False on failure.  Errors are logged but not
-    re-raised so that Phase 1 continues with the remaining figures.
-    """
+    """Generate a single manual/conceptual figure from standalone script."""
     script_path = MANUAL_FIGURE_SCRIPTS.get(fig_num)
-    
+
     if script_path is None:
         if fig_num in TRULY_MANUAL_FIGURES:
             log(f"  [Fig {fig_num}] ○ Truly manual — no script available (create in LaTeX/draw.io)",
@@ -691,60 +738,49 @@ def generate_manual_figure(fig_num: Union[int, str], output_dir: Path,
         else:
             log(f"  [Fig {fig_num}] ✗ No script mapped for this figure", level="warning")
         return False
-    
+
     if not script_path.exists():
         log(f"  [Fig {fig_num}] ✗ Script not found: {script_path}", level="warning")
         return False
-    
-    # Ensure output subdirectory exists
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     try:
         with timed_figure(fig_num if isinstance(fig_num, int) else 0, 1, progress):
-            # Dynamic import — each script is self-contained
             module_name = f"manual_fig_{fig_num}"
             spec = importlib.util.spec_from_file_location(module_name, script_path)
             if spec is None or spec.loader is None:
                 raise ImportError(f"Cannot load spec for {script_path}")
-            
+
             module = importlib.util.module_from_spec(spec)
-            # Prevent module-name collisions in sys.modules
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
-            
-            # Call the standardized generate_figure(entry_point)
+
             if not hasattr(module, 'generate_figure'):
                 raise AttributeError(f"{script_path} does not define generate_figure()")
-            
+
             module.generate_figure(str(output_dir))
-            
+
         return True
     except Exception as e:
-        # timed_figure already logs the error; we just return False
         return False
 
 
 def run_phase1(progress: ExperimentProgress):
-    """Phase 1: Manual diagrams & Architecture (Week 1).
-    
-    Auto-generates conceptual figures from standalone exp_fig*.py scripts.
-    Figures without scripts are logged as truly manual (LaTeX/draw.io).
-    """
+    """Phase 1: Manual diagrams & Architecture (Week 1)."""
     with timed_phase(1, "Manual Diagrams & Architecture", progress):
-        # Determine output directory for Phase 1 figures
-        phase1_output = FIGURES_DIR / "figs_01_10"  # fits the 1-10, 11-20, ... convention
-        
-        # All figures we attempt to generate + truly manual ones
-        all_phase1_figs = sorted(MANUAL_FIGURE_SCRIPTS.keys()) + sorted(TRULY_MANUAL_FIGURES, 
+        phase1_output = FIGURES_DIR / "figs_01_10"
+
+        all_phase1_figs = sorted(MANUAL_FIGURE_SCRIPTS.keys()) + sorted(TRULY_MANUAL_FIGURES,
                                                                           key=lambda x: (isinstance(x, str), x))
-        
+
         log(f"Phase 1: {len(MANUAL_FIGURE_SCRIPTS)} auto-generatable + {len(TRULY_MANUAL_FIGURES)} truly manual figures")
         log(f"Output directory: {phase1_output}")
-        
+
         success_count = 0
         fail_count = 0
         manual_count = 0
-        
+
         with ProgressBar(total=len(all_phase1_figs), desc="[Phase 1] Manual Figures") as pbar:
             for fig_num in all_phase1_figs:
                 if fig_num in TRULY_MANUAL_FIGURES:
@@ -752,13 +788,13 @@ def run_phase1(progress: ExperimentProgress):
                     manual_count += 1
                     pbar.update(1)
                     continue
-                
+
                 if generate_manual_figure(fig_num, phase1_output, progress):
                     success_count += 1
                 else:
                     fail_count += 1
                 pbar.update(1)
-        
+
         pbar.close(f"{success_count} generated, {fail_count} failed, {manual_count} manual")
         log(f"Phase 1 complete: {success_count} generated, {fail_count} failed, {manual_count} manual")
 
@@ -767,77 +803,62 @@ def run_phase1(progress: ExperimentProgress):
 # Phase Implementations
 # ──────────────────────────────────────────────────────────────────
 
-# Figure to Core mapping (for dependency tracking)
 FIGURE_CORE_MAP = {
-    # Core A figures
     8: "A", 9: "A", 10: "A", 12: "A", 21: "A", 37: "A", 38: "A", 41: "A",
     48: "A", 49: "A", 50: "A", 55: "A", 56: "A", 57: "A",
-    # Core B figures
     5: "B", 6: "B", 7: "B", 16: "B", 29: "B", 39: "B", 42: "B",
-    # Core C figures
     11: "C", 31: "C", 32: "C", 33: "C",
-    # Core D
-    39: "D",
-    # Core E
-    40: "E",
-    # Core F
-    15: "F",
-    # Core G figures
+    39: "D", 40: "E", 15: "F",
     13: "G", 14: "G", 20: "G", 22: "G", 24: "G", 54: "G",
-    # Core H figures
-    23: "H", 25: "H",
-    # Core I figures
-    18: "I", 53: "I",
-    # Core J figures
+    23: "H", 25: "H", 18: "I", 53: "I",
     43: "J", 44: "J", 45: "J", 46: "J", 47: "J",
-    # Core K
     58: "K",
 }
 
-# Phase to figure mapping
 PHASE_FIGURES = {
-    1: [],  # Manual
-    2: [],  # Training only
-    3: [9, 10, 16, 21, 37, 38, 41],  # Training dynamics
-    4: [13, 14, 20, 22, 24, 54],      # Robustness
-    5: [15, 23, 25],                   # Scalability + transfer
-    6: [18, 53],                       # Deployment
-    7: [43, 44, 45, 46, 47, 48, 49, 50],  # Protection + interpretability
-    8: [11, 31, 32, 33, 55, 56, 57],  # Statistical
-    9: [],  # Compilation
+    1: [],
+    2: [],
+    3: [9, 10, 16, 21, 37, 38, 41],
+    4: [13, 14, 20, 22, 24, 54],
+    5: [15, 23, 25],
+    6: [18, 53],
+    7: [43, 44, 45, 46, 47, 48, 49, 50],
+    8: [11, 31, 32, 33, 55, 56, 57],
+    9: [],
 }
 
-# Manual figures (not auto-generated)
 MANUAL_FIGURES = {1, 2, 3, 4, 17, 19, 26, "26a", 27, 28, 29, 30, 34, 35, 36, 51, 52}
 
 
 def run_phase2(progress: ExperimentProgress):
     """Phase 2: Core Training Runs (Weeks 2-3). Delegates to run_core_training.py."""
     with timed_phase(2, "Core Training Runs (A-K)", progress):
-        log("Running unified core training via run_core_training.py...")
-        log("  Core A: MAPPO-Safe-EWC 8-bus 100% PV")
-        log("  Core B: Curriculum 0%→100% PV")
-        log("  Core C: Baseline comparison")
-        log("  Core D: Ablation study")
-        log("  Core E: Hyperparameter grid")
-        log("  Core F: Scalability sweep")
-        log("  Core G: Robustness evaluation")
-        log("  Core H: Transfer learning")
-        log("  Core I: Deployment benchmark")
-        log("  Core J: Protection engineering")
-        log("  Core K: Seasonal generalization")
+        config = get_config()
 
-        fast_flag = " --fast" if FAST_MODE else ""
+        log("Running unified core training via run_core_training.py...")
+        log(f"  System: {config.system.name.upper()} | PV: {config.system.pv_penetration:.0%} | Fault: {config.system.fault_type}")
+        log(f"  Runs: {config.training.n_runs} | Episodes: {config.training.n_episodes}")
+        log(f"  Features: GNN={'✓' if config.training.use_comm else '✗'} | Safety={'✓' if config.training.use_safety else '✗'} | EWC={'✓' if config.training.use_ewc else '✗'}")
+
+        # Build command with config parameters
+        fast_flag = " --fast" if config.experiment.fast_mode else ""
+        system_flag = f" --system {config.system.name}"
+        pv_flag = f" --pv {config.system.pv_penetration}"
+        runs_flag = f" --n-runs {config.training.n_runs}"
+        episodes_flag = f" --episodes {config.training.n_episodes}"
+
+        cmd = f"python run_core_training.py --all{fast_flag}{system_flag}{pv_flag}{runs_flag}{episodes_flag}"
+
         run_subprocess(
-            f"python run_core_training.py --all{fast_flag}",
+            cmd,
             "Phase 2: Unified Core Training (all 11 cores A-K)",
             check=False,
-            timeout=7200 if FAST_MODE else 86400  # 2h fast, 24h full
+            timeout=7200 if config.experiment.fast_mode else 86400
         )
 
 
 def run_phase3(progress: ExperimentProgress):
-    """Phase 3: Training Dynamics (Week 4). Post-processing from Core A/B cache."""
+    """Phase 3: Training Dynamics (Week 4)."""
     with timed_phase(3, "Training Dynamics", progress):
         figs = PHASE_FIGURES[3]
         log(f"Generating {len(figs)} figures from Core A/B cached data: {figs}")
@@ -846,7 +867,7 @@ def run_phase3(progress: ExperimentProgress):
 
 
 def run_phase4(progress: ExperimentProgress):
-    """Phase 4: Robustness & Resilience (Week 5). Post-processing from Core G cache."""
+    """Phase 4: Robustness & Resilience (Week 5)."""
     with timed_phase(4, "Robustness & Resilience", progress):
         figs = PHASE_FIGURES[4]
         log(f"Generating {len(figs)} figures from Core G cached data: {figs}")
@@ -864,7 +885,7 @@ def run_phase5(progress: ExperimentProgress):
 
 
 def run_phase6(progress: ExperimentProgress):
-    """Phase 6: Deployment & Hardware (Week 7). Post-processing from Core I cache."""
+    """Phase 6: Deployment & Hardware (Week 7)."""
     with timed_phase(6, "Deployment & Hardware", progress):
         figs = PHASE_FIGURES[6]
         log(f"Generating {len(figs)} figures from Core I cached data: {figs}")
@@ -882,7 +903,7 @@ def run_phase7(progress: ExperimentProgress):
 
 
 def run_phase8(progress: ExperimentProgress):
-    """Phase 8: Statistical Aggregation (Week 9). Post-processing from Core C cache."""
+    """Phase 8: Statistical Aggregation (Week 9)."""
     with timed_phase(8, "Statistical Aggregation", progress):
         figs = PHASE_FIGURES[8]
         log(f"Generating {len(figs)} figures from Core C cached data: {figs}")
@@ -893,21 +914,19 @@ def run_phase8(progress: ExperimentProgress):
 def run_phase9(progress: ExperimentProgress):
     """Phase 9: Final Compilation (Week 10)."""
     with timed_phase(9, "Final Compilation", progress):
-        # Count generated figures
+        config = get_config()
         fig_count = sum(1 for _ in FIGURES_DIR.rglob("*.pdf")) if FIGURES_DIR.exists() else 0
-
-        # Check cache status
         cache_status = check_cache_status()
 
         report = {
             "timestamp": datetime.now().isoformat(),
-            "fast_mode": FAST_MODE,
+            "fast_mode": config.experiment.fast_mode,
             "output_dir": str(OUTPUT_DIR),
             "figures_expected": 58,
             "figures_generated": fig_count,
             "figures_manual": len(MANUAL_FIGURES),
             "training_strategy": "11 core runs (A-K) + post-processing",
-            "estimated_gpu_days": "8-10 (full)" if not FAST_MODE else "~1-2 (fast)",
+            "estimated_gpu_days": "8-10 (full)" if not config.experiment.fast_mode else "~1-2 (fast)",
             "cache_status": {
                 "exists": cache_status["exists"],
                 "entries": cache_status["entries"],
@@ -915,6 +934,16 @@ def run_phase9(progress: ExperimentProgress):
             },
             "phases": list(range(1, 10)),
             "core_runs": ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"],
+            "config": {
+                "system": config.system.name,
+                "pv_penetration": config.system.pv_penetration,
+                "fault_type": config.system.fault_type,
+                "n_runs": config.training.n_runs,
+                "n_episodes": config.training.n_episodes,
+                "use_comm": config.training.use_comm,
+                "use_safety": config.training.use_safety,
+                "use_ewc": config.training.use_ewc,
+            }
         }
 
         report_path = REPORT_DIR / "compilation_report.json"
@@ -934,25 +963,29 @@ def run_all(progress: Optional[ExperimentProgress] = None) -> ExperimentProgress
     if progress is None:
         progress = ExperimentProgress(total_phases=9, total_figures=58)
 
+    config = get_config()
+
     log("")
     log("=" * 70)
     log(colorize("DOCR-MARL THESIS: COMPLETE EXPERIMENT SUITE", Colors.BOLD + Colors.HEADER))
     log(f"Strategy: 11 core training runs + unified post-processing")
+    log(f"System: {config.system.name.upper()} | PV: {config.system.pv_penetration:.0%} | Fault: {config.system.fault_type}")
+    log(f"Runs: {config.training.n_runs} | Episodes: {config.training.n_episodes}")
     log(f"Estimated: ~8-10 GPU-days (full) / ~1-2 hours (fast)")
     log("=" * 70)
 
     t0 = time.time()
 
     try:
-        run_phase1(progress)   # Manual diagrams
-        run_phase2(progress)   # Core training
-        run_phase3(progress)   # Training dynamics
-        run_phase4(progress)   # Robustness
-        run_phase5(progress)   # Scalability + transfer
-        run_phase6(progress)   # Deployment
-        run_phase7(progress)   # Protection + interpretability
-        run_phase8(progress)   # Statistical
-        run_phase9(progress)   # Compilation
+        run_phase1(progress)
+        run_phase2(progress)
+        run_phase3(progress)
+        run_phase4(progress)
+        run_phase5(progress)
+        run_phase6(progress)
+        run_phase7(progress)
+        run_phase8(progress)
+        run_phase9(progress)
     except KeyboardInterrupt:
         log(colorize("\n\nInterrupted by user", Colors.YELLOW))
         progress.print_summary()
@@ -964,7 +997,6 @@ def run_all(progress: Optional[ExperimentProgress] = None) -> ExperimentProgress
         progress.save_report()
         raise
 
-    # Final summary
     progress.print_summary()
     report_path = progress.save_report()
 
@@ -998,7 +1030,6 @@ def run_figures_only(progress: Optional[ExperimentProgress] = None) -> Experimen
     log(colorize("FIGURES ONLY MODE (no training)", Colors.BOLD + Colors.YELLOW))
     log("=" * 70)
 
-    # Check cache first
     cache_status = check_cache_status()
     if not cache_status["exists"]:
         log(colorize("WARNING: No cache found. Run training first or use --all.", Colors.RED), level="warning")
@@ -1007,7 +1038,6 @@ def run_figures_only(progress: Optional[ExperimentProgress] = None) -> Experimen
     log(f"Cache entries: {cache_status['entries']}")
     log(f"Cached cores: {sorted(cache_status['cores_present'])}")
 
-    # Run post-processing phases only
     for phase_num in [3, 4, 5, 6, 7, 8]:
         phase_map = {
             3: run_phase3, 4: run_phase4, 5: run_phase5,
@@ -1051,7 +1081,6 @@ def run_selected_figures(fig_nums: List[int], progress: Optional[ExperimentProgr
     log(colorize(f"SELECTED FIGURES: {fig_nums}", Colors.BOLD + Colors.CYAN))
     log("=" * 70)
 
-    # Group by phase for better organization
     figs_by_phase: Dict[int, List[int]] = {}
     for fig_num in fig_nums:
         phase = 0
@@ -1133,65 +1162,75 @@ def list_all_figures():
 # ──────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────
+def build_parser() -> argparse.ArgumentParser:
+    """Build argument parser combining docl_config and experiment-specific args."""
+
+    if CONFIG_SYSTEM_AVAILABLE:
+        config_parser = build_config_parser()
+
+        # Add experiment-specific arguments ONLY
+        exp_group = config_parser.add_argument_group("Experiment Orchestration")
+        exp_group.add_argument("--all", action="store_true", help="Run all 9 phases with progress tracking")
+        exp_group.add_argument("--phase", type=int, choices=range(1, 10), help="Run specific phase (1-9)")
+        exp_group.add_argument("--fig", type=int, nargs="+", help="Generate specific figure numbers")
+        exp_group.add_argument("--list", action="store_true", help="List all figures and sources")
+        exp_group.add_argument("--train-only", action="store_true", help="Only run core training (Phase 2)")
+        exp_group.add_argument("--figures-only", action="store_true", help="Only generate figures from cache")
+        exp_group.add_argument("--progress", action="store_true", help="Show last experiment progress report")
+        exp_group.add_argument("--use-subprocess", action="store_true", help="Use subprocess for figures (slower, fallback)")
+
+        return config_parser
+    else:
+        # Fallback minimal parser
+        # Fallback minimal parser (includes all args since no docl_config)
+        parser = argparse.ArgumentParser(
+            description="DOCR-MARL Thesis Experiment Orchestrator",
+            formatter_class=argparse.RawDescriptionHelpFormatter
+        )
+        parser.add_argument("--all", action="store_true", help="Run all 9 phases")
+        parser.add_argument("--phase", type=int, choices=range(1, 10), help="Run specific phase (1-9)")
+        parser.add_argument("--fig", type=int, nargs="+", help="Generate specific figure numbers")
+        parser.add_argument("--fast", action="store_true", help="Reduced iterations for testing")
+        parser.add_argument("--list", action="store_true", help="List all figures and sources")
+        parser.add_argument("--train-only", action="store_true", help="Only run core training (Phase 2)")
+        parser.add_argument("--figures-only", action="store_true", help="Only generate figures from cache")
+        parser.add_argument("--clear-cache", action="store_true", help="Clear all caches")
+        parser.add_argument("--progress", action="store_true", help="Show last progress report")
+        parser.add_argument("--use-subprocess", action="store_true", help="Use subprocess for figures")
+        parser.add_argument("--config", "-c", type=str, help="Config file path")
+        parser.add_argument("--preset", "-p", type=str, help="Preset configuration")
+        parser.add_argument("--system", "-s", type=str, help="System name")
+        parser.add_argument("--n-runs", type=int, help="Number of runs")
+        parser.add_argument("--episodes", "-e", type=int, help="Episodes per run")
+        return parser
+
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="DOCR-MARL Thesis Experiment Orchestrator with Progress Tracking",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-ARCHITECTURE:
-  Phase 1 (Week 1):   Manual diagrams + architecture (no code)
-  Phase 2 (Week 2-3): Core training — 11 unified runs (run_core_training.py)
-  Phase 3 (Week 4):   Training dynamics — POST-PROCESS from Core A/B cache
-  Phase 4 (Week 5):   Robustness — POST-PROCESS from Core G cache
-  Phase 5 (Week 6):   Scalability — Core F + transfer (Core H) cache
-  Phase 6 (Week 7):   Deployment — POST-PROCESS from Core I cache
-  Phase 7 (Week 8):   Protection engineering — Core J + interpretability (Core A)
-  Phase 8 (Week 9):   Statistical aggregation — POST-PROCESS from Core C cache
-  Phase 9 (Week 10):  Final compilation
-
-COMMANDS:
-  --all               Full suite with progress tracking
-  --train-only        Run only core training (Phase 2)
-  --figures-only      Generate all figures from existing cache
-  --phase N           Run specific phase (1-9)
-  --fig N [N ...]     Generate selected figures
-  --fast              Reduced iterations for testing
-  --clear-cache       Invalidate all cached results
-  --progress          Show last experiment progress report
-  --list              List all figures and their data sources
-
-PROGRESS TRACKING:
-  • Real-time ETA estimation per phase and overall
-  • Figure-level success/failure tracking
-  • JSON report saved to results/reports/
-  • Resume capability via cache system
-
-Examples:
-  python run_thesis_experiments.py --all --fast        # Quick smoke test with tracking
-  python run_thesis_experiments.py --train-only       # Just training with progress
-  python run_thesis_experiments.py --figures-only      # Regenerate figures from cache
-  python run_thesis_experiments.py --phase 2 --fast     # Core training only
-  python run_thesis_experiments.py --fig 9 10 12       # Selected figures
-  python run_thesis_experiments.py --progress          # View last report
-        """
-    )
-
-    parser.add_argument("--all", action="store_true", help="Run all 9 phases with progress tracking")
-    parser.add_argument("--phase", type=int, choices=range(1, 10), help="Run specific phase (1-9)")
-    parser.add_argument("--fig", type=int, nargs="+", help="Generate specific figure numbers")
-    parser.add_argument("--fast", action="store_true", help="Reduced iterations for testing")
-    parser.add_argument("--list", action="store_true", help="List all figures and sources")
-    parser.add_argument("--train-only", action="store_true", help="Only run core training (Phase 2)")
-    parser.add_argument("--figures-only", action="store_true", help="Only generate figures from cache")
-    parser.add_argument("--clear-cache", action="store_true", help="Clear all caches")
-    parser.add_argument("--progress", action="store_true", help="Show last progress report")
-    parser.add_argument("--use-subprocess", action="store_true", help="Use subprocess for figures (slower, fallback)")
-
+    parser = build_parser()
     args = parser.parse_args()
 
+    # Initialize configuration from args
+    try:
+        config = initialize_config(args)
+    except Exception as e:
+        print(f"Error initializing configuration: {e}")
+        sys.exit(1)
+
+    # Setup directories based on config
+    global OUTPUT_DIR, FIGURES_DIR, REPORT_DIR, CACHE_DIR, PROGRESS_DIR, LOG_DIR
+    OUTPUT_DIR, FIGURES_DIR = setup_directories(config)
+    REPORT_DIR = OUTPUT_DIR / "reports"
+    CACHE_DIR = OUTPUT_DIR / "core_cache"
+    PROGRESS_DIR = OUTPUT_DIR / "progress"
+    LOG_DIR = OUTPUT_DIR / "logs"
+
+    # Print config summary
+    if CONFIG_SYSTEM_AVAILABLE:
+        print_config_summary(config)
+
     global FAST_MODE
-    if args.fast:
-        FAST_MODE = True
+    FAST_MODE = config.experiment.fast_mode
+    if FAST_MODE:
         os.environ["DOCR_FAST"] = "1"
         log(colorize("[FAST MODE] Using reduced iterations for testing.", Colors.YELLOW))
 
@@ -1203,7 +1242,8 @@ Examples:
         show_progress_report()
         return
 
-    if args.list:
+        # Handle figure listing
+    if hasattr(args, 'list') and args.list:
         list_all_figures()
         return
 

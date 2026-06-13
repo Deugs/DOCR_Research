@@ -1,0 +1,38 @@
+2026-06-13 19:30:42,807 | INFO     | 
+2026-06-13 19:30:42,807 | INFO     | ======================================================================
+2026-06-13 19:30:42,807 | INFO     | [1m[96mPHASE 3: Training Dynamics[0m
+2026-06-13 19:30:42,807 | INFO     | ======================================================================
+2026-06-13 19:30:42,807 | INFO     | Generating 7 figures from Core A/B cached data: [9, 10, 16, 21, 37, 38, 41]
+2026-06-13 19:30:46,303 | INFO     | [92m  [Fig 09] ✓ Generated in 1.25s[0m
+2026-06-13 19:30:46,846 | INFO     | [92m  [Fig 10] ✓ Generated in 0.54s[0m
+2026-06-13 19:30:47,302 | ERROR    | [91m  [Fig 16] ✗ Failed: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_11_20\\fig_16_ewc_effectiveness.pdf'[0m
+2026-06-13 19:30:47,302 | ERROR    | [91mFig 16 error: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_11_20\\fig_16_ewc_effectiveness.pdf'[0m
+2026-06-13 19:30:47,416 | ERROR    | [91m  [Fig 21] ✗ Failed: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_21_30\\fig_21_action_projection.pdf'[0m
+2026-06-13 19:30:47,416 | ERROR    | [91mFig 21 error: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_21_30\\fig_21_action_projection.pdf'[0m
+2026-06-13 19:30:47,818 | ERROR    | [91m  [Fig 37] ✗ Failed: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_31_40\\fig_37_per_agent_curves.pdf'[0m
+2026-06-13 19:30:47,818 | ERROR    | [91mFig 37 error: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_31_40\\fig_37_per_agent_curves.pdf'[0m
+2026-06-13 19:30:49,322 | ERROR    | [91m  [Fig 38] ✗ Failed: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_31_40\\fig_38_attention_evolution.pdf'[0m
+2026-06-13 19:30:49,322 | ERROR    | [91mFig 38 error: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_31_40\\fig_38_attention_evolution.pdf'[0m
+2026-06-13 19:30:49,500 | ERROR    | [91m  [Fig 41] ✗ Failed: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_31_40\\fig_41_sample_efficiency.pdf'[0m
+2026-06-13 19:30:49,500 | ERROR    | [91mFig 41 error: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_31_40\\fig_41_sample_efficiency.pdf'[0m
+2026-06-13 19:30:49,500 | INFO     | Phase 3 complete: 7 generated, 0 failed
+2026-06-13 19:30:49,500 | INFO     | [92m✓ Phase 3 Training Dynamics: COMPLETE (0:00:06)[0m
+2026-06-13 19:30:49,500 | INFO     | 
+2026-06-13 19:30:49,500 | INFO     | ======================================================================
+2026-06-13 19:30:49,500 | INFO     | [1m[95mEXPERIMENT SUITE SUMMARY[0m
+2026-06-13 19:30:49,500 | INFO     | ======================================================================
+2026-06-13 19:30:49,500 | INFO     | Total elapsed: 0:00:06
+2026-06-13 19:30:49,500 | INFO     | Mode: FULL
+2026-06-13 19:30:49,500 | INFO     | ETA: 0:00:02
+2026-06-13 19:30:49,500 | INFO     | ----------------------------------------------------------------------
+2026-06-13 19:30:49,500 | INFO     | [92m  ✓ Phase 3: Training Dynamics              COMPLETE   0:00:06 [5 failed][0m
+2026-06-13 19:30:49,500 | INFO     | ----------------------------------------------------------------------
+2026-06-13 19:30:49,500 | INFO     | Figures: 2 generated, 5 failed, 0 pending
+2026-06-13 19:30:49,500 | INFO     | Failed figures:
+2026-06-13 19:30:49,500 | ERROR    |   Fig 16: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_11_20\\fig_16_ewc_effectiveness.pdf'
+2026-06-13 19:30:49,500 | ERROR    |   Fig 21: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_21_30\\fig_21_action_projection.pdf'
+2026-06-13 19:30:49,500 | ERROR    |   Fig 37: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_31_40\\fig_37_per_agent_curves.pdf'
+2026-06-13 19:30:49,500 | ERROR    |   Fig 38: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_31_40\\fig_38_attention_evolution.pdf'
+2026-06-13 19:30:49,500 | ERROR    |   Fig 41: [Errno 2] No such file or directory: 'C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\figures\\figs_31_40\\fig_41_sample_efficiency.pdf'
+2026-06-13 19:30:49,500 | INFO     | ======================================================================
+2026-06-13 19:30:49,500 | INFO     | Report saved to: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\reports\experiment_report_20260613_193042.json

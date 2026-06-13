@@ -1,9 +1,11 @@
 """
 exp_fig07_curriculum_learning.py  —  Figure 7 (IMPROVED)
 ─────────────────────────────────────────────────────────────
-Curriculum Learning Progression (MAPPO-Safe-EWC, 8-Bus).
+Curriculum Learning Progression (MAPPO-Safe-EWC).
+Spans ALL IEEE test systems: 3, 8, 14, 30, 39, 57, and 118 buses.
 
 IMPROVEMENTS over original:
+  • Network-agnostic: accepts any IEEE test system via CLI
   • Proper episode-based training with MAPPOMARLTrainer
   • Correct backward/forward transfer metrics per Kirkpatrick et al. (2017)
   • Actual EWC loss computation from trainer internals
@@ -14,8 +16,8 @@ IMPROVEMENTS over original:
 
 Outputs
 -------
-  outputs/fig07_curriculum.npz
-  outputs/fig07_curriculum.png
+  outputs/{network}/fig07_curriculum.npz
+  outputs/{network}/fig07_curriculum.png
 """
 
 import numpy as np
@@ -27,13 +29,12 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 sys.path.insert(0, os.path.dirname(__file__))
-os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from network.network_data import get_8bus
+from network.network_data import load_network, get_network_metadata, NETWORKS
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
 from network.relay_physics import check_constraints
@@ -67,9 +68,13 @@ def evaluate_on_task(trainer, env, task_idx: int, n_eval: int = 20, seed: int = 
     return float(np.mean(rewards))
 
 
-def run_curriculum_training(seed: int = 42, episodes_per_task: int = 1000) -> Dict:
+def run_curriculum_training(
+    network_name: str = "8bus",
+    seed: int = 42,
+    episodes_per_task: int = 1000,
+) -> Dict:
     """Run full curriculum training with comprehensive logging."""
-    net = get_8bus()
+    net = load_network(network_name)
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
                           fault_type="3ph", curriculum_stage=0)
     
@@ -194,22 +199,39 @@ def run_curriculum_training(seed: int = 42, episodes_per_task: int = 1000) -> Di
     return log, task_final_performance, backward_transfer, forward_transfer
 
 
-def main(seed: int = 42, episodes_per_task: int = 1000, n_seeds: int = 3,
-         output_dir: str = "outputs"):
-    out_path = Path(output_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
+def main(
+    network: str = "8bus",
+    seed: int = 42,
+    episodes_per_task: int = 1000,
+    n_seeds: int = 3,
+    output_dir: str = "outputs",
+):
+    # Create network-specific output directory
+    net_dir = Path(output_dir) / network
+    net_dir.mkdir(parents=True, exist_ok=True)
     
-    logger.info("Figure 7 — Curriculum Learning Progression (IMPROVED)")
+    # Log network metadata
+    meta = get_network_metadata()[network]
+    logger.info("=" * 70)
+    logger.info("Figure 7 — Curriculum Learning Progression")
+    logger.info("  Network: %s (%d buses, %d relays, %d pairs)",
+                network, meta["n_buses"], meta["n_relays"], meta["n_pairs"])
+    logger.info("  %s", meta["description"])
     logger.info("  Tasks: %s", TASKS)
     logger.info("  Episodes per task: %d, Seeds: %d", episodes_per_task, n_seeds)
+    logger.info("=" * 70)
     
     all_logs = []
     all_bt = []
     all_ft = []
     
     for s in range(n_seeds):
-        logger.info("\\n=== Seed %d/%d ===", s + 1, n_seeds)
-        log, task_perf, bt, ft = run_curriculum_training(seed + s * 10000, episodes_per_task)
+        logger.info("\n=== Seed %d/%d ===", s + 1, n_seeds)
+        log, task_perf, bt, ft = run_curriculum_training(
+            network_name=network,
+            seed=seed + s * 10000,
+            episodes_per_task=episodes_per_task,
+        )
         all_logs.append(log)
         all_bt.append(bt)
         all_ft.append(ft)
@@ -248,7 +270,7 @@ def main(seed: int = 42, episodes_per_task: int = 1000, n_seeds: int = 3,
     
     # Save
     np.savez(
-        out_path / "fig07_curriculum.npz",
+        net_dir / "fig07_curriculum.npz",
         episodes=episodes, task_ids=task_ids,
         mean_rewards=mean_rewards, std_rewards=std_rewards,
         mean_cti=mean_cti, std_cti=std_cti,
@@ -256,13 +278,20 @@ def main(seed: int = 42, episodes_per_task: int = 1000, n_seeds: int = 3,
         mean_fisher=mean_fisher, mean_drift=mean_drift,
         task_boundaries=np.array(task_boundaries),
         n_seeds=np.array([n_seeds]),
+        network=network,
+        n_buses=meta["n_buses"],
+        n_relays=meta["n_relays"],
+        n_pairs=meta["n_pairs"],
     )
-    logger.info("Saved: %s", out_path / "fig07_curriculum.npz")
+    logger.info("Saved: %s", net_dir / "fig07_curriculum.npz")
     
     # Plot
     fig, axes = plt.subplots(3, 2, figsize=(14, 12))
-    fig.suptitle(f"Figure 7 — Curriculum Learning Progression ({n_seeds} seeds, MAPPO-Safe-EWC, 8-Bus)", 
-                 fontsize=12)
+    fig.suptitle(
+        f"Figure 7 — Curriculum Learning ({network}, {meta['n_buses']}-Bus, "
+        f"{n_seeds} seeds, MAPPO-Safe-EWC)",
+        fontsize=12
+    )
     
     window = 50
     def smooth(y):
@@ -353,17 +382,17 @@ def main(seed: int = 42, episodes_per_task: int = 1000, n_seeds: int = 3,
     for i, tb in enumerate(task_boundaries):
         if i < len(TASKS):
             for ax in axes.flat[:5]:
-                ax.text(tb - 30, ax.get_ylim()[1] * 0.9, f"T{i}\\n{TASKS[i]*100:.0f}%",
+                ax.text(tb - 30, ax.get_ylim()[1] * 0.9, f"T{i}\n{TASKS[i]*100:.0f}%",
                        fontsize=7, ha="right", color="#ff6b35", fontweight="bold")
     
     fig.tight_layout()
-    fig.savefig(out_path / "fig07_curriculum.png", dpi=200, bbox_inches="tight")
+    fig.savefig(net_dir / "fig07_curriculum.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
-    logger.info("Saved: %s", out_path / "fig07_curriculum.png")
+    logger.info("Saved: %s", net_dir / "fig07_curriculum.png")
     
     # Summary
-    print("\\n" + "=" * 70)
-    print("CURRICULUM LEARNING SUMMARY")
+    print("\n" + "=" * 70)
+    print(f"CURRICULUM LEARNING SUMMARY — {network} ({meta['n_buses']}-Bus)")
     print("=" * 70)
     print(f"{'Task':>8} {'PV%':>8} {'Final Reward':>14} {'CTI Viol':>10} {'EWC Loss':>12}")
     print("-" * 70)
@@ -371,7 +400,7 @@ def main(seed: int = 42, episodes_per_task: int = 1000, n_seeds: int = 3,
         mask = task_ids == i
         print(f"{i:>8} {TASKS[i]*100:>7.0f}% {mean_rewards[mask][-1]:>14.4f} {mean_cti[mask][-1]:>10.2f} {mean_ewc[mask][-1]:>12.4f}")
     print("=" * 70)
-    print("\\nBACKWARD TRANSFER (Forgetting):")
+    print("\nBACKWARD TRANSFER (Forgetting):")
     print(f"{'Eval Task':>10} {'After Task':>12} {'Before':>10} {'After':>10} {'Forget%':>10} {'Std':>8}")
     print("-" * 70)
     for (eval_task, after_task), vals in avg_forgetting.items():
@@ -380,10 +409,26 @@ def main(seed: int = 42, episodes_per_task: int = 1000, n_seeds: int = 3,
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Figure 7 — Curriculum Learning (IMPROVED)")
+    p = argparse.ArgumentParser(
+        description="Figure 7 — Curriculum Learning (All IEEE Test Systems)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+Available networks:
+  3bus   — IEEE 3-Bus   (  6 relays,   6 pairs)  — toy validation
+  8bus   — IEEE 8-Bus   ( 14 relays,  20 pairs)  — small-scale MARL
+  14bus  — IEEE 14-Bus  ( 20 relays,  38 pairs)  — standard benchmark
+  30bus  — IEEE 30-Bus  ( 42 relays,  70 pairs)  — medium-scale MARL
+  39bus  — IEEE 39-Bus  ( 46 relays,  56 pairs)  — stability studies
+  57bus  — IEEE 57-Bus  ( 80 relays, 128 pairs)  — large-scale MARL
+  118bus — IEEE 118-Bus (186 relays, 304 pairs)  — very large-scale
+        """
+    )
+    p.add_argument("--network", type=str, default="8bus",
+                   choices=list(NETWORKS.keys()),
+                   help="IEEE test system to use (default: 8bus)")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--episodes_per_task", type=int, default=1000)
     p.add_argument("--n_seeds", type=int, default=3)
     p.add_argument("--output_dir", type=str, default="outputs")
     args = p.parse_args()
-    main(args.seed, args.episodes_per_task, args.n_seeds, args.output_dir)
+    main(args.network, args.seed, args.episodes_per_task, args.n_seeds, args.output_dir)

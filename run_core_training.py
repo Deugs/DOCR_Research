@@ -5,6 +5,9 @@ run_core_training.py — Unified Core Training Launcher for DOCR-MARL (ALL PHASE
 Covers all 11 core runs (A-K) feeding all 58 figures with experimental + synthetic fallback.
 
 REFACTORED: Added comprehensive progress tracking, ETA estimation, and rich console output.
+BUGFIXED: Fixed hardcoded synthetic fallback dimensions (n_agents=7→14, n_pairs=21→20 for 8-bus).
+          Added --use-synthetic / --no-synthetic CLI flag to control fallback behavior.
+          Integrated with docl_config.py for unified configuration management.
 """
 
 import argparse
@@ -21,6 +24,18 @@ from typing import Dict, List, Tuple, Optional, Any, Callable
 import logging
 import threading
 from contextlib import contextmanager
+
+# ──────────────────────────────────────────────────────────────────
+# Config Integration
+# ──────────────────────────────────────────────────────────────────
+# Import DOCRConfig from docl_config.py
+from docl_config import (
+    DOCRConfig, SystemConfig, TrainingConfig, ExperimentConfig, PostProcessingConfig,
+    build_config_parser, config_from_args, print_config_summary,
+    generate_example_config, list_presets, get_preset
+)
+
+FAST_MODE = ExperimentConfig.fast_mode
 
 # ──────────────────────────────────────────────────────────────────
 # Progress Tracking Infrastructure
@@ -81,7 +96,7 @@ class ProgressTracker:
         if self._postfix:
             postfix = " | " + ", ".join(f"{k}={v}" for k, v in self._postfix.items())
         
-        line = f"\\r{self.desc} [{bar}] {self.current}/{self.total} ({frac*100:.1f}%) | Elapsed: {elapsed} | ETA: {eta_str}{postfix}"
+        line = f"\r{self.desc} [{bar}] {self.current}/{self.total} ({frac*100:.1f}%) | Elapsed: {elapsed} | ETA: {eta_str}{postfix}"
         sys.stdout.write(line)
         sys.stdout.flush()
         self._printed = True
@@ -90,7 +105,7 @@ class ProgressTracker:
         with self._lock:
             if self._printed and self.enable:
                 elapsed = timedelta(seconds=int(time.time() - self._start_time))
-                sys.stdout.write(f"\\r{self.desc} [{'█' * self.width}] {self.total}/{self.total} (100.0%) | Total: {elapsed} — DONE\\n")
+                sys.stdout.write(f"\r{self.desc} [{'█' * self.width}] {self.total}/{self.total} (100.0%) | Total: {elapsed} — DONE\n")
                 sys.stdout.flush()
                 
     def __enter__(self):
@@ -119,7 +134,7 @@ class ExperimentProgress:
                 "completed_steps": 0,
                 "desc": desc,
             }
-        logger.info(f"\\n{'='*70}")
+        logger.info(f"\n{'='*70}")
         logger.info(f"STARTING: {run_name} — {desc}")
         logger.info(f"{'='*70}")
         
@@ -136,7 +151,7 @@ class ExperimentProgress:
                     
         status = "✓ COMPLETE" if success else "✗ FAILED"
         dur_str = f" ({timedelta(seconds=int(duration))})" if duration else ""
-        logger.info(f"\\n{run_name}: {status}{dur_str}")
+        logger.info(f"\n{run_name}: {status}{dur_str}")
         
     def update_step(self, run_name: str, step: int):
         with self._lock:
@@ -145,7 +160,7 @@ class ExperimentProgress:
                 
     def print_summary(self):
         total_elapsed = time.time() - self._start_time
-        logger.info(f"\\n{'='*70}")
+        logger.info(f"\n{'='*70}")
         logger.info("EXPERIMENT SUITE SUMMARY")
         logger.info(f"{'='*70}")
         logger.info(f"Total elapsed: {timedelta(seconds=int(total_elapsed))}")
@@ -208,6 +223,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Paths — now derived from config or defaults
 BASE_DIR = Path(__file__).parent.absolute()
 CACHE_DIR = BASE_DIR / "results" / "core_cache"
 FIGURES_DIR = BASE_DIR / "results" / "figures"
@@ -218,13 +234,66 @@ PROGRESS_DIR = BASE_DIR / "results" / "progress"
 for d in [CACHE_DIR, FIGURES_DIR, LOG_DIR, CHECKPOINT_DIR, PROGRESS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
+# ──────────────────────────────────────────────────────────────────
+# Global Runtime Flags — NOW DRIVEN BY CONFIG
+# ──────────────────────────────────────────────────────────────────
+# These will be set from config in main()
 FAST_MODE = False
-N_RUNS_DEFAULT, N_RUNS_FAST = 50, 2
-N_RUNS_BASELINE, N_RUNS_BASELINE_FAST = 10, 2
-N_RUNS_HPARAM, N_RUNS_HPARAM_FAST = 3, 1
-EPISODES_DEFAULT, EPISODES_FAST = 5000, 500
-EPISODES_HPARAM, EPISODES_HPARAM_FAST = 2000, 500
+USE_SYNTHETIC = False
+N_RUNS_DEFAULT = 50
+N_RUNS_FAST = 2
+N_RUNS_BASELINE = 10
+N_RUNS_BASELINE_FAST = 2
+N_RUNS_HPARAM = 3
+N_RUNS_HPARAM_FAST = 1
+EPISODES_DEFAULT = 5000
+EPISODES_FAST = 500
+EPISODES_HPARAM = 2000
+EPISODES_HPARAM_FAST = 500
 SEED = 42
+
+# Config object — set in main()
+CONFIG: Optional[DOCRConfig] = None
+
+def apply_config(config: DOCRConfig):
+    """Apply DOCRConfig to global runtime parameters."""
+    global FAST_MODE, USE_SYNTHETIC, SEED
+    global N_RUNS_DEFAULT, N_RUNS_FAST, N_RUNS_BASELINE, N_RUNS_BASELINE_FAST
+    global N_RUNS_HPARAM, N_RUNS_HPARAM_FAST
+    global EPISODES_DEFAULT, EPISODES_FAST, EPISODES_HPARAM, EPISODES_HPARAM_FAST
+    
+    FAST_MODE = config.experiment.fast_mode
+    USE_SYNTHETIC = config.experiment.use_synthetic
+    SEED = config.training.seed
+    
+    # Training parameters
+    N_RUNS_DEFAULT = config.training.n_runs
+    N_RUNS_FAST = config.training.n_runs_fast
+    N_RUNS_BASELINE = config.training.n_runs_baseline
+    N_RUNS_BASELINE_FAST = config.training.n_runs_baseline_fast
+    N_RUNS_HPARAM = config.training.n_runs_hparam
+    N_RUNS_HPARAM_FAST = config.training.n_runs_hparam_fast
+    
+    EPISODES_DEFAULT = config.training.n_episodes
+    EPISODES_FAST = config.training.n_episodes_fast
+    EPISODES_HPARAM = config.training.n_episodes_hparam
+    EPISODES_HPARAM_FAST = config.training.n_episodes_hparam_fast
+    
+    # Override paths if config specifies
+    global CACHE_DIR, FIGURES_DIR, LOG_DIR, CHECKPOINT_DIR, PROGRESS_DIR
+    if config.experiment.output_dir != "results":
+        base = Path(config.experiment.output_dir)
+        CACHE_DIR = base / "core_cache"
+        FIGURES_DIR = base / "figures"
+        LOG_DIR = base / "logs"
+        CHECKPOINT_DIR = base / "checkpoints"
+        PROGRESS_DIR = base / "progress"
+        for d in [CACHE_DIR, FIGURES_DIR, LOG_DIR, CHECKPOINT_DIR, PROGRESS_DIR]:
+            d.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"[CONFIG] Applied DOCRConfig: system={config.system.name}, "
+                f"fast_mode={FAST_MODE}, use_synthetic={USE_SYNTHETIC}, seed={SEED}")
+
 
 # ──────────────────────────────────────────────────────────────────
 # Cache Manager
@@ -301,7 +370,12 @@ class CacheManager:
     def get_stats(self) -> Dict:
         return self._stats.copy()
 
-cache = CacheManager(CACHE_DIR)
+# Initialize cache after config is applied
+cache: Optional[CacheManager] = None
+
+def init_cache():
+    global cache
+    cache = CacheManager(CACHE_DIR)
 
 # ──────────────────────────────────────────────────────────────────
 # Unified Training Logger
@@ -374,21 +448,31 @@ class UnifiedTrainingLogger:
         logger.info(f"[Logger] Saved unified log: {path}")
 
 # ═════════════════════════════════════════════════════════════════
-# HELPER: Try experimental, fallback to synthetic
+# HELPER: Try experimental, fallback to synthetic (RESPECTS USE_SYNTHETIC FLAG)
 # ═════════════════════════════════════════════════════════════════
 def _try_experimental(fn, fallback_fn, *args, **kwargs):
-    """Try experimental function, fallback to synthetic on any error."""
+    """Try experimental function, fallback to synthetic on any error (if enabled)."""
+    global USE_SYNTHETIC
     try:
         return fn(*args, **kwargs)
     except Exception as e:
-        logger.warning(f"Experimental failed ({e}), using synthetic fallback.")
-        return fallback_fn(*args, **kwargs)
+        if USE_SYNTHETIC:
+            logger.warning(f"Experimental failed ({e}), using synthetic fallback.")
+            return fallback_fn(*args, **kwargs)
+        else:
+            logger.error(f"Experimental failed and synthetic fallback DISABLED: {e}")
+            raise
 
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN A — MAPPO-Safe-EWC 8-Bus 100% PV
 # ═════════════════════════════════════════════════════════════════
-def run_core_A(n_runs: int = 50, n_episodes: int = 5000, seed: int = 42, 
+def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None, 
                progress: ExperimentProgress = None):
+    # Use config values if not explicitly provided
+    n_runs = n_runs if n_runs is not None else (N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT)
+    n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
+    seed = seed if seed is not None else SEED
+    
     config = {
         "name": "core_A_mappo_safe_ewc_8bus_100pv", 
         "method": "MAPPO-Safe-EWC", 
@@ -418,8 +502,9 @@ def run_core_A(n_runs: int = 50, n_episodes: int = 5000, seed: int = 42,
     with ProgressTracker(total=n_runs, desc="[Core A] Training runs", unit="run") as pbar:
         for run_idx in range(n_runs):
             run_seed = seed + run_idx
+            # BUGFIX: Pass n_agents=14, n_pairs=20 to match 8-bus network dimensions
             result = _try_experimental(_run_core_A_experimental, _generate_synthetic_core_A, 
-                                       n_episodes, run_seed)
+                                       n_episodes, run_seed, n_agents=14, n_pairs=20)
             all_runs_data.append(result)
             pbar.update(1)
             pbar.set_postfix(seed=run_seed, 
@@ -441,8 +526,7 @@ def run_core_A(n_runs: int = 50, n_episodes: int = 5000, seed: int = 42,
                            details={"n_runs": n_runs, "n_episodes": n_episodes})
     return aggregated
 
-
-def _run_core_A_experimental(n_episodes: int, seed: int) -> Dict:
+def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n_pairs: int = None) -> Dict:
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
@@ -450,13 +534,33 @@ def _run_core_A_experimental(n_episodes: int, seed: int) -> Dict:
     
     net = get_8bus()
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=5)
-    trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
-    if hasattr(trainer, 'use_safety'): trainer.use_safety = True
-    if hasattr(trainer, 'use_ewc'): trainer.use_ewc = True
+    
+    # Use provided dims or derive from environment
+    n_agents = n_agents or env.n_agents
+    n_pairs = n_pairs or (env.net.n_pairs if hasattr(env.net, 'n_pairs') else 20)
+    
+    # FIX: Validate observation dimensions
+    obs_sample = env.reset(seed=seed)
+    expected_obs_dim = env.OBS_DIM  # 10 features as defined in DynamicDOCREnv
+    actual_obs_dim = len(obs_sample[0]) if hasattr(obs_sample[0], '__len__') else obs_sample[0].shape[0]
+    
+    if actual_obs_dim != expected_obs_dim:
+        logger.warning(f"Obs dim mismatch: expected {expected_obs_dim}, got {actual_obs_dim}. "
+                      f"n_agents={env.n_agents}, n_relays={net.n_relays}")
+    
+    # FIX: use_comm=False for Core A to avoid obs_dim mismatch with GNN-enhanced observations
+    # Core A focuses on MAPPO-Safe-EWC; GNN communication is evaluated in ablation studies
+    trainer = MAPPOMARLTrainer(env, use_comm=False, seed=seed)
+    
+    # Safety layer and EWC are placeholder features - check if implemented
+    if hasattr(trainer, 'use_safety'): 
+        trainer.use_safety = True
+    if hasattr(trainer, 'use_ewc'): 
+        trainer.use_ewc = True
     
     logger_obj = UnifiedTrainingLogger(
         n_agents=env.n_agents, 
-        n_pairs=env.net.n_pairs if hasattr(env.net, 'n_pairs') else 21,
+        n_pairs=env.net.n_pairs if hasattr(env.net, 'n_pairs') else n_pairs,
         snapshot_episodes=[0, 100, 500, 1000, 5000] if n_episodes >= 5000 else [0, 50, 100, 250, 500]
     )
     rng = np.random.default_rng(seed)
@@ -474,6 +578,7 @@ def _run_core_A_experimental(n_episodes: int, seed: int) -> Dict:
                 for i in range(env.n_agents):
                     a_raw, _ = trainer.actor.sample(obs[i], rng)
                     actions_raw[i] = a_raw
+                    # Safety projection placeholder
                     if hasattr(trainer, 'safety_layer') and trainer.safety_layer is not None:
                         a_safe = trainer.safety_layer.project(a_raw, obs[i])
                         if not np.allclose(a_raw, a_safe):
@@ -488,12 +593,13 @@ def _run_core_A_experimental(n_episodes: int, seed: int) -> Dict:
             TMS, PS = env.get_state()
             c = check_constraints(env.net, TMS, PS)
             viol_count = c["cti_violations"]
+            
+            # Lagrange multiplier norm placeholder
             lag_norm = 0.0
             if hasattr(trainer, 'lagrange_multipliers'):
                 lag_norm = float(np.linalg.norm(trainer.lagrange_multipliers))
-            elif hasattr(trainer, 'safety_layer') and hasattr(trainer.safety_layer, 'lambdas'):
-                lag_norm = float(np.linalg.norm(trainer.safety_layer.lambdas))
-                
+            
+            # Attention weights placeholder (only if comm enabled)
             attn = None
             if hasattr(trainer, 'actor') and hasattr(trainer.actor, 'attention_weights'):
                 attn = trainer.actor.attention_weights.copy()
@@ -514,9 +620,11 @@ def _run_core_A_experimental(n_episodes: int, seed: int) -> Dict:
     return logger_obj.to_dict()
 
 
-def _generate_synthetic_core_A(n_episodes: int, seed: int) -> Dict:
+def _generate_synthetic_core_A(n_episodes: int, seed: int, n_agents: int = None, n_pairs: int = None) -> Dict:
     rng = np.random.default_rng(seed)
-    n_agents, n_pairs = 7, 21
+    # Use provided dims or default to 8-bus (14 relays, 20 pairs)
+    n_agents = n_agents or 14
+    n_pairs = n_pairs or 20
     logger_obj = UnifiedTrainingLogger(n_agents=n_agents, n_pairs=n_pairs)
     
     with ProgressTracker(total=n_episodes, desc="[Core A] Synthetic episodes", unit="ep", enable=False) as pbar:
@@ -584,11 +692,16 @@ def _aggregate_runs(runs_data: List[Dict]) -> Dict:
         
     return aggregated
 
+
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN B — Curriculum 0% -> 100% PV
 # ═════════════════════════════════════════════════════════════════
-def run_core_B(n_runs: int = 10, episodes_per_task: int = 500, seed: int = 42,
+def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = None,
                progress: ExperimentProgress = None):
+    n_runs = n_runs if n_runs is not None else (N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE)
+    episodes_per_task = episodes_per_task if episodes_per_task is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT) // 10
+    seed = seed if seed is not None else SEED
+    
     config = {
         "name": "core_B_curriculum", 
         "tasks": [0.0, 0.25, 0.5, 0.75, 1.0], 
@@ -618,7 +731,7 @@ def run_core_B(n_runs: int = 10, episodes_per_task: int = 500, seed: int = 42,
     with ProgressTracker(total=n_runs, desc="[Core B] Curriculum runs", unit="run") as pbar:
         for run_idx in range(n_runs):
             run_seed = seed + run_idx
-            logger.info(f"\\n[Core B] Run {run_idx + 1}/{n_runs} (seed={run_seed})")
+            logger.info(f"\n[Core B] Run {run_idx + 1}/{n_runs} (seed={run_seed})")
             
             result_ewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum, 
                                           True, run_seed, episodes_per_task)
@@ -697,7 +810,7 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
     return {"task_performances": np.array(task_performances), "use_ewc": use_ewc, "final_checkpoint": "saved"}
 
 
-def _generate_synthetic_curriculum(use_ewc: bool, seed: int, episodes_per_task: int):
+def _generate_synthetic_curriculum(use_ewc: bool, seed: int, episodes_per_task: int, n_agents: int = 14):
     rng = np.random.default_rng(seed)
     n_tasks = 5
     task_performances = []
@@ -725,8 +838,12 @@ def _evaluate_across_pv(checkpoint, pv_levels):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN C — Baseline Comparison
 # ═════════════════════════════════════════════════════════════════
-def run_core_C(n_runs: int = 50, n_episodes: int = 5000, seed: int = 42,
+def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
                progress: ExperimentProgress = None):
+    n_runs = n_runs if n_runs is not None else (N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT)
+    n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
+    seed = seed if seed is not None else SEED
+    
     config = {
         "name": "core_C_baselines", 
         "methods": ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"], 
@@ -756,7 +873,7 @@ def run_core_C(n_runs: int = 50, n_episodes: int = 5000, seed: int = 42,
     
     with ProgressTracker(total=total_steps, desc="[Core C] Baseline runs", unit="run") as pbar:
         for method in config["methods"]:
-            logger.info(f"\\n[Core C] Method: {method}")
+            logger.info(f"\n[Core C] Method: {method}")
             for run_idx in range(n_runs):
                 run_seed = seed + run_idx + hash(method) % 10000
                 returns = _try_experimental(_run_baseline_single, _generate_synthetic_baseline, 
@@ -830,7 +947,7 @@ def _evaluate_traditional(env, net, n_episodes: int, seed: int):
     return np.array(returns)
 
 
-def _generate_synthetic_baseline(method: str, n_episodes: int, seed: int):
+def _generate_synthetic_baseline(method: str, n_episodes: int, seed: int, n_agents: int = 14):
     rng = np.random.default_rng(seed)
     profiles = {
         "MAPPO-Safe-EWC": (-3.0, 7.8, 800), 
@@ -854,8 +971,12 @@ def _generate_synthetic_baseline(method: str, n_episodes: int, seed: int):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN D — Ablation Study
 # ═════════════════════════════════════════════════════════════════
-def run_core_D(n_runs: int = 10, n_episodes: int = 500, seed: int = 42,
+def run_core_D(n_runs: int = None, n_episodes: int = None, seed: int = None,
                progress: ExperimentProgress = None):
+    n_runs = n_runs if n_runs is not None else (N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE)
+    n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
+    seed = seed if seed is not None else SEED
+    
     config = {
         "name": "core_D_ablation", 
         "configs": ["MAPPO", "MAPPO+GNN", "MAPPO+GNN+Safe", "MAPPO+GNN+Safe+EWC", "MAPPO+GNN+Safe+EWC+Curr"], 
@@ -885,7 +1006,7 @@ def run_core_D(n_runs: int = 10, n_episodes: int = 500, seed: int = 42,
     
     with ProgressTracker(total=total_steps, desc="[Core D] Ablation runs", unit="run") as pbar:
         for cfg_name in config["configs"]:
-            logger.info(f"\\n[Core D] Config: {cfg_name}")
+            logger.info(f"\n[Core D] Config: {cfg_name}")
             for run_idx in range(n_runs):
                 run_seed = seed + run_idx + hash(cfg_name) % 1000
                 of_val, cti_val = _try_experimental(_run_ablation_single, _generate_synthetic_ablation,
@@ -976,8 +1097,12 @@ def _generate_synthetic_ablation(config_name: str, seed: int):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN E — Hyperparameter Grid
 # ═════════════════════════════════════════════════════════════════
-def run_core_E(n_seeds: int = 3, n_steps: int = 2000, seed: int = 42,
+def run_core_E(n_seeds: int = None, n_steps: int = None, seed: int = None,
                progress: ExperimentProgress = None):
+    n_seeds = n_seeds if n_seeds is not None else (N_RUNS_HPARAM_FAST if FAST_MODE else N_RUNS_HPARAM)
+    n_steps = n_steps if n_steps is not None else (EPISODES_HPARAM_FAST if FAST_MODE else EPISODES_HPARAM)
+    seed = seed if seed is not None else SEED
+    
     config = {
         "name": "core_E_hparam", 
         "lambda_ewc": [1e2, 1e3, 1e4, 1e5, 1e6], 
@@ -1012,7 +1137,7 @@ def run_core_E(n_seeds: int = 3, n_steps: int = 2000, seed: int = 42,
     
     with ProgressTracker(total=total_steps, desc="[Core E] Grid search", unit="config") as pbar:
         for seed_idx in range(n_seeds):
-            logger.info(f"\\n[Core E] Seed {seed_idx + 1}/{n_seeds}")
+            logger.info(f"\n[Core E] Seed {seed_idx + 1}/{n_seeds}")
             for idx, (lamb, alpha, hid) in enumerate(grid):
                 if idx % 20 == 0:
                     logger.info(f"  [{idx}/{len(grid)}] lambda={lamb:.0e}, alpha={alpha:.0e}, h={hid}")
@@ -1088,10 +1213,16 @@ def _generate_synthetic_hparam(lambda_ewc, alpha_lambda, hidden_dim, seed, n_ste
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN F — Scalability Analysis
 # ═════════════════════════════════════════════════════════════════
-def run_core_F(systems: List[str] = None, seed: int = 42,
+def run_core_F(systems: List[str] = None, seed: int = None,
                progress: ExperimentProgress = None):
+    """Scalability analysis across all supported network sizes."""
+    seed = seed if seed is not None else SEED
+    
     if systems is None:
-        systems = ["8bus", "14bus", "30bus"] if FAST_MODE else ["8bus", "14bus", "30bus", "57bus", "118bus"]
+        # Full suite: all 7 network sizes; Fast mode: subset
+        systems = ["8bus", "14bus", "30bus"] if FAST_MODE else [
+            "3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"
+        ]
         
     config = {"name": "core_F_scalability", "systems": systems, "seed": seed}
     cached = cache.get(config)
@@ -1113,7 +1244,7 @@ def run_core_F(systems: List[str] = None, seed: int = 42,
     results = {}
     with ProgressTracker(total=len(systems), desc="[Core F] Systems", unit="sys") as pbar:
         for sys_name in systems:
-            logger.info(f"\\n[Core F] System: {sys_name}")
+            logger.info(f"\n[Core F] System: {sys_name}")
             result = _try_experimental(_run_scalability_single, _generate_synthetic_scalability, 
                                       sys_name, seed)
             results[sys_name] = result
@@ -1133,13 +1264,19 @@ def run_core_F(systems: List[str] = None, seed: int = 42,
 
 
 def _run_scalability_single(sys_name: str, seed: int):
-    from network.network_data import get_8bus, get_14bus, get_30bus, get_57bus, get_118bus
+    from network.network_data import (
+        get_3bus, get_8bus, get_14bus, get_30bus, 
+        get_39bus, get_57bus, get_118bus
+    )
     getters = {
-        "8bus": get_8bus, "14bus": get_14bus, "30bus": get_30bus, 
+        "3bus": get_3bus, "8bus": get_8bus, "14bus": get_14bus,
+        "30bus": get_30bus, "39bus": get_39bus, 
         "57bus": get_57bus, "118bus": get_118bus
     }
+    if sys_name not in getters:
+        raise ValueError(f"Unknown system: {sys_name}. Supported: {list(getters.keys())}")
     net = getters[sys_name]()
-    n_relays = {"8bus": 7, "14bus": 13, "30bus": 14, "57bus": 28, "118bus": 54}.get(sys_name, 7)
+    n_relays = net.n_relays  # BUGFIX: USE ACTUAL VALUE, not hardcoded dict
     
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
@@ -1169,8 +1306,11 @@ def _run_scalability_single(sys_name: str, seed: int):
     }
 
 
-def _generate_synthetic_scalability(sys_name: str, seed: int):
-    n_relays = {"8bus": 7, "14bus": 13, "30bus": 14, "57bus": 28, "118bus": 54}.get(sys_name, 7)
+def _generate_synthetic_scalability(sys_name: str, seed: int, net=None):
+    from network.network_data import load_network
+    if net is None:
+        net = load_network(sys_name)
+    n_relays = net.n_relays
     train_time = n_relays * 15 + np.random.rand() * 5
     return {
         "n_relays": n_relays, 
@@ -1181,7 +1321,9 @@ def _generate_synthetic_scalability(sys_name: str, seed: int):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN G — Robustness Evaluation
 # ═════════════════════════════════════════════════════════════════
-def run_core_G(seed: int = 42, progress: ExperimentProgress = None):
+def run_core_G(seed: int = None, progress: ExperimentProgress = None):
+    seed = seed if seed is not None else SEED
+    
     config = {
         "name": "core_G_robustness", 
         "stress_types": ["communication", "byzantine", "bandwidth", "sensor", "adversarial"], 
@@ -1214,7 +1356,7 @@ def run_core_G(seed: int = 42, progress: ExperimentProgress = None):
     
     with ProgressTracker(total=5, desc="[Core G] Stress tests", unit="test") as pbar:
         # Fig 13: Communication Stress
-        logger.info("\\n[Core G] Fig 13: Communication Stress")
+        logger.info("\n[Core G] Fig 13: Communication Stress")
         packet_loss = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
         latency = [0, 100, 200, 300, 400, 500]
         results["communication"] = {
@@ -1285,10 +1427,13 @@ def run_core_G(seed: int = 42, progress: ExperimentProgress = None):
                            details={"stress_types": config["stress_types"]})
     return results
 
+
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN H — Transfer Learning
 # ═════════════════════════════════════════════════════════════════
-def run_core_H(seed: int = 42, progress: ExperimentProgress = None):
+def run_core_H(seed: int = None, progress: ExperimentProgress = None):
+    seed = seed if seed is not None else SEED
+    
     config = {
         "name": "core_H_transfer", 
         "evaluations": ["unseen_faults", "zero_shot_8to30"], 
@@ -1315,7 +1460,7 @@ def run_core_H(seed: int = 42, progress: ExperimentProgress = None):
     
     with ProgressTracker(total=2, desc="[Core H] Transfer tests", unit="test") as pbar:
         # Fig 23: Unseen Fault Types
-        logger.info("\\n[Core H] Fig 23: Unseen Fault Types")
+        logger.info("\n[Core H] Fig 23: Unseen Fault Types")
         fault_types = ["bolted", "high-impedance", "evolving", "simultaneous"]
         results["unseen_faults"] = {ft: max(0, 0.85 - rng.rand() * 0.2) for ft in fault_types}
         step_count += 1
@@ -1347,7 +1492,9 @@ def run_core_H(seed: int = 42, progress: ExperimentProgress = None):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN I — Deployment Benchmark
 # ═════════════════════════════════════════════════════════════════
-def run_core_I(seed: int = 42, progress: ExperimentProgress = None):
+def run_core_I(seed: int = None, progress: ExperimentProgress = None):
+    seed = seed if seed is not None else SEED
+    
     config = {
         "name": "core_I_deployment", 
         "benchmarks": ["inference_latency", "model_compression"], 
@@ -1374,7 +1521,7 @@ def run_core_I(seed: int = 42, progress: ExperimentProgress = None):
     
     with ProgressTracker(total=2, desc="[Core I] Benchmarks", unit="bench") as pbar:
         # Fig 18: Inference Latency
-        logger.info("\\n[Core I] Fig 18: Inference Latency")
+        logger.info("\n[Core I] Fig 18: Inference Latency")
         latencies = rng.lognormal(-3, 0.5, 1000) * 1000
         results["latency"] = {
             "latencies_ms": latencies,
@@ -1413,7 +1560,9 @@ def run_core_I(seed: int = 42, progress: ExperimentProgress = None):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN J — Protection Engineering
 # ═════════════════════════════════════════════════════════════════
-def run_core_J(seed: int = 42, progress: ExperimentProgress = None):
+def run_core_J(seed: int = None, progress: ExperimentProgress = None):
+    seed = seed if seed is not None else SEED
+    
     config = {
         "name": "core_J_protection", 
         "analyses": ["coordination", "fault_contribution", "daily_profile", "relay_curves", "sympathetic_tripping"], 
@@ -1440,8 +1589,8 @@ def run_core_J(seed: int = 42, progress: ExperimentProgress = None):
     
     with ProgressTracker(total=5, desc="[Core J] Analyses", unit="analysis") as pbar:
         # Fig 43: Coordination Diagram
-        logger.info("\\n[Core J] Fig 43: Coordination Diagram")
-        n_pairs = 21
+        logger.info("[Core J] Fig 43: Coordination Diagram")
+        n_pairs = 20  # FIX: 8-bus has 20 pairs, not 21 (was hardcoded 21)
         distances = np.linspace(0, 10, n_pairs)
         op_times_primary = 0.1 + 0.05 * distances + rng.normal(0, 0.01, n_pairs)
         op_times_backup = 0.3 + 0.08 * distances + rng.normal(0, 0.01, n_pairs)
@@ -1505,7 +1654,9 @@ def run_core_J(seed: int = 42, progress: ExperimentProgress = None):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN K — Seasonal Generalization
 # ═════════════════════════════════════════════════════════════════
-def run_core_K(seed: int = 42, progress: ExperimentProgress = None):
+def run_core_K(seed: int = None, progress: ExperimentProgress = None):
+    seed = seed if seed is not None else SEED
+    
     config = {
         "name": "core_K_seasonal", 
         "seasons": ["spring", "summer", "autumn", "winter"], 
@@ -1532,7 +1683,7 @@ def run_core_K(seed: int = 42, progress: ExperimentProgress = None):
     
     with ProgressTracker(total=4, desc="[Core K] Seasons", unit="season") as pbar:
         for season in config["seasons"]:
-            logger.info(f"\\n[Core K] Season: {season}")
+            logger.info(f"\n[Core K] Season: {season}")
             base_perf = {"spring": 0.83, "summer": 0.80, "autumn": 0.84, "winter": 0.82}[season]
             results[season] = {
                 "performance": base_perf + rng.normal(0, 0.02),
@@ -1555,22 +1706,39 @@ def run_core_K(seed: int = 42, progress: ExperimentProgress = None):
 # ═════════════════════════════════════════════════════════════════
 # MAIN ORCHESTRATOR
 # ═════════════════════════════════════════════════════════════════
-def run_all_cores(fast: bool = False):
-    global FAST_MODE
-    FAST_MODE = fast
-    n_runs = N_RUNS_FAST if fast else N_RUNS_DEFAULT
-    n_runs_baseline = N_RUNS_BASELINE_FAST if fast else N_RUNS_BASELINE
-    n_runs_hparam = N_RUNS_HPARAM_FAST if fast else N_RUNS_HPARAM
-    n_episodes = EPISODES_FAST if fast else EPISODES_DEFAULT
-    n_episodes_hparam = EPISODES_HPARAM_FAST if fast else EPISODES_HPARAM
+def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRConfig = None):
+    """Run all core training runs with optional config override."""
+    global FAST_MODE, USE_SYNTHETIC, CONFIG
+    
+    # Apply config if provided
+    if config is not None:
+        CONFIG = config
+        apply_config(config)
+    else:
+        # Use explicit args or current globals
+        if fast is not None:
+            FAST_MODE = fast
+        if use_synthetic is not None:
+            USE_SYNTHETIC = use_synthetic
+    
+    n_runs = N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT
+    n_runs_baseline = N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE
+    n_runs_hparam = N_RUNS_HPARAM_FAST if FAST_MODE else N_RUNS_HPARAM
+    n_episodes = EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT
+    n_episodes_hparam = EPISODES_HPARAM_FAST if FAST_MODE else EPISODES_HPARAM
     
     # Initialize experiment progress tracker
     all_cores = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
-    progress = ExperimentProgress(core_runs=[f"Core {c}" for c in all_cores], fast_mode=fast)
+    progress = ExperimentProgress(core_runs=[f"Core {c}" for c in all_cores], fast_mode=FAST_MODE)
     
-    logger.info("\\n" + "=" * 70)
+    logger.info("\n" + "=" * 70)
     logger.info("DOCR-MARL: UNIFIED CORE TRAINING - ALL PHASES (A-K)")
-    logger.info(f"Mode: {'FAST' if fast else 'FULL'}")
+    logger.info(f"Mode: {'FAST' if FAST_MODE else 'FULL'}")
+    logger.info(f"Synthetic Fallback: {'ENABLED' if USE_SYNTHETIC else 'DISABLED'}")
+    if CONFIG is not None:
+        logger.info(f"System: {CONFIG.system.name}, PV: {CONFIG.system.pv_penetration:.0%}")
+        logger.info(f"Actor hidden: {CONFIG.training.hidden_actor}, Critic hidden: {CONFIG.training.hidden_critic}")
+        logger.info(f"LR Actor: {CONFIG.training.lr_actor}, LR Critic: {CONFIG.training.lr_critic}")
     logger.info("=" * 70)
     
     t0 = time.time()
@@ -1599,11 +1767,13 @@ def run_all_cores(fast: bool = False):
     
     # Cache stats
     cache_stats = cache.get_stats()
-    logger.info(f"\\nCache statistics: {cache_stats['hits']} hits, {cache_stats['misses']} misses, {cache_stats['stores']} stores")
+    logger.info(f"\nCache statistics: {cache_stats['hits']} hits, {cache_stats['misses']} misses, {cache_stats['stores']} stores")
     
     manifest = {
         "timestamp": datetime.now().isoformat(), 
-        "fast_mode": fast, 
+        "fast_mode": FAST_MODE, 
+        "use_synthetic": USE_SYNTHETIC,
+        "config_used": CONFIG is not None,
         "elapsed_seconds": elapsed,
         "cores": {
             "A": {"feeds": "Figs 9,10,12,21,37,38,41,48-50,55-57", "status": "complete"},
@@ -1619,16 +1789,17 @@ def run_all_cores(fast: bool = False):
             "K": {"feeds": "Fig 58", "status": "complete"},
         },
         "cache_dir": str(CACHE_DIR),
-        "estimated_gpu_days": "8-10 (full)" if not fast else "~1-2 hours (fast)",
+        "estimated_gpu_days": "8-10 (full)" if not FAST_MODE else "~1-2 hours (fast)",
         "cache_stats": cache_stats,
         "progress_report": str(report_path),
     }
     manifest_path = CACHE_DIR / "training_manifest.json"
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
-    logger.info("\\n" + "=" * 70)
+    logger.info("\n" + "=" * 70)
     logger.info("ALL CORE TRAINING COMPLETE (A-K)")
     logger.info(f"Total time: {timedelta(seconds=int(elapsed))}")
+    logger.info(f"Synthetic Fallback: {'ENABLED' if USE_SYNTHETIC else 'DISABLED'}")
     logger.info(f"Manifest: {manifest_path}")
     logger.info(f"Progress: {report_path}")
     logger.info("Next: run_post_processing.py --all")
@@ -1637,29 +1808,10 @@ def run_all_cores(fast: bool = False):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Unified Core Training for DOCR-MARL (ALL PHASES A-K)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Core Runs (replaces ~30+ redundant training sessions):
-  --core-A    MAPPO-Safe-EWC 8-bus 100% PV -> Figs 9,10,12,21,37,38,41,48-50,55-57
-  --core-B    Curriculum 0%->100% PV -> Figs 5,6,7,16,29,39
-  --core-C    Baseline comparison -> Figs 11,12,31-33,55-56
-  --core-D    Ablation study -> Fig 39
-  --core-E    Hyperparameter grid -> Fig 40
-  --core-F    Scalability sweep -> Fig 15
-  --core-G    Robustness evaluation -> Figs 13,20,22,24,54
-  --core-H    Transfer learning -> Figs 23,25
-  --core-I    Deployment benchmark -> Figs 18,53
-  --core-J    Protection engineering -> Figs 43,44,45,46,47
-  --core-K    Seasonal generalization -> Fig 58
-  --all       Run all cores A-K
-  --fast      Reduced iterations for testing
-  --figures-only  Skip training, use cached data
-  --clear-cache   Invalidate all cached results
-  --progress      Show last progress report
-        """
-    )
+    # Build parser with config support
+    parser = build_config_parser()
+
+    # Add core-training-specific arguments ONLY
     parser.add_argument("--core-A", action="store_true", help="Core Run A")
     parser.add_argument("--core-B", action="store_true", help="Core Run B")
     parser.add_argument("--core-C", action="store_true", help="Core Run C")
@@ -1672,42 +1824,60 @@ Core Runs (replaces ~30+ redundant training sessions):
     parser.add_argument("--core-J", action="store_true", help="Core Run J")
     parser.add_argument("--core-K", action="store_true", help="Core Run K")
     parser.add_argument("--all", action="store_true", help="Run all cores A-K")
-    parser.add_argument("--fast", action="store_true", help="Fast mode")
+
     parser.add_argument("--figures-only", action="store_true", help="Skip training")
-    parser.add_argument("--clear-cache", action="store_true", help="Clear cache")
     parser.add_argument("--cache-status", action="store_true", help="Show cache status")
     parser.add_argument("--progress", action="store_true", help="Show last progress report")
     args = parser.parse_args()
-    
-    if args.clear_cache:
+
+    # Build config from all sources (CLI, config file, preset, env vars, defaults)
+    config = None
+    try:
+        config = config_from_args(args)
+        print_config_summary(config)
+    except ValueError as e:
+        logger.error(f"Configuration error: {e}")
+        sys.exit(1)
+
+    # Apply config to globals
+    apply_config(config)
+
+    # Synthetic fallback is controlled entirely via the unified config system
+    use_synthetic = config.experiment.use_synthetic
+
+    # Initialize cache after config is applied (paths may have changed)
+    init_cache()
+
+    if config.experiment.clear_cache:
         cache.invalidate()
         # Also clear progress reports
         for f in PROGRESS_DIR.glob("*.json"):
             f.unlink()
         logger.info("[CACHE] Cleared all cached results and progress reports")
         return
-        
+
     if args.cache_status:
         entries = cache.list_entries()
         stats = cache.get_stats()
-        print(f"\\nCache entries: {len(entries)}")
+        print(f"\nCache entries: {len(entries)}")
         print(f"Cache hits: {stats['hits']}, misses: {stats['misses']}, stores: {stats['stores']}")
         for key, info in entries.items():
             size = info.get('size_mb', 'N/A')
             size_str = f"{size:.2f} MB" if isinstance(size, (int, float)) else size
             print(f"  {key}: {info['name']} ({info['created']}) [{size_str}]")
         return
-        
+
     if args.progress:
         reports = sorted(PROGRESS_DIR.glob("*.json"), reverse=True)
         if reports:
             with open(reports[0]) as f:
                 report = json.load(f)
-            print(f"\\nLast progress report: {reports[0].name}")
+            print(f"\nLast progress report: {reports[0].name}")
             print(f"Timestamp: {report.get('timestamp', 'N/A')}")
             print(f"Mode: {'FAST' if report.get('fast_mode') else 'FULL'}")
+            print(f"Synthetic Fallback: {'ENABLED' if report.get('use_synthetic', True) else 'DISABLED'}")
             print(f"Total elapsed: {timedelta(seconds=int(report.get('total_elapsed_seconds', 0)))}")
-            print(f"\\nCore runs:")
+            print(f"\nCore runs:")
             for run_name, info in report.get('core_runs', {}).items():
                 status = info.get('status', 'unknown')
                 dur = info.get('duration', 0)
@@ -1720,24 +1890,27 @@ Core Runs (replaces ~30+ redundant training sessions):
         else:
             print("No progress reports found.")
         return
-        
+
     if args.figures_only:
         logger.info("Skipping training - use run_post_processing.py to generate figures")
         return
-        
-    fast = args.fast
+
+    fast = FAST_MODE
+
     if args.all:
-        run_all_cores(fast=fast)
+        run_all_cores(fast=fast, use_synthetic=use_synthetic, config=config)
     else:
         n_runs = N_RUNS_FAST if fast else N_RUNS_DEFAULT
         n_runs_baseline = N_RUNS_BASELINE_FAST if fast else N_RUNS_BASELINE
         n_runs_hparam = N_RUNS_HPARAM_FAST if fast else N_RUNS_HPARAM
         n_eps = EPISODES_FAST if fast else EPISODES_DEFAULT
         n_eps_hparam = EPISODES_HPARAM_FAST if fast else EPISODES_HPARAM
-        
+
         # Track individual core runs
         progress = ExperimentProgress(core_runs=[], fast_mode=fast)
-        
+
+        logger.info(f"[CONFIG] Synthetic fallback: {'ENABLED' if use_synthetic else 'DISABLED'}")
+
         if args.core_A: run_core_A(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress)
         if args.core_B: run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_eps // 10, seed=SEED, progress=progress)
         if args.core_C: run_core_C(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress)
@@ -1749,7 +1922,7 @@ Core Runs (replaces ~30+ redundant training sessions):
         if args.core_I: run_core_I(seed=SEED, progress=progress)
         if args.core_J: run_core_J(seed=SEED, progress=progress)
         if args.core_K: run_core_K(seed=SEED, progress=progress)
-        
+
         if not any([args.core_A, args.core_B, args.core_C, args.core_D, args.core_E,
                     args.core_F, args.core_G, args.core_H, args.core_I, args.core_J, args.core_K]):
             parser.print_help()
@@ -1757,4 +1930,3 @@ Core Runs (replaces ~30+ redundant training sessions):
 
 if __name__ == "__main__":
     main()
-
