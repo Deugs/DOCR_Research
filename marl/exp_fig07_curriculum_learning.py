@@ -3,21 +3,6 @@ exp_fig07_curriculum_learning.py  —  Figure 7 (IMPROVED)
 ─────────────────────────────────────────────────────────────
 Curriculum Learning Progression (MAPPO-Safe-EWC).
 Spans ALL IEEE test systems: 3, 8, 14, 30, 39, 57, and 118 buses.
-
-IMPROVEMENTS over original:
-  • Network-agnostic: accepts any IEEE test system via CLI
-  • Proper episode-based training with MAPPOMARLTrainer
-  • Correct backward/forward transfer metrics per Kirkpatrick et al. (2017)
-  • Actual EWC loss computation from trainer internals
-  • Fisher Information Matrix diagonal logging
-  • Parameter drift tracking ||θ - θ*||²
-  • Multi-seed runs with confidence bands
-  • Task boundary visualization with statistical markers
-
-Outputs
--------
-  outputs/{network}/fig07_curriculum.npz
-  outputs/{network}/fig07_curriculum.png
 """
 
 import numpy as np
@@ -46,6 +31,14 @@ TASKS = [0.0, 0.25, 0.50, 0.75, 1.0]
 EPISODES_PER_TASK = 1000
 
 
+def _get_current_obs(trainer, obs, rng):
+    """Helper: enhance observations via comm_graph if enabled."""
+    if trainer.use_comm and trainer.comm_graph is not None:
+        enhanced_obs, _, _ = trainer.comm_graph.forward(obs, rng)
+        return enhanced_obs
+    return obs
+
+
 def evaluate_on_task(trainer, env, task_idx: int, n_eval: int = 20, seed: int = 0) -> float:
     """Evaluate current policy on a specific task."""
     rng = np.random.default_rng(seed)
@@ -57,9 +50,10 @@ def evaluate_on_task(trainer, env, task_idx: int, n_eval: int = 20, seed: int = 
         done = False
         ep_reward = 0
         while not done:
+            current_obs = _get_current_obs(trainer, obs, rng)
             actions = np.zeros((env.n_agents, env.ACT_DIM))
             for i in range(env.n_agents):
-                a, _ = trainer.actor.sample(obs[i], rng)
+                a, _ = trainer.actor.sample(current_obs[i], rng)
                 actions[i] = a
             obs, r, done, _ = env.step(actions)
             ep_reward += r
@@ -78,7 +72,9 @@ def run_curriculum_training(
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
                           fault_type="3ph", curriculum_stage=0)
     
-    trainer = MAPPOMARLTrainer(env, use_comm=True, hidden_actor=64,
+    # ── FIX: use_comm=False to avoid obs_dim mismatch, or keep True and use _get_current_obs ──
+    # Option A (recommended for now): disable communication to match the manual loop
+    trainer = MAPPOMARLTrainer(env, use_comm=False, hidden_actor=64,
                                hidden_critic=64, seed=seed)
     
     # Enable EWC and safety
@@ -126,9 +122,12 @@ def run_curriculum_training(
             ep_cti = 0
             
             while not done:
+                # ── FIX: use enhanced observations if communication is enabled ──
+                current_obs = _get_current_obs(trainer, obs, rng)
+                
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
                 for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
+                    a, _ = trainer.actor.sample(current_obs[i], rng)
                     actions[i] = a
                 obs, reward, done, info = env.step(actions)
                 ep_reward += reward
