@@ -4,43 +4,69 @@ deployment/hils_bridge.py
 Phase 7: IEC 61850 GOOSE/SV interface and HILS bridge.
 
 Provides:
-1. IEC 61850 GOOSE publisher/subscriber for relay settings
-2. Sampled Values (SV) interface for current/voltage measurements
+1. IEC 61850 GOOSE publisher/subscriber for relay settings (SIMULATED)
+2. Sampled Values (SV) interface for current/voltage measurements (SIMULATED)
 3. HILS (Hardware-in-the-Loop Simulation) bridge
 4. Real-time synchronization
-5. MMS (Manufacturing Message Specification) client
+5. MMS (Manufacturing Message Specification) client (SIMULATED)
 
 Usage:
     from deployment.hils_bridge import IEC61850Bridge, HILSConfig
 
-    bridge = IEC61850Bridge("192.168.1.100")
+    bridge = IEC61850Bridge()
     bridge.connect()
 
-    # Publish relay settings via GOOSE
+    # Publish relay settings via GOOSE (simulated)
     bridge.publish_settings(relay_id=0, TMS=0.5, PS=1.2)
 
-    # Subscribe to measurements
+    # Subscribe to measurements (simulated)
     measurements = bridge.subscribe_measurements()
+
+Warning
+-------
+This module provides a **simulation/placeholder** implementation.
+No actual IEC 61850 communication occurs. Production deployment
+requires ``libiec61850`` or an equivalent C library with Python
+bindings, which must be integrated into this bridge.
 """
 
-import numpy as np
-import time
-from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass
-from enum import Enum
+from __future__ import annotations
 
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, List, Tuple, Optional
+
+import numpy as np
+
+__all__ = [
+    "IEC61850DataType",
+    "HILSConfig",
+    "RelaySetting",
+    "MeasurementSample",
+    "IEC61850Bridge",
+    "HILSBridge",
+    "RealTimeSynchronizer",
+]
+
+
+# ── Enumerations ────────────────────────────────────────────────────────────
 
 class IEC61850DataType(Enum):
-    """IEC 61850 data types."""
+    """IEC 61850 data types (reference only — not used in simulation)."""
+
     FLOAT32 = "FLOAT32"
     INT32 = "INT32"
     BOOLEAN = "BOOLEAN"
     TIMESTAMP = "Timestamp"
 
 
+# ── Data classes ─────────────────────────────────────────────────────────────
+
 @dataclass
 class HILSConfig:
     """Hardware-in-the-Loop Simulation configuration."""
+
     host: str = "localhost"
     port: int = 102  # IEC 61850 default MMS port
     goose_interface: str = "eth0"
@@ -53,68 +79,98 @@ class HILSConfig:
 
 @dataclass
 class RelaySetting:
-    """IEC 61850 relay setting data object."""
+    """IEC 61850 relay setting data object (simulated)."""
+
     relay_id: int
     tms: float
     ps: float
     timestamp: float
-    quality: str = "good"  # good, questionable, invalid
+    quality: str = "good"  # good | questionable | invalid
 
 
 @dataclass
 class MeasurementSample:
-    """IEC 61850 sampled value."""
+    """IEC 61850 sampled value (simulated)."""
+
     relay_id: int
-    ia: float  # Phase A current
-    ib: float  # Phase B current
-    ic: float  # Phase C current
-    va: float  # Phase A voltage
-    vb: float  # Phase B voltage
-    vc: float  # Phase C voltage
+    ia: float  # Phase A current (A)
+    ib: float  # Phase B current (A)
+    ic: float  # Phase C current (A)
+    va: float  # Phase A voltage (V)
+    vb: float  # Phase B voltage (V)
+    vc: float  # Phase C voltage (V)
     timestamp: float
     sample_count: int
 
 
+# ── IEC 61850 Bridge (SIMULATED) ─────────────────────────────────────────────
+
 class IEC61850Bridge:
+    """IEC 61850 communication bridge for DOCR-MARL deployment (SIMULATED).
+
+    This is a **placeholder implementation**. It simulates:
+    - GOOSE (Generic Object Oriented Substation Events) for fast relay settings.
+    - SV (Sampled Values) for current/voltage measurements.
+    - MMS (Manufacturing Message Specification) for configuration.
+
+    No actual IEC 61850 packets are transmitted. To make this real:
+    1. Install ``libiec61850`` (C library by MZ Automation)
+    2. Build Python bindings (e.g., via ``ctypes`` or ``cffi``)
+    3. Replace the ``connect()``, ``publish_settings()``, and
+       ``subscribe_measurements()`` methods with libiec61850 calls.
     """
-    IEC 61850 communication bridge for DOCR-MARL deployment.
 
-    Implements:
-    - GOOSE (Generic Object Oriented Substation Events) for fast relay settings
-    - SV (Sampled Values) for current/voltage measurements
-    - MMS (Manufacturing Message Specification) for configuration
+    def __init__(self, config: HILSConfig | None = None) -> None:
+        self.config: HILSConfig = config or HILSConfig()
+        self.connected: bool = False
+        self._settings_log: list[RelaySetting] = []
+        self._measurement_log: list[MeasurementSample] = []
+        self._latency_history: list[float] = []
 
-    Note: This is a simulation/placeholder implementation.
-    Actual IEC 61850 requires libiec61850 or similar C library.
-    """
-
-    def __init__(self, config: Optional[HILSConfig] = None):
-        self.config = config or HILSConfig()
-        self.connected = False
-        self.settings_log: List[RelaySetting] = []
-        self.measurement_log: List[MeasurementSample] = []
-        self.latency_history: List[float] = []
+    # ── Connection management ───────────────────────────────────────────────
 
     def connect(self) -> bool:
-        """Connect to IEC 61850 server."""
-        # Placeholder: actual implementation would use libiec61850
+        """Simulate connection to IEC 61850 server.
+
+        Returns
+        -------
+        bool
+            Always True in simulation. Real implementation would return
+            connection status from libiec61850.
+        """
         self.connected = True
         print(f"  [IEC61850] Connected to {self.config.host}:{self.config.port}")
         return True
 
-    def disconnect(self):
-        """Disconnect from IEC 61850 server."""
+    def disconnect(self) -> None:
+        """Simulate disconnection from IEC 61850 server."""
         self.connected = False
         print("  [IEC61850] Disconnected")
 
-    def publish_settings(self, relay_id: int, tms: float, ps: float) -> bool:
-        """
-        Publish relay settings via GOOSE.
+    # ── GOOSE: Settings publication ───────────────────────────────────────────
 
-        GOOSE characteristics:
-        - Max latency: 10ms (T0 = 2s, T1-T4 = 2-8ms)
+    def publish_settings(self, relay_id: int, tms: float, ps: float) -> bool:
+        """Simulate publishing relay settings via GOOSE.
+
+        GOOSE characteristics (reference):
+        - Max latency: 10 ms (T0 = 2 s, T1-T4 = 2-8 ms)
         - Retransmission: immediate, then exponential backoff
         - No acknowledgment (publisher-subscriber model)
+
+        Parameters
+        ----------
+        relay_id : int
+            Target relay identifier.
+        tms : float
+            Time multiplier setting.
+        ps : float
+            Plug setting (pickup current).
+
+        Returns
+        -------
+        bool
+            True if the setting was queued for publication.
+            Returns False if not connected.
         """
         if not self.connected:
             return False
@@ -127,49 +183,64 @@ class IEC61850Bridge:
             ps=ps,
             timestamp=time.time(),
         )
-        self.settings_log.append(setting)
+        self._settings_log.append(setting)
 
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        self.latency_history.append(elapsed_ms)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self._latency_history.append(elapsed_ms)
 
         return True
 
-    def subscribe_measurements(self, n_samples: int = 1) -> List[MeasurementSample]:
-        """
-        Subscribe to SV (Sampled Values) measurements.
+    # ── SV: Measurement subscription ──────────────────────────────────────────
 
-        SV characteristics:
-        - 80 samples/cycle (4kHz at 50Hz) or 256 samples/cycle
+    def subscribe_measurements(self, n_samples: int = 1) -> list[MeasurementSample]:
+        """Simulate subscribing to SV (Sampled Values) measurements.
+
+        SV characteristics (reference):
+        - 80 samples/cycle (4 kHz at 50 Hz) or 256 samples/cycle
         - Fixed payload size for deterministic timing
         - No TCP/IP overhead (Ethernet multicast)
+
+        Parameters
+        ----------
+        n_samples : int
+            Number of samples to generate.
+
+        Returns
+        -------
+        list[MeasurementSample]
+            Simulated measurement samples.
+            Returns empty list if not connected.
         """
         if not self.connected:
             return []
 
-        samples = []
+        rng = np.random.default_rng(int(time.time() * 1000) % 2**31)
+        samples: list[MeasurementSample] = []
         for _ in range(n_samples):
             sample = MeasurementSample(
                 relay_id=0,
-                ia=np.random.normal(1000, 50),  # A
-                ib=np.random.normal(1000, 50),
-                ic=np.random.normal(1000, 50),
-                va=np.random.normal(11000, 100),  # V
-                vb=np.random.normal(11000, 100),
-                vc=np.random.normal(11000, 100),
+                ia=float(rng.normal(1000.0, 50.0)),
+                ib=float(rng.normal(1000.0, 50.0)),
+                ic=float(rng.normal(1000.0, 50.0)),
+                va=float(rng.normal(11000.0, 100.0)),
+                vb=float(rng.normal(11000.0, 100.0)),
+                vc=float(rng.normal(11000.0, 100.0)),
                 timestamp=time.time(),
-                sample_count=len(self.measurement_log),
+                sample_count=len(self._measurement_log),
             )
-            self.measurement_log.append(sample)
+            self._measurement_log.append(sample)
             samples.append(sample)
 
         return samples
 
-    def get_latency_statistics(self) -> Dict:
+    # ── Diagnostics ───────────────────────────────────────────────────────────
+
+    def get_latency_statistics(self) -> dict[str, float | bool | int]:
         """Return GOOSE publication latency statistics."""
-        if not self.latency_history:
+        if not self._latency_history:
             return {}
 
-        arr = np.array(self.latency_history)
+        arr = np.array(self._latency_history)
         return {
             "mean_ms": float(np.mean(arr)),
             "std_ms": float(np.std(arr)),
@@ -180,47 +251,53 @@ class IEC61850Bridge:
             "n_samples": len(arr),
         }
 
-    def verify_goose_timing(self) -> Dict:
-        """Verify GOOSE timing meets IEC 61850 requirements."""
+    def verify_goose_timing(self) -> dict[str, dict | bool]:
+        """Verify GOOSE timing meets IEC 61850 requirements (simulated check)."""
         stats = self.get_latency_statistics()
 
         iec_requirements = {
-            "T0_max_ms": 2000,   # Steady state retransmission
+            "T0_max_ms": 2000,   # Steady-state retransmission
             "T1_max_ms": 2,      # First retransmission after event
             "T2_max_ms": 4,      # Second retransmission
             "T3_max_ms": 8,      # Third retransmission
             "TAL_max_ms": 10,    # Time Allowed to Live
         }
 
-        verification = {
+        max_ms = stats.get("max_ms", float("inf"))
+        return {
             "requirements": iec_requirements,
             "actual": stats,
-            "compliant": stats.get("max_ms", 999) < iec_requirements["TAL_max_ms"],
+            "compliant": max_ms < iec_requirements["TAL_max_ms"],
         }
 
-        return verification
 
+# ── HILS Bridge ─────────────────────────────────────────────────────────────
 
 class HILSBridge:
-    """
-    Hardware-in-the-Loop Simulation bridge.
+    """Hardware-in-the-Loop Simulation bridge.
 
     Connects the DOCR-MARL simulation to real protection relays
     via IEC 61850 for closed-loop testing.
 
-    Architecture:
-    ┌─────────────┐    IEC 61850    ┌─────────────┐
-    │  Simulation │  <──────────>   │  Real Relay │
-    │  (Python)   │    GOOSE/SV     │  (Hardware) │
-    └─────────────┘                 └─────────────┘
+    Architecture::
+
+        ┌─────────────┐    IEC 61850    ┌─────────────┐
+        │  Simulation │  <──────────>   │  Real Relay │
+        │  (Python)   │    GOOSE/SV     │  (Hardware) │
+        └─────────────┘                 └─────────────┘
+
+    Note
+    ----
+    The IEC 61850 layer is currently simulated. See
+    :class:`IEC61850Bridge` for integration notes.
     """
 
-    def __init__(self, config: Optional[HILSConfig] = None):
-        self.config = config or HILSConfig()
-        self.iec_bridge = IEC61850Bridge(config)
-        self.running = False
-        self.cycle_count = 0
-        self.error_count = 0
+    def __init__(self, config: HILSConfig | None = None) -> None:
+        self.config: HILSConfig = config or HILSConfig()
+        self.iec_bridge: IEC61850Bridge = IEC61850Bridge(config)
+        self.running: bool = False
+        self.cycle_count: int = 0
+        self.error_count: int = 0
 
     def start(self) -> bool:
         """Start HILS loop."""
@@ -228,33 +305,42 @@ class HILSBridge:
             return False
 
         self.running = True
-        print(f"  [HILS] Started at {self.config.simulation_time_step_ms}ms timestep")
+        print(
+            f"  [HILS] Started at {self.config.simulation_time_step_ms} ms timestep"
+        )
         return True
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop HILS loop."""
         self.running = False
         self.iec_bridge.disconnect()
         print("  [HILS] Stopped")
 
-    def run_step(self, relay_settings: Dict[int, Tuple[float, float]], 
-                 measurements: Optional[Dict] = None) -> Dict:
-        """
-        Run one HILS step.
+    def run_step(
+        self,
+        relay_settings: dict[int, tuple[float, float]],
+        measurements: dict | None = None,
+    ) -> dict[str, object]:
+        """Run one HILS step.
 
-        Args:
-            relay_settings: {relay_id: (TMS, PS)}
-            measurements: Optional real measurements from relays
+        Parameters
+        ----------
+        relay_settings : dict[int, tuple[float, float]]
+            Mapping {relay_id: (TMS, PS)}.
+        measurements : dict | None
+            Optional real measurements from relays (bypasses simulation).
 
-        Returns:
-            step_result: Dict with timing, errors, measurements
+        Returns
+        -------
+        dict
+            Step result with timing, errors, and measurements.
         """
         if not self.running:
             return {"error": "HILS not running"}
 
         t0 = time.perf_counter()
 
-        # Publish settings to real relays
+        # Publish settings to real relays (simulated)
         publish_ok = True
         for relay_id, (tms, ps) in relay_settings.items():
             if not self.iec_bridge.publish_settings(relay_id, tms, ps):
@@ -265,7 +351,7 @@ class HILSBridge:
         if measurements is None:
             measurements = self.iec_bridge.subscribe_measurements(n_samples=1)
 
-        elapsed_ms = (time.perf_counter() - t0) * 1000
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
         self.cycle_count += 1
 
         return {
@@ -276,7 +362,7 @@ class HILSBridge:
             "error_count": self.error_count,
         }
 
-    def get_statistics(self) -> Dict:
+    def get_statistics(self) -> dict[str, object]:
         """Return HILS session statistics."""
         goose_stats = self.iec_bridge.get_latency_statistics()
 
@@ -307,54 +393,63 @@ class HILSBridge:
             f"  Mean:               {goose.get('mean_ms', 0):.2f} ms",
             f"  Max:                {goose.get('max_ms', 0):.2f} ms",
             f"  P99:                {goose.get('p99_ms', 0):.2f} ms",
-            f"  Meets target:       {'YES ✓' if goose.get('meets_target', False) else 'NO ✗'}",
+            (
+                "  Meets target:       YES ✓"
+                if goose.get("meets_target", False)
+                else "  Meets target:       NO ✗"
+            ),
             "=" * 70,
         ]
 
         return "\n".join(lines)
 
 
+# ── Real-Time Synchronizer ──────────────────────────────────────────────────
+
 class RealTimeSynchronizer:
-    """
-    Real-time synchronization for HILS.
+    """Real-time synchronization for HILS.
 
     Ensures simulation runs at real-time pace with nanosecond
     precision using busy-wait for sub-millisecond accuracy.
     """
 
-    def __init__(self, target_dt_ms: float = 4.0):
-        self.target_dt = target_dt_ms / 1000.0
-        self.last_time = 0.0
-        self.drift_history: List[float] = []
+    def __init__(self, target_dt_ms: float = 4.0) -> None:
+        self.target_dt: float = target_dt_ms / 1000.0
+        self._last_time: float = 0.0
+        self._drift_history: list[float] = []
 
-    def tick(self):
+    def tick(self) -> None:
         """Wait until next timestep."""
         now = time.perf_counter()
 
-        if self.last_time > 0:
-            elapsed = now - self.last_time
+        if self._last_time > 0.0:
+            elapsed = now - self._last_time
             sleep_time = self.target_dt - elapsed
 
             if sleep_time > 0.001:
                 time.sleep(sleep_time - 0.001)
 
             # Busy-wait for remaining time
-            while time.perf_counter() - self.last_time < self.target_dt:
+            while time.perf_counter() - self._last_time < self.target_dt:
                 pass
 
-        actual_dt = time.perf_counter() - self.last_time if self.last_time > 0 else self.target_dt
-        self.drift_history.append(actual_dt - self.target_dt)
-        self.last_time = time.perf_counter()
+        actual_dt = (
+            time.perf_counter() - self._last_time
+            if self._last_time > 0.0
+            else self.target_dt
+        )
+        self._drift_history.append(actual_dt - self.target_dt)
+        self._last_time = time.perf_counter()
 
-    def get_drift_statistics(self) -> Dict:
+    def get_drift_statistics(self) -> dict[str, float | int]:
         """Return timing drift statistics."""
-        if not self.drift_history:
+        if not self._drift_history:
             return {}
 
-        arr = np.array(self.drift_history)
+        arr = np.array(self._drift_history)
         return {
-            "mean_drift_ms": float(np.mean(arr) * 1000),
-            "std_drift_ms": float(np.std(arr) * 1000),
-            "max_drift_ms": float(np.max(arr) * 1000),
+            "mean_drift_ms": float(np.mean(arr) * 1000.0),
+            "std_drift_ms": float(np.std(arr) * 1000.0),
+            "max_drift_ms": float(np.max(arr) * 1000.0),
             "n_samples": len(arr),
         }

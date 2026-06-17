@@ -46,9 +46,21 @@ EPISODES_PER_TASK = 500
 N_EVAL = 30
 
 
-def run_curriculum(use_ewc: bool, seed: int = 42):
+def run_curriculum(use_ewc: bool, seed: int = 42, system: str = "8bus"):
     """Run curriculum training with or without EWC."""
-    net = get_8bus()
+    if system == "8bus":
+        net = get_8bus()
+    elif system == "14bus":
+        from network.network_data import get_14bus
+        net = get_14bus()
+    elif system == "30bus":
+        from network.network_data import get_30bus
+        net = get_30bus()
+    elif system == "39bus":
+        from network.network_data import get_39bus
+        net = get_39bus()
+    else:
+        net = get_8bus()
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
                           fault_type="3ph", curriculum_stage=0)
     trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
@@ -226,5 +238,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Figure 16 — EWC Effectiveness")
     p.add_argument("--n_seeds", type=int, default=10)
     p.add_argument("--output_dir", type=str, default="outputs")
+    p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     args = p.parse_args()
-    main(args.n_seeds, args.output_dir)
+    main(args.n_seeds, args.output_dir, args.system)

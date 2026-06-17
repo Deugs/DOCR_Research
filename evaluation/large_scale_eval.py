@@ -2,6 +2,7 @@
 evaluation/large_scale_eval.py
 ──────────────────────────────
 Large-Scale Evaluation Metrics for DOCR-MARL Phase 5.
+Supports all IEEE test systems: 3, 8, 14, 30, 39, 57, 118 buses.
 
 Computes comprehensive evaluation metrics:
 1. Scalability metrics (performance vs system size)
@@ -217,8 +218,11 @@ class LargeScaleEvaluator:
         system_sizes = {
             "3bus": 6,
             "8bus": 14,
+            "14bus": 20,
             "30bus": 42,
             "39bus": 46,
+            "57bus": 80,
+            "118bus": 186,
         }
 
         for method, results in self.by_method.items():
@@ -524,12 +528,30 @@ class LargeScaleEvaluator:
 if __name__ == "__main__":
     # Example with dummy data
     dummy_results = [
+        {"config": {"method": "GA-SQP", "system": "3bus", "pv_level": 0.0, "fault_type": "3ph"},
+         "best_of": 1.2, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.35, "elapsed_seconds": 2.0},
         {"config": {"method": "GA-SQP", "system": "8bus", "pv_level": 0.0, "fault_type": "3ph"},
          "best_of": 5.2, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.35, "elapsed_seconds": 10.0},
+        {"config": {"method": "GA-SQP", "system": "14bus", "pv_level": 0.0, "fault_type": "3ph"},
+         "best_of": 8.5, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.38, "elapsed_seconds": 15.0},
+        {"config": {"method": "GA-SQP", "system": "30bus", "pv_level": 0.0, "fault_type": "3ph"},
+         "best_of": 12.3, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.36, "elapsed_seconds": 25.0},
+        {"config": {"method": "GA-SQP", "system": "39bus", "pv_level": 0.0, "fault_type": "3ph"},
+         "best_of": 15.1, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.37, "elapsed_seconds": 35.0},
+        {"config": {"method": "GA-SQP", "system": "57bus", "pv_level": 0.0, "fault_type": "3ph"},
+         "best_of": 22.8, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.34, "elapsed_seconds": 55.0},
+        {"config": {"method": "GA-SQP", "system": "118bus", "pv_level": 0.0, "fault_type": "3ph"},
+         "best_of": 45.6, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.33, "elapsed_seconds": 120.0},
         {"config": {"method": "MAPPO", "system": "8bus", "pv_level": 0.0, "fault_type": "3ph"},
          "best_of": 5.1, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.40, "elapsed_seconds": 120.0},
+        {"config": {"method": "MAPPO", "system": "30bus", "pv_level": 0.0, "fault_type": "3ph"},
+         "best_of": 11.8, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.39, "elapsed_seconds": 350.0},
+        {"config": {"method": "MAPPO", "system": "39bus", "pv_level": 0.0, "fault_type": "3ph"},
+         "best_of": 14.5, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.41, "elapsed_seconds": 480.0},
         {"config": {"method": "MAPPO-Comm", "system": "8bus", "pv_level": 0.0, "fault_type": "3ph"},
          "best_of": 4.9, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.42, "elapsed_seconds": 130.0, "comm_bandwidth": 0.256},
+        {"config": {"method": "MAPPO-Comm", "system": "39bus", "pv_level": 0.0, "fault_type": "3ph"},
+         "best_of": 14.0, "cti_satisfied": True, "cti_violations": 0, "cti_min": 0.43, "elapsed_seconds": 520.0, "comm_bandwidth": 0.512},
     ]
 
     evaluator = LargeScaleEvaluator(dummy_results)

@@ -1,4 +1,5 @@
 # MAPPO-Safe-EWC Neural Network Configuration
+# Supports all IEEE test systems: 3, 8, 14, 30, 39, 57, 118 buses
 # Reference: marl/utils/extract_architecture.py
 
 obs_dim: 10

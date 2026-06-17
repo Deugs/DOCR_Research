@@ -24,6 +24,7 @@ def main():
     p.add_argument("--pv", type=float, default=1.0)
     p.add_argument("--snapshots", nargs="+", type=int, default=[0, 100, 500, 1000, 5000])
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     p.add_argument("--output", type=str, default="outputs/fig38_attention_evolution.pdf")
     args = p.parse_args()
 

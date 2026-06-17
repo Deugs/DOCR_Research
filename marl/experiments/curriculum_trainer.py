@@ -57,6 +57,7 @@ def main():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", type=str, default="outputs/fig_stub.pdf")
     p.add_argument("--tasks", nargs="+", type=float, default=None)
+    p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     p.add_argument("--log", type=str, default="")
     args = p.parse_args()
 
@@ -84,7 +85,7 @@ def main():
     out_dir = os.path.dirname(args.output) or "outputs"
     os.makedirs(out_dir, exist_ok=True)
 
-    exp_fig09.main(n_episodes=args.episodes, seed=args.seed, output_dir=out_dir)
+    exp_fig09.main(n_episodes=args.episodes, seed=args.seed, output_dir=out_dir, system=args.system)
 
 
 def _run_stub(args):

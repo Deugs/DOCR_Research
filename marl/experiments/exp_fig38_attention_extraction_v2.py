@@ -68,14 +68,22 @@ class Mock8BusNetwork:
         self.bus = list(range(1, self.n_relays + 1))
 
 
-def get_8bus():
-    """Return 8-bus network. Replace with actual import if available."""
-    try:
+def get_network(system="8bus"):
+    """Return network for specified system. Requires actual network data."""
+    if system == "8bus":
         from network.network_data import get_8bus as real_get_8bus
-        return real_get_8bus()
-    except ImportError:
-        logger.warning("Using mock 8-bus network (network.network_data not available)")
-        return Mock8BusNetwork()
+        return real_get_network(system)
+    elif system == "14bus":
+        from network.network_data import get_14bus
+        return get_14bus()
+    elif system == "30bus":
+        from network.network_data import get_30bus
+        return get_30bus()
+    elif system == "39bus":
+        from network.network_data import get_39bus
+        return get_39bus()
+    else:
+        raise ValueError(f"Unknown system: {system}")
 
 
 # ============================================================
@@ -169,7 +177,7 @@ def run_figure8(seed=42):
     """Generate Figure 8: Learned GNN Attention Weights."""
     logger.info("Figure 8 -- Attention Weight Extraction")
 
-    net = get_8bus()
+    net = get_network(system)
     n_agents = net.n_relays
 
     # Simulate trained actor with attention mechanism
@@ -247,7 +255,7 @@ def run_figure38(seed=42):
     """Generate Figure 38: Attention Weight Evolution During Training."""
     logger.info("Figure 38 -- Attention Evolution During Training")
 
-    net = get_8bus()
+    net = get_network(system)
     n_agents = net.n_relays
     n = n_agents
 
@@ -467,11 +475,11 @@ def main(n_seeds=3, output_dir="outputs"):
         }
 
         np.savez(out_path / "fig8_attention_v2.npz", **fig8_data)
-        plot_figure8(fig8_data, get_8bus(), out_path)
+        plot_figure8(fig8_data, get_network(system), out_path)
 
     # Figure 38 (run once due to computational cost)
     logger.info("\nFigure 38 -- Attention Evolution")
-    fig38_data = run_figure38(seed=42)
+    fig38_data = run_figure38(seed=42, system=system)
 
     np.savez(
         out_path / "fig38_attention_evolution_v2.npz",
@@ -495,5 +503,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Figures 8 & 38 v2 -- Attention Analysis")
     parser.add_argument("--n_seeds", type=int, default=3)
     parser.add_argument("--output_dir", type=str, default="outputs")
+    parser.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     args = parser.parse_args()
-    main(args.n_seeds, args.output_dir)
+    main(args.n_seeds, args.output_dir, args.system)

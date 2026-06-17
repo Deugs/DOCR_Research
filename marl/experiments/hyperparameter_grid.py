@@ -54,6 +54,7 @@ def main():
     fig40_main(
         n_seeds=args.n_runs,
         output_dir=output_dir,
+        system=args.system,
     )
 
     print(f"[hyperparameter_grid] Figure 40 complete. Output: {args.output}")

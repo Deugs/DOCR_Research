@@ -49,6 +49,7 @@ def main():
         n_episodes=args.episodes,
         seed_base=0,
         output_dir=output_dir,
+        system=args.system,
     )
 
     print(f"[batch_runs] Figure 12 complete. Output: {args.output}")

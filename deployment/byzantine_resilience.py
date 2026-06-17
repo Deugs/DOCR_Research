@@ -17,19 +17,42 @@ Usage:
 
     # Median consensus (tolerates up to 50% faulty neighbors)
     filter = MedianConsensusFilter(n_agents=14)
-    clean_value = filter.filter(agent_id=0, value=1.2, neighbor_values=[1.1, 1.3, 5.0, 1.2])
+    clean_value = filter.filter(
+        agent_id=0,
+        value=1.2,
+        neighbor_values=[1.1, 1.3, 5.0, 1.2]
+    )
     # Result: 1.2 (median, ignores the 5.0 outlier)
 """
 
-import numpy as np
-from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass, field
-from collections import defaultdict
+from __future__ import annotations
 
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+if TYPE_CHECKING:
+    from typing import Dict, List, Tuple, Optional
+
+__all__ = [
+    "ReputationConfig",
+    "MedianConsensusFilter",
+    "TrimmedMeanAggregator",
+    "ReputationManager",
+    "OutlierDetector",
+    "ByzantineResilientAggregator",
+    "test_byzantine_resilience",
+]
+
+
+# ── Configuration ─────────────────────────────────────────────────────────
 
 @dataclass
 class ReputationConfig:
     """Configuration for reputation-based trust management."""
+
     initial_trust: float = 1.0
     penalty_false_data: float = 0.3
     penalty_deviation: float = 0.1
@@ -39,92 +62,127 @@ class ReputationConfig:
     window_size: int = 10
 
 
+# ── Core classes ──────────────────────────────────────────────────────────
+
 class MedianConsensusFilter:
+    """Byzantine-resilient median consensus filter.
+
+    Tolerates up to f faulty agents in a neighborhood if n > 2f,
+    where n = total agents in the neighborhood.
+
+    Algorithm
+    ---------
+    1. Collect own value + all neighbor values.
+    2. Compute median.
+    3. Replace own value with median.
+
+    Properties
+    ----------
+    - Optimal breakdown point: 50% (tolerates up to half faulty).
+    - No parametric assumptions (distribution-free).
+    - O(n log n) complexity per agent.
     """
-    Byzantine-resilient median consensus filter.
 
-    Tolerates up to f faulty agents in neighborhood if n > 2f,
-    where n = total agents in neighborhood.
-
-    Algorithm:
-    1. Collect own value + all neighbor values
-    2. Compute median
-    3. Replace own value with median
-
-    Properties:
-    - Optimal breakdown point: 50% (tolerates up to half faulty)
-    - No parametric assumptions (distribution-free)
-    - O(n log n) complexity per agent
-    """
-
-    def __init__(self, n_agents: int):
+    def __init__(self, n_agents: int) -> None:
         self.n_agents = n_agents
-        self.history: Dict[int, List[float]] = defaultdict(list)
+        self._history: dict[int, list[dict]] = defaultdict(list)
 
-    def filter(self, agent_id: int, value: float, 
-               neighbor_values: List[float]) -> float:
-        """
-        Apply median consensus filtering.
+    def filter(
+        self,
+        agent_id: int,
+        value: float,
+        neighbor_values: list[float],
+    ) -> float:
+        """Apply median consensus filtering.
 
-        Args:
-            agent_id: ID of the agent filtering
-            value: Own measurement/value
-            neighbor_values: List of neighbor values
+        Parameters
+        ----------
+        agent_id : int
+            ID of the agent performing the filtering.
+        value : float
+            Own measurement / value.
+        neighbor_values : list[float]
+            List of neighbor values.
 
-        Returns:
-            filtered_value: Median of all values
+        Returns
+        -------
+        float
+            Median of all values (own + neighbors).
         """
         all_values = [value] + list(neighbor_values)
 
-        if len(all_values) == 0:
+        if not all_values:
             return value
 
         filtered = float(np.median(all_values))
-        self.history[agent_id].append({
+        self._history[agent_id].append({
             "original": value,
             "filtered": filtered,
-            "neighbors": neighbor_values,
+            "neighbors": list(neighbor_values),
         })
 
         return filtered
 
-    def filter_vector(self, agent_id: int, values: np.ndarray,
-                      neighbor_values_list: List[np.ndarray]) -> np.ndarray:
-        """Apply median filtering to vector-valued data."""
+    def filter_vector(
+        self,
+        agent_id: int,
+        values: np.ndarray,
+        neighbor_values_list: list[np.ndarray],
+    ) -> np.ndarray:
+        """Apply median filtering to vector-valued data.
+
+        Parameters
+        ----------
+        agent_id : int
+            Agent identifier (stored in history).
+        values : np.ndarray
+            Own vector-valued measurement.
+        neighbor_values_list : list[np.ndarray]
+            List of neighbor vector-valued measurements.
+
+        Returns
+        -------
+        np.ndarray
+            Element-wise median across all vectors.
+        """
         all_values = [values] + list(neighbor_values_list)
         stacked = np.stack(all_values, axis=0)
         return np.median(stacked, axis=0)
 
-    def get_history(self, agent_id: int) -> List[Dict]:
+    def get_history(self, agent_id: int) -> list[dict]:
         """Return filtering history for an agent."""
-        return self.history.get(agent_id, [])
+        return self._history.get(agent_id, [])
 
 
 class TrimmedMeanAggregator:
+    """Trimmed mean aggregator for Byzantine resilience.
+
+    Removes a fraction of extreme values before computing the mean.
+    More robust than a simple mean, less aggressive than the median.
+
+    Parameters
+    ----------
+    trim_ratio : float
+        Fraction to trim from each end (0.0 = mean, 0.5 = median).
     """
-    Trimmed mean aggregator for Byzantine resilience.
 
-    Removes a fraction of extreme values before computing mean.
-    More robust than simple mean, less aggressive than median.
+    def __init__(self, trim_ratio: float = 0.2) -> None:
+        self.trim_ratio = float(np.clip(trim_ratio, 0.0, 0.5))
 
-    Parameters:
-        trim_ratio: Fraction to trim from each end (0.0 = mean, 0.5 = median)
-    """
+    def aggregate(self, values: list[float]) -> float:
+        """Compute trimmed mean.
 
-    def __init__(self, trim_ratio: float = 0.2):
-        self.trim_ratio = np.clip(trim_ratio, 0.0, 0.5)
+        Parameters
+        ----------
+        values : list[float]
+            Values from agents.
 
-    def aggregate(self, values: List[float]) -> float:
+        Returns
+        -------
+        float
+            Mean after removing extreme values.
         """
-        Compute trimmed mean.
-
-        Args:
-            values: List of values from agents
-
-        Returns:
-            trimmed_mean: Mean after removing extremes
-        """
-        arr = np.array(values)
+        arr = np.asarray(values, dtype=float)
         n = len(arr)
 
         if n == 0:
@@ -133,20 +191,30 @@ class TrimmedMeanAggregator:
         k = int(n * self.trim_ratio)
         sorted_arr = np.sort(arr)
 
-        if k > 0:
-            trimmed = sorted_arr[k:-k] if k * 2 < n else sorted_arr
+        if k > 0 and k * 2 < n:
+            trimmed = sorted_arr[k:-k]
         else:
             trimmed = sorted_arr
 
         return float(np.mean(trimmed))
 
-    def aggregate_vector(self, values_list: List[np.ndarray]) -> np.ndarray:
-        """Trimmed mean for vector-valued data."""
+    def aggregate_vector(self, values_list: list[np.ndarray]) -> np.ndarray:
+        """Trimmed mean for vector-valued data.
+
+        Parameters
+        ----------
+        values_list : list[np.ndarray]
+            List of vector-valued agent outputs.
+
+        Returns
+        -------
+        np.ndarray
+            Trimmed-mean vector.
+        """
         stacked = np.stack(values_list, axis=0)
         n = len(values_list)
         k = int(n * self.trim_ratio)
 
-        # Sort along agent axis and trim
         sorted_stack = np.sort(stacked, axis=0)
         if k > 0 and k * 2 < n:
             trimmed = sorted_stack[k:-k]
@@ -157,80 +225,103 @@ class TrimmedMeanAggregator:
 
 
 class ReputationManager:
-    """
-    Reputation-based trust management for relay agents.
+    """Reputation-based trust management for relay agents.
 
     Tracks trust scores per agent based on:
-    - Consistency with neighborhood median
-    - Sudden deviations (attack detection)
-    - Historical behavior
+    - Consistency with neighborhood median.
+    - Sudden deviations (attack detection).
+    - Historical behavior.
 
     Agents with low trust have reduced influence in consensus.
     """
 
-    def __init__(self, n_agents: int, config: Optional[ReputationConfig] = None):
+    # Deviation thresholds
+    _DEV_HIGH: float = 0.5   # Significant deviation → false-data penalty
+    _DEV_MOD: float = 0.2    # Moderate deviation → small penalty
+
+    def __init__(
+        self,
+        n_agents: int,
+        config: ReputationConfig | None = None,
+    ) -> None:
         self.n_agents = n_agents
         self.config = config or ReputationConfig()
-        self.trust_scores: np.ndarray = np.full(n_agents, self.config.initial_trust)
-        self.deviation_history: Dict[int, List[float]] = defaultdict(list)
-        self.attack_flags: Dict[int, int] = defaultdict(int)
+        self.trust_scores: np.ndarray = np.full(
+            n_agents, self.config.initial_trust, dtype=float
+        )
+        self._deviation_history: dict[int, list[float]] = defaultdict(list)
+        self._attack_flags: dict[int, int] = defaultdict(int)
 
-    def update(self, agent_id: int, value: float, 
-               neighbor_values: List[float]) -> float:
-        """
-        Update trust score based on deviation from consensus.
+    def update(
+        self,
+        agent_id: int,
+        value: float,
+        neighbor_values: list[float],
+    ) -> float:
+        """Update trust score based on deviation from consensus.
 
-        Args:
-            agent_id: Agent to update
-            value: Agent's reported value
-            neighbor_values: Neighbor values for comparison
+        Parameters
+        ----------
+        agent_id : int
+            Agent to update.
+        value : float
+            Agent's reported value.
+        neighbor_values : list[float]
+            Neighbor values for comparison.
 
-        Returns:
-            new_trust: Updated trust score
+        Returns
+        -------
+        float
+            Updated trust score.
         """
         cfg = self.config
 
         if not neighbor_values:
-            return self.trust_scores[agent_id]
+            return float(self.trust_scores[agent_id])
 
         # Compute neighborhood median
-        median = np.median(neighbor_values)
+        median = float(np.median(neighbor_values))
 
-        # Compute normalized deviation
+        # Normalized deviation (safe against zero median)
         deviation = abs(value - median) / (abs(median) + 1e-6)
-        self.deviation_history[agent_id].append(deviation)
+        self._deviation_history[agent_id].append(deviation)
 
         # Trim history to window size
-        if len(self.deviation_history[agent_id]) > cfg.window_size:
-            self.deviation_history[agent_id] = self.deviation_history[agent_id][-cfg.window_size:]
+        hist = self._deviation_history[agent_id]
+        if len(hist) > cfg.window_size:
+            self._deviation_history[agent_id] = hist[-cfg.window_size:]
+            hist = self._deviation_history[agent_id]
 
-        # Update trust
-        mean_deviation = np.mean(self.deviation_history[agent_id])
+        # Update trust based on mean deviation
+        mean_deviation = float(np.mean(hist))
 
-        if mean_deviation > 0.5:  # Significant deviation
+        if mean_deviation > self._DEV_HIGH:
             self.trust_scores[agent_id] -= cfg.penalty_false_data
-            self.attack_flags[agent_id] += 1
-        elif mean_deviation > 0.2:  # Moderate deviation
+            self._attack_flags[agent_id] += 1
+        elif mean_deviation > self._DEV_MOD:
             self.trust_scores[agent_id] -= cfg.penalty_deviation
-        else:  # Consistent
+        else:
             self.trust_scores[agent_id] += cfg.reward_consistent
 
         # Clip to bounds
-        self.trust_scores[agent_id] = np.clip(
+        self.trust_scores[agent_id] = float(np.clip(
             self.trust_scores[agent_id], cfg.min_trust, cfg.max_trust
-        )
+        ))
 
         return float(self.trust_scores[agent_id])
 
-    def get_weighted_consensus(self, values: Dict[int, float]) -> float:
-        """
-        Compute trust-weighted consensus.
+    def get_weighted_consensus(self, values: dict[int, float]) -> float:
+        """Compute trust-weighted consensus.
 
-        Args:
-            values: {agent_id: value}
+        Parameters
+        ----------
+        values : dict[int, float]
+            Mapping {agent_id: value}.
 
-        Returns:
-            weighted_mean: Trust-weighted average
+        Returns
+        -------
+        float
+            Trust-weighted average.
         """
         total_weight = 0.0
         weighted_sum = 0.0
@@ -240,74 +331,95 @@ class ReputationManager:
             weighted_sum += weight * value
             total_weight += weight
 
-        return weighted_sum / total_weight if total_weight > 0 else 0.0
+        return weighted_sum / total_weight if total_weight > 0.0 else 0.0
 
-    def get_trust_report(self) -> Dict:
+    def get_trust_report(self) -> dict:
         """Return trust score statistics."""
         return {
             "mean_trust": float(np.mean(self.trust_scores)),
             "min_trust": float(np.min(self.trust_scores)),
             "max_trust": float(np.max(self.trust_scores)),
             "suspicious_agents": int(np.sum(self.trust_scores < 0.5)),
-            "attack_detections": dict(self.attack_flags),
+            "attack_detections": dict(self._attack_flags),
             "trust_scores": self.trust_scores.tolist(),
         }
 
 
 class OutlierDetector:
-    """
-    Statistical outlier detection using Mahalanobis distance.
+    """Statistical outlier detection using Mahalanobis distance.
 
     Detects multivariate outliers in relay measurements,
     useful for identifying compromised sensors or communication errors.
     """
 
-    def __init__(self, threshold: float = 3.0):
+    def __init__(self, threshold: float = 3.0) -> None:
         self.threshold = threshold
-        self.mean: Optional[np.ndarray] = None
-        self.cov: Optional[np.ndarray] = None
-        self.inv_cov: Optional[np.ndarray] = None
+        self._mean: np.ndarray | None = None
+        self._cov: np.ndarray | None = None
+        self._inv_cov: np.ndarray | None = None
 
-    def fit(self, data: np.ndarray):
-        """Fit detector on clean data."""
-        self.mean = np.mean(data, axis=0)
-        self.cov = np.cov(data.T)
+    def fit(self, data: np.ndarray) -> None:
+        """Fit detector on clean (training) data.
+
+        Parameters
+        ----------
+        data : np.ndarray, shape (n_samples, n_features)
+            Clean reference data.
+        """
+        self._mean = np.mean(data, axis=0)
+        self._cov = np.cov(data.T)
 
         # Regularized inverse for numerical stability
-        reg_cov = self.cov + np.eye(self.cov.shape[0]) * 1e-6
-        self.inv_cov = np.linalg.inv(reg_cov)
+        reg_cov = self._cov + np.eye(self._cov.shape[0]) * 1e-6
+        self._inv_cov = np.linalg.inv(reg_cov)
 
-    def detect(self, sample: np.ndarray) -> Tuple[bool, float]:
-        """
-        Detect if sample is outlier.
+    def detect(self, sample: np.ndarray) -> tuple[bool, float]:
+        """Detect if sample is an outlier.
 
-        Returns:
-            is_outlier: True if Mahalanobis distance > threshold
-            distance: Mahalanobis distance
+        Parameters
+        ----------
+        sample : np.ndarray, shape (n_features,)
+            Single observation.
+
+        Returns
+        -------
+        tuple[bool, float]
+            (is_outlier, mahalanobis_distance)
         """
-        if self.mean is None or self.inv_cov is None:
+        if self._mean is None or self._inv_cov is None:
             return False, 0.0
 
-        diff = sample - self.mean
-        distance = np.sqrt(diff @ self.inv_cov @ diff)
+        diff = sample - self._mean
+        distance = float(np.sqrt(diff @ self._inv_cov @ diff))
 
-        return distance > self.threshold, float(distance)
+        return distance > self.threshold, distance
 
-    def detect_batch(self, samples: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Detect outliers in batch."""
-        if self.mean is None or self.inv_cov is None:
-            return np.zeros(len(samples), dtype=bool), np.zeros(len(samples))
+    def detect_batch(self, samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Detect outliers in a batch.
 
-        diff = samples - self.mean
-        distances = np.sqrt(np.sum(diff @ self.inv_cov * diff, axis=1))
+        Parameters
+        ----------
+        samples : np.ndarray, shape (n_samples, n_features)
+            Batch of observations.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            (outlier_flags, distances)
+        """
+        if self._mean is None or self._inv_cov is None:
+            n = len(samples)
+            return np.zeros(n, dtype=bool), np.zeros(n)
+
+        diff = samples - self._mean
+        distances = np.sqrt(np.sum(diff @ self._inv_cov * diff, axis=1))
         outliers = distances > self.threshold
 
         return outliers, distances
 
 
 class ByzantineResilientAggregator:
-    """
-    Complete Byzantine-resilient aggregation pipeline.
+    """Complete Byzantine-resilient aggregation pipeline.
 
     Combines multiple defense mechanisms:
     1. Outlier detection (Mahalanobis)
@@ -316,21 +428,34 @@ class ByzantineResilientAggregator:
     4. Median consensus fallback
     """
 
-    def __init__(self, n_agents: int, trim_ratio: float = 0.2):
+    def __init__(self, n_agents: int, trim_ratio: float = 0.2) -> None:
         self.n_agents = n_agents
         self.median_filter = MedianConsensusFilter(n_agents)
         self.trimmed_mean = TrimmedMeanAggregator(trim_ratio)
         self.reputation = ReputationManager(n_agents)
         self.outlier_detector = OutlierDetector()
 
-    def aggregate(self, agent_id: int, value: float,
-                  neighbor_values: List[float]) -> Tuple[float, Dict]:
-        """
-        Full Byzantine-resilient aggregation.
+    def aggregate(
+        self,
+        agent_id: int,
+        value: float,
+        neighbor_values: list[float],
+    ) -> tuple[float, dict]:
+        """Full Byzantine-resilient aggregation.
 
-        Returns:
-            aggregated_value: Clean consensus value
-            metadata: Dict with filtering info
+        Parameters
+        ----------
+        agent_id : int
+            Agent requesting aggregation.
+        value : float
+            Agent's own value.
+        neighbor_values : list[float]
+            Values from neighboring agents.
+
+        Returns
+        -------
+        tuple[float, dict]
+            (aggregated_value, metadata)
         """
         # Step 1: Update reputation
         trust = self.reputation.update(agent_id, value, neighbor_values)
@@ -360,45 +485,57 @@ class ByzantineResilientAggregator:
 
         return final_value, metadata
 
-    def get_system_health(self) -> Dict:
+    def get_system_health(self) -> dict:
         """Return overall system health report."""
         trust_report = self.reputation.get_trust_report()
+        suspicious = trust_report["suspicious_agents"]
 
         return {
             "trust": trust_report,
-            "status": "healthy" if trust_report["suspicious_agents"] == 0 else "degraded",
-            "recommendation": "Monitor suspicious agents" if trust_report["suspicious_agents"] > 0 else "System normal",
+            "status": "healthy" if suspicious == 0 else "degraded",
+            "recommendation": (
+                "Monitor suspicious agents" if suspicious > 0 else "System normal"
+            ),
         }
 
 
-def test_byzantine_resilience():
-    """Quick test of Byzantine resilience components."""
+# ── Self-test ───────────────────────────────────────────────────────────────
+
+def test_byzantine_resilience() -> None:
+    """Quick self-test of Byzantine resilience components."""
     print("Testing Byzantine Resilience...")
 
     # Test 1: Median filter with outlier
-    filter = MedianConsensusFilter(n_agents=5)
-    result = filter.filter(0, 1.0, [1.1, 1.2, 5.0, 1.15])
+    filt = MedianConsensusFilter(n_agents=5)
+    result = filt.filter(0, 1.0, [1.1, 1.2, 5.0, 1.15])
+    assert 1.1 <= result <= 1.25, f"Median filter failed: {result}"
     print(f"  Median filter: input=1.0, outlier=5.0, result={result:.2f} ✓")
 
     # Test 2: Trimmed mean
     tma = TrimmedMeanAggregator(trim_ratio=0.2)
     result = tma.aggregate([1.0, 1.1, 1.2, 10.0, 1.15])
+    assert 1.0 <= result <= 1.2, f"Trimmed mean failed: {result}"
     print(f"  Trimmed mean: input=[1.0,1.1,1.2,10.0,1.15], result={result:.2f} ✓")
 
-    # Test 3: Reputation manager
+    # Test 3: Reputation manager — normal behavior
     rep = ReputationManager(n_agents=3)
     trust = rep.update(0, 1.0, [1.1, 1.2])
+    assert trust >= 1.0, f"Normal trust should not decrease: {trust}"
     print(f"  Reputation: normal behavior, trust={trust:.2f} ✓")
 
+    # Test 4: Reputation manager — bad behavior
     trust_bad = rep.update(1, 10.0, [1.1, 1.2])
+    assert trust_bad < 1.0, f"Bad trust should decrease: {trust_bad}"
     print(f"  Reputation: bad behavior, trust={trust_bad:.2f} ✓")
 
-    # Test 4: Full aggregator
+    # Test 5: Full aggregator
     agg = ByzantineResilientAggregator(n_agents=5)
     val, meta = agg.aggregate(0, 1.0, [1.1, 1.2, 5.0, 1.15])
+    assert 1.0 <= val <= 1.3, f"Aggregator failed: {val}"
     print(f"  Full aggregator: result={val:.2f}, trust={meta['trust_score']:.2f} ✓")
 
     health = agg.get_system_health()
+    assert health["status"] in ("healthy", "degraded")
     print(f"  System health: {health['status']} ✓")
 
     print("All Byzantine resilience tests passed!")

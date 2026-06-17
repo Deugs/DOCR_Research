@@ -2,6 +2,7 @@
 evaluation/thesis_validation.py
 ─────────────────────────────────
 Phase 8: Statistical validation framework and novelty claim verification.
+Supports all IEEE test systems: 3, 8, 14, 30, 39, 57, 118 buses.
 
 Validates the 5 novelty claims from the thesis:
 1. MAPPO with GNN communication outperforms all baselines
@@ -91,7 +92,7 @@ class ThesisValidator:
                 "cliffs_delta": (0.33, ">"),
             },
             required_methods=["GA-SQP", "Single-PPO", "IPPO", "MAPPO", "MAPPO-Comm"],
-            systems=["8bus", "30bus", "39bus"],
+            systems=["3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"],
         ),
         NoveltyClaim(
             id="C2",
@@ -105,7 +106,7 @@ class ThesisValidator:
                 "cti_satisfied_rate": (0.95, ">"),  # > 95%
             },
             required_methods=["MAPPO", "MAPPO-Safe"],
-            systems=["8bus", "30bus", "39bus"],
+            systems=["3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"],
         ),
         NoveltyClaim(
             id="C3",

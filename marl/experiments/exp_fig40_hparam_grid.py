@@ -138,7 +138,7 @@ def main(n_seeds=3, output_dir="outputs"):
         for idx, (lamb, alpha, hid) in enumerate(grid):
             logger.info("  [%3d/%d] λ_EWC=%.0e, α_λ=%.0e, d_h=%d", 
                        idx + 1, len(grid), lamb, alpha, hid)
-            res = run_with_params(lamb, alpha, hid, seed=seed)
+            res = run_with_params(lamb, alpha, hid, seed=seed, system=system)
             seed_results.append(res)
             logger.info("      OF=%.4f±%.4f  CTI=%.2f±%.2f", 
                        res["mean_OF"], res["std_OF"], res["mean_CTI"], res["std_CTI"])
@@ -248,5 +248,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Figure 40 v2 — Hyperparameter Grid")
     p.add_argument("--n_seeds", type=int, default=3)
     p.add_argument("--output_dir", type=str, default="outputs")
+    p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     args = p.parse_args()
-    main(args.n_seeds, args.output_dir)
+    main(args.n_seeds, args.output_dir, args.system)

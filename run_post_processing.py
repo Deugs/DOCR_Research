@@ -263,7 +263,7 @@ class FigureProgress:
 # ──────────────────────────────────────────────────────────────────
 # Cache Loading (config-driven paths)
 # ──────────────────────────────────────────────────────────────────
-def load_cache(name: str):
+def load_cache1(name: str):
     """Load a cached core result by name."""
     cache_file = get_cache_dir() / f"{name}.pkl"
     if not cache_file.exists():
@@ -282,6 +282,48 @@ def load_cache(name: str):
     logger.warning(f"Cache not found: {name}. Using synthetic fallback.")
     return None
 
+def load_cache(name: str):
+    """Load a cached core result by name, checking both old and new cache formats."""
+    # Try old format first
+    cache_file = get_cache_dir() / f"{name}.pkl"
+    if not cache_file.exists():
+        index_file = get_cache_dir() / "cache_index.json"
+        if index_file.exists():
+            with open(index_file) as f:
+                index = json.load(f)
+            for key, info in index.items():
+                if info.get("name") == name:
+                    cache_file = get_cache_dir() / f"{key}.pkl"
+                    break
+    
+    if cache_file.exists():
+        import pickle
+        with open(cache_file, "rb") as f:
+            return pickle.load(f)
+    
+    # Try new bridge cache format
+    # Map figure names to bridge cache files
+    bridge_map = {
+        "core_G_robustness": ["core_eval_fig13.json", "core_eval_fig20.json", 
+                              "core_eval_fig22.json", "core_eval_fig24.json", "core_eval_fig54.json"],
+        "core_H_transfer": ["core_eval_fig23.json", "core_eval_fig25.json"],
+        "core_I_deployment": ["core_eval_fig53.json"],  # fig18 is latency, handled separately
+        "core_J_protection": ["core_eval_fig44.json", "core_eval_fig45.json", 
+                             "core_eval_fig46.json", "core_eval_fig47.json"],
+        "core_K_seasonal": ["core_eval_fig58.json"],
+    }
+    
+    bridge_files = bridge_map.get(name, [])
+    for bf in bridge_files:
+        bridge_path = get_cache_dir() / bf
+        if bridge_path.exists():
+            with open(bridge_path, 'r') as f:
+                data = json.load(f)
+            logger.info(f"Loaded bridge cache: {bridge_path}")
+            return data.get("data", {})
+    
+    logger.warning(f"Cache not found: {name}. Using synthetic fallback.")
+    return None
 
 def save_fig(fig, path: Path, dpi: int = None):
     """Save figure and close. Uses config DPI if available."""

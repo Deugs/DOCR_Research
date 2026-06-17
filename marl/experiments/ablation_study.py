@@ -48,6 +48,7 @@ def main():
     fig39_main(
         n_seeds=args.n_runs,
         output_dir=output_dir,
+        system=args.system,
     )
 
     print(f"[ablation_study] Figure 39 complete. Output: {args.output}")

@@ -58,11 +58,23 @@ CONFIGS = [
 ]
 
 
-def run_config(name, use_comm, use_safe, use_ewc, use_curriculum, seed=42):
+def run_config(name, use_comm, use_safe, use_ewc, use_curriculum, seed=42, system="8bus"):
     """Run one ablation configuration."""
-    net = get_8bus()
+    if system == "8bus":
+        net = get_8bus()
+    elif system == "14bus":
+        from network.network_data import get_14bus
+        net = get_14bus()
+    elif system == "30bus":
+        from network.network_data import get_30bus
+        net = get_30bus()
+    elif system == "39bus":
+        from network.network_data import get_39bus
+        net = get_39bus()
+    else:
+        net = get_8bus()
     env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", 
-                          curriculum_stage=0, seed=seed)
+                          curriculum_stage=0, seed=seed, system=system)
     
     if use_safe:
         env = create_safe_rl_env(env, SafeRLConfig(enforce_cti=True))
@@ -76,11 +88,11 @@ def run_config(name, use_comm, use_safe, use_ewc, use_curriculum, seed=42):
         # Curriculum training across PV levels
         for task_idx, pv_level in enumerate(TASKS):
             env.curriculum_stage = int(pv_level * 5)
-            trainer.train(episodes=EPISODES_PER_TASK, verbose=False)
+            trainer.train(total_steps=EPISODES_PER_TASK * 50, verbose=False)
     else:
         # Single task at 100% PV
         env.curriculum_stage = 5
-        trainer.train(episodes=EPISODES_PER_TASK * len(TASKS), verbose=False)
+        trainer.train(total_steps=EPISODES_PER_TASK * len(TASKS) * 50, verbose=False)
     
     # Evaluation at 100% PV
     env.curriculum_stage = 5
@@ -259,5 +271,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Figure 39 v2 — Ablation Study")
     p.add_argument("--n_seeds", type=int, default=10)
     p.add_argument("--output_dir", type=str, default="outputs")
+    p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     args = p.parse_args()
-    main(args.n_seeds, args.output_dir)
+    main(args.n_seeds, args.output_dir, args.system)

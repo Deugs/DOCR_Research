@@ -7,6 +7,7 @@ def main():
     p = argparse.ArgumentParser(description="EWC Visualization Adapter (Fig 29)")
     p.add_argument("--system", type=str, default="8bus")
     p.add_argument("--tasks", nargs="+", type=float, default=[0.0, 0.25, 0.5, 0.75, 1.0])
+    p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     p.add_argument("--output", type=str, default="outputs/fig29_ewc_continual.pdf")
     args = p.parse_args()
 

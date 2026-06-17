@@ -14,7 +14,7 @@ Orchestrates:
 Usage:
     from evaluation.benchmark_suite import BenchmarkSuite
     
-    suite = BenchmarkSuite(systems=["8bus", "30bus"], n_runs=10)
+    suite = BenchmarkSuite(systems=["3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"], n_runs=10)
     results = suite.run_all()
     suite.print_comparison_table()
     suite.plot_convergence()
@@ -50,7 +50,7 @@ from evaluation.stat_analysis import (
 @dataclass
 class BenchmarkConfig:
     """Configuration for benchmark experiments."""
-    systems: List[str] = field(default_factory=lambda: ["8bus"])
+    systems: List[str] = field(default_factory=lambda: ["3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"])
     methods: List[str] = field(default_factory=lambda: [
         "GA-SQP", "HWOA", "HHO", "JAYA", "EEO"
     ])
@@ -475,7 +475,7 @@ class BenchmarkSuite:
 
 
 def quick_benchmark(
-    systems: List[str] = ["8bus"],
+    systems: List[str] = ["3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"],
     methods: List[str] = ["GA-SQP", "HWOA", "HHO", "JAYA", "EEO"],
     n_runs: int = 5,
     fast: bool = False,

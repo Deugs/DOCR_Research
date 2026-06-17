@@ -32,7 +32,7 @@ def main():
     print(f"[Adapter] single_task_training.py -> calling fig09_main()")
     print(f"  Output dir: {out_dir}")
 
-    fig09_main(n_episodes=args.episodes, seed=args.seed, output_dir=out_dir)
+    fig09_main(n_episodes=args.episodes, seed=args.seed, output_dir=out_dir, system=args.system)
 
 
 if __name__ == "__main__":

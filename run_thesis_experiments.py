@@ -829,10 +829,9 @@ PHASE_FIGURES = {
 
 MANUAL_FIGURES = {1, 2, 3, 4, 17, 19, 26, "26a", 27, 28, 29, 30, 34, 35, 36, 51, 52}
 
-
 def run_phase2(progress: ExperimentProgress):
-    """Phase 2: Core Training Runs (Weeks 2-3). Delegates to run_core_training.py."""
-    with timed_phase(2, "Core Training Runs (A-K)", progress):
+    """Phase 2: Core Training Runs with real evaluations."""
+    with timed_phase(2, "Core Training Runs (A-K with Real Evals)", progress):
         config = get_config()
 
         log("Running unified core training via run_core_training.py...")

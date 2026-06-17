@@ -9,6 +9,7 @@ def main():
     p.add_argument("--pv", type=float, default=1.0)
     p.add_argument("--n_runs", type=int, default=10)
     p.add_argument("--episodes", type=int, default=5000)
+    p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     p.add_argument("--output", type=str, default="outputs/fig42_warm_start.pdf")
     args = p.parse_args()
 

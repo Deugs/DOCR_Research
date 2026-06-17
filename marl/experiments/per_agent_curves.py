@@ -103,7 +103,7 @@ def main():
     print(f"  NOTE: use_comm=True — actor.sample() dimension mismatch will be handled")
 
     _patch_sample_for_comm()
-    fig37_main(n_episodes=args.episodes, seed=args.seed, output_dir=out_dir)
+    fig37_main(n_episodes=args.episodes, seed=args.seed, output_dir=out_dir, system=args.system)
 
 
 if __name__ == "__main__":

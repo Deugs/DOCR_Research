@@ -220,5 +220,6 @@ if __name__ == "__main__":
     p.add_argument("--n_episodes", type=int, default=2000)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output_dir", type=str, default="outputs")
+    p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     args = p.parse_args()
-    main(args.n_episodes, args.seed, args.output_dir)
+    main(args.n_episodes, args.seed, args.output_dir, args.system)

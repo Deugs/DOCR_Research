@@ -3,6 +3,7 @@ evaluation.py
 ─────────────
 Metrics, comparison tables, and matplotlib figures for
 GA-SQP (control) vs MARL-IPPO (proposed).
+Supports all IEEE test systems: 3, 8, 14, 30, 39, 57, 118 buses.
 
 Phase 1 Enhancement: Multi-fault-type comparison, PV penetration analysis,
 topology robustness plots, and curriculum learning progress visualization.
