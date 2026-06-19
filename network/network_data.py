@@ -97,6 +97,82 @@ class NetworkData:
         )
         return new_net
 
+    def copy(self) -> 'NetworkData':
+        """
+        Deep copy of this network so that downstream mutation (e.g. N-1
+        topology outages, fault-current rescaling) never silently shares
+        state with the original NetworkData instance.
+        """
+        from copy import deepcopy
+        return NetworkData(
+            name=self.name,
+            n_relays=self.n_relays,
+            pairs=deepcopy(self.pairs),
+            Iload_max=self.Iload_max.copy(),
+            If_min=self.If_min.copy(),
+            OLF=self.OLF,
+            n_buses=self.n_buses,
+            base_voltage=self.base_voltage,
+            base_mva=self.base_mva,
+            dg_buses=deepcopy(self.dg_buses),
+            line_data=deepcopy(self.line_data) if self.line_data is not None else None,
+            trafo_data=deepcopy(self.trafo_data) if self.trafo_data is not None else None,
+        )
+
+    @property
+    def n_lines(self) -> int:
+        """
+        Number of distinct lines in the network. There is no separate
+        `lines` table on NetworkData (topology is implicit in RelayPair
+        bus indices), so this is derived from the number of unique
+        (bus_pri, bus_bkp) edges referenced by the protection pairs.
+        """
+        edges = {tuple(sorted((p.bus_pri, p.bus_bkp))) for p in self.pairs}
+        return max(len(edges), 1)
+
+    def apply_n1_outage(self, line_idx: int) -> Tuple['NetworkData', float]:
+        """
+        Apply a genuine N-1 single-line outage to a COPY of this network
+        and return (mutated_network, outage_factor).
+
+        This replaces the previous no-op pattern (`net.lines.at[...] = False`,
+        which silently failed because NetworkData has no `.lines` table) with
+        a real physics-based fault-current rescaling, reusing the same
+        TopologyManager machinery already validated for Fig 15 scalability
+        runs. Outaging a line removes a parallel fault-current path, which
+        is modelled here as a uniform reduction applied to every pair whose
+        primary or backup bus sits on the affected edge — consistent with
+        topology_manager.TopologyManager.get_outage_factor().
+
+        Returns the outage_factor so callers can report how severe the
+        applied contingency was (useful for sanity-checking Fig 14 output).
+        """
+        from environment.topology_manager import TopologyManager
+
+        edges = sorted({tuple(sorted((p.bus_pri, p.bus_bkp))) for p in self.pairs})
+        line_idx = int(line_idx) % max(len(edges), 1)
+        outaged_edge = edges[line_idx]
+
+        tm = TopologyManager(n_buses=self.n_buses, n_lines=len(edges))
+        tm.apply_n1_outage("line", line_idx)
+        outage_factor = tm.get_outage_factor()
+
+        new_net = self.copy()
+        for p in new_net.pairs:
+            pair_edge = tuple(sorted((p.bus_pri, p.bus_bkp)))
+            touches_outage = (
+                pair_edge == outaged_edge
+                or p.bus_pri in outaged_edge
+                or p.bus_bkp in outaged_edge
+            )
+            if touches_outage:
+                # Fewer parallel paths -> lower fault current seen by
+                # relays electrically adjacent to the removed line.
+                p.If_pri *= outage_factor
+                p.If_bkp *= outage_factor
+
+        return new_net, outage_factor
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # IEEE 3-BUS  (6 relays, 6 P/B pairs) — Toy validation only

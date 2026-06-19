@@ -1,0 +1,76 @@
+{
+  "timestamp": "2026-06-19T09:15:00.434968",
+  "fast_mode": false,
+  "total_elapsed_seconds": 12.70476484298706,
+  "eta": "0:00:00",
+  "phases": {
+    "3": {
+      "name": "Training Dynamics",
+      "status": "complete",
+      "duration_seconds": 12.624756813049316,
+      "figures_generated": [
+        9,
+        10,
+        16,
+        21,
+        37,
+        38,
+        41
+      ],
+      "figures_failed": [],
+      "details": {}
+    }
+  },
+  "figures": {
+    "9": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 1.199547290802002,
+      "error": null
+    },
+    "10": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.26636457443237305,
+      "error": null
+    },
+    "16": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.8658318519592285,
+      "error": null
+    },
+    "21": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.26618123054504395,
+      "error": null
+    },
+    "37": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.5983915328979492,
+      "error": null
+    },
+    "38": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 5.928469657897949,
+      "error": null
+    },
+    "41": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 1.009026288986206,
+      "error": null
+    }
+  },
+  "summary": {
+    "total_phases": 1,
+    "completed_phases": 1,
+    "failed_phases": 0,
+    "total_figures": 7,
+    "completed_figures": 7,
+    "failed_figures": 0
+  }
+}

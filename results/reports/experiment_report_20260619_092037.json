@@ -1,0 +1,41 @@
+{
+  "timestamp": "2026-06-19T09:20:40.804960",
+  "fast_mode": false,
+  "total_elapsed_seconds": 2.8473026752471924,
+  "eta": "0:00:00",
+  "phases": {
+    "6": {
+      "name": "Deployment & Hardware",
+      "status": "complete",
+      "duration_seconds": 2.8305954933166504,
+      "figures_generated": [
+        18,
+        53
+      ],
+      "figures_failed": [],
+      "details": {}
+    }
+  },
+  "figures": {
+    "18": {
+      "phase": 6,
+      "status": "complete",
+      "duration_seconds": 0.7487378120422363,
+      "error": null
+    },
+    "53": {
+      "phase": 6,
+      "status": "complete",
+      "duration_seconds": 0.26703834533691406,
+      "error": null
+    }
+  },
+  "summary": {
+    "total_phases": 1,
+    "completed_phases": 1,
+    "failed_phases": 0,
+    "total_figures": 2,
+    "completed_figures": 2,
+    "failed_figures": 0
+  }
+}

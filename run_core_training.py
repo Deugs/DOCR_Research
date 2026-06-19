@@ -685,10 +685,16 @@ def _aggregate_runs(runs_data: List[Dict]) -> Dict:
     for ep, mats in all_snapshots.items():
         aggregated[f"attention_snap_{ep}_mean"] = np.mean(mats, axis=0)
         
-    entropies = np.stack([r["attention_entropies"] for r in runs_data if len(r["attention_entropies"]) > 0])
-    if len(entropies) > 0:
+    # When use_comm=False, attention_entropies is empty for all runs
+    entropy_runs = [r["attention_entropies"] for r in runs_data if len(r["attention_entropies"]) > 0]
+    if len(entropy_runs) > 0:
+        entropies = np.stack(entropy_runs)
         aggregated["attention_entropy_mean"] = entropies.mean(axis=0)
         aggregated["attention_entropy_std"] = entropies.std(axis=0)
+    else:
+        # No attention entropy data available (e.g., use_comm=False)
+        aggregated["attention_entropy_mean"] = np.array([])
+        aggregated["attention_entropy_std"] = np.array([])
         
     return aggregated
 

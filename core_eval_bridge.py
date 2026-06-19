@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 core_eval_bridge.py — Bridge between core training runs and training_pipeline evals
@@ -38,7 +37,7 @@ sys.path.insert(0, str(BASE_DIR))
 # Import training_pipeline components
 # ──────────────────────────────────────────────────────────────────
 try:
-    from training_pipeline import (
+    from experiments.training_pipeline import (
         TrainingConfig, TrainingResult, TrainingPipeline,
         create_experiment_matrix
     )
@@ -110,6 +109,7 @@ class CoreEvalBridge:
         pv_level: float = 1.0,
         fault_type: str = "3ph",
         cache_dir: Optional[Path] = None,
+        allow_synthetic_fallback: bool = False,
     ):
         self.seed = seed
         self.fast_mode = fast_mode
@@ -118,7 +118,11 @@ class CoreEvalBridge:
         self.fault_type = fault_type
         self.cache_dir = cache_dir or (BASE_DIR / "results" / "core_cache")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Default False: a failed real evaluation should raise, not
+        # silently substitute fabricated numbers. See run_evaluation().
+        self.allow_synthetic_fallback = allow_synthetic_fallback
+
         self._base_result: Optional[TrainingResult] = None
         self._net = None
         self._pipeline: Optional[Any] = None
@@ -126,71 +130,135 @@ class CoreEvalBridge:
         if not TP_AVAILABLE:
             raise RuntimeError("training_pipeline.py not available. Cannot run real evaluations.")
 
+    def _get_network_factory(self):
+        """
+        Resolve self.system to the correct NetworkData factory.
+
+        Previously _train_base_policy() and _get_net() both hardcoded
+        `from network.network_data import get_8bus`, so passing
+        system="30bus" or system="39bus" silently had no effect — every
+        evaluation ran on the 8-bus network regardless of what was
+        requested, while still being LABELLED with the requested system
+        name in TrainingConfig. This made every result for non-8-bus
+        systems mislabeled rather than simply missing.
+        """
+        from network.network_data import NETWORKS
+        if self.system not in NETWORKS:
+            raise ValueError(
+                f"Unknown system '{self.system}'. Available: {sorted(NETWORKS.keys())}"
+            )
+        return NETWORKS[self.system]
+
     # ── Base Policy Training ──
 
     def _train_base_policy(self) -> TrainingResult:
-        """Train MAPPO-Safe-EWC on 8-bus, 100% PV to get a real policy."""
-        logger.info("Training base policy (MAPPO-Safe-EWC, 8-bus, 100% PV)...")
-        
-        from network.network_data import get_8bus
+        """
+        Train MAPPO-Safe-EWC on 8-bus, 100% PV to get a real policy.
+
+        Previous version looped over episodes calling only
+        `trainer.actor.sample()` and recording the best (TMS, PS) ever
+        observed — it never called `trainer.train()` or any update
+        method, so the actor's weights were frozen at random
+        initialization for the entire run. The "trained" result was
+        really just the best output of a fixed random policy across
+        N episodes: random search, not MARL, despite MAPPOMARLTrainer
+        existing specifically to perform ES-based parameter updates
+        (see marl/marl_agents.py: _update_actor_es / _update_critic_es,
+        invoked inside trainer.train()).
+
+        Fixed version actually calls trainer.train(total_steps=...), then
+        persists the actor's learned weight vector (actor.get_all_params())
+        onto the TrainingResult so every downstream _eval_* method can
+        reconstruct and use the REAL trained policy, not random noise or
+        a frozen actor.
+        """
+        logger.info(f"Training base policy (MAPPO-Safe-EWC, {self.system}, "
+                    f"{int(self.pv_level*100)}% PV)...")
+
+        net_factory = self._get_network_factory()
         from marl.marl_env import DynamicDOCREnv
         from marl.marl_agents import MAPPOMARLTrainer
-        from network.relay_physics import check_constraints
-        
-        net = get_8bus()
+        from network.relay_physics import check_constraints, objective_function
+
+        net = net_factory()
         if self.pv_level > 0 and hasattr(net, 'apply_pv_penetration'):
             net = net.apply_pv_penetration(self.pv_level)
-        
+
         env = DynamicDOCREnv(
             net, seed=self.seed, use_pandapower=False,
             fault_type=self.fault_type, curriculum_stage=5
         )
-        
-        n_episodes = 500 if self.fast_mode else 5000
-        
+
+        # total_steps here means environment steps consumed by
+        # trainer.train(), mirroring the step-budget convention used by
+        # every exp_fig*.py script in marl/experiments/. fast_mode trims
+        # this for iteration speed, matching the prior n_episodes scaling.
+        total_steps = 5000 if self.fast_mode else 50000
+
         trainer = MAPPOMARLTrainer(env, use_comm=True, seed=self.seed)
         if hasattr(trainer, 'use_safety'):
             trainer.use_safety = True
         if hasattr(trainer, 'use_ewc'):
             trainer.use_ewc = True
-        
-        rng = np.random.default_rng(self.seed)
-        
-        # Train
+
+        # This is the actual fix: previously this call never happened.
+        # trainer.train() runs the ES rollout + _update_actor_es +
+        # _update_critic_es loop, genuinely moving actor.net's weights
+        # away from their random initialization.
+        history_obj = trainer.train(total_steps=total_steps, verbose=self.fast_mode is False)
+        history = list(history_obj) if history_obj is not None else []
+
+        # Evaluate the TRAINED (post-update) policy to find its best
+        # observed operating point — this is now a real evaluation of a
+        # learned policy, not a random-search artifact.
+        rng = np.random.default_rng(self.seed + 999)
+        n_eval_episodes = 20 if self.fast_mode else 100
         best_of = float('inf')
-        best_tms = None
-        best_ps = None
-        history = []
-        
-        for ep in range(n_episodes):
-            obs = env.reset(seed=self.seed + ep)
+        best_tms, best_ps = None, None
+
+        for ep in range(n_eval_episodes):
+            obs = env.reset(seed=self.seed + 10_000 + ep)
             done = False
-            ep_reward = 0.0
             while not done:
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
                 for i in range(env.n_agents):
                     a, _ = trainer.actor.sample(obs[i], rng)
                     actions[i] = a
                 obs, reward, done, info = env.step(actions)
-                ep_reward += float(np.mean(reward))
-            
+
             TMS, PS = env.get_state()
             try:
-                from network.relay_physics import objective_function
-                of_val, _, _ = objective_function(net, TMS, PS)
+                of_val, _, _ = objective_function(net, TMS, PS, fault_type=self.fault_type)
                 if of_val < best_of:
                     best_of = of_val
                     best_tms = TMS.copy()
                     best_ps = PS.copy()
-                history.append(float(of_val))
+                if not history or ep > 0:
+                    history.append(float(of_val))
             except Exception:
-                history.append(ep_reward)
-            
-            if ep % 500 == 0:
-                logger.info(f"  Ep {ep}/{n_episodes}: best OF={best_of:.4f}")
-        
+                pass
+
+        if best_tms is None:
+            # Defensive fallback only — should not trigger in practice
+            # since n_eval_episodes >= 1, but avoids a hard crash if the
+            # objective function raised on every episode.
+            best_tms, best_ps = env.get_state()
+            best_of = float(objective_function(net, best_tms, best_ps, fault_type=self.fault_type)[0])
+
         constraints = check_constraints(net, best_tms, best_ps, fault_type=self.fault_type)
-        
+
+        actor_params = trainer.actor.get_all_params()
+
+        # Persist the trained communication module too, if one exists.
+        # Without this, _get_actor_for_eval has no way to reconstruct the
+        # GNN encoder/attention/decoder the actor was actually trained
+        # against, and any downstream eval that feeds raw (rather than
+        # comm-enhanced) observations into the actor would silently use
+        # the wrong input dimensionality and content.
+        use_comm = bool(getattr(trainer, 'use_comm', False) and trainer.comm_graph is not None)
+        comm_graph_params = trainer.comm_graph.get_all_params() if use_comm else None
+        comm_msg_dim = getattr(trainer.comm_graph, 'msg_dim', 8) if use_comm else 8
+
         # Create TrainingResult-compatible object
         result = TrainingResult(
             config=TrainingConfig(
@@ -208,12 +276,25 @@ class CoreEvalBridge:
             cti_min=constraints["cti_min"],
             elapsed_seconds=0.0,
             history=history,
+            actor_params=actor_params,
+            obs_dim=env.OBS_DIM,
+            act_dim=env.ACT_DIM,
+            actor_hidden=64,
+            use_comm=use_comm,
+            comm_graph_params=comm_graph_params,
+            comm_n_agents=env.n_agents,
+            comm_msg_dim=comm_msg_dim,
         )
-        
+
         self._base_result = result
         self._net = net
-        logger.info(f"Base policy trained. Best OF={best_of:.4f}, CTI_ok={constraints['cti_satisfied']}")
+        logger.info(
+            f"Base policy trained ({total_steps} steps). "
+            f"Best OF={best_of:.4f}, CTI_ok={constraints['cti_satisfied']}, "
+            f"actor_params persisted ({actor_params.size} weights)."
+        )
         return result
+
 
     def _get_base_result(self) -> TrainingResult:
         """Get or train base policy."""
@@ -224,8 +305,8 @@ class CoreEvalBridge:
     def _get_net(self):
         """Get or create network."""
         if self._net is None:
-            from network.network_data import get_8bus
-            self._net = get_8bus()
+            net_factory = self._get_network_factory()
+            self._net = net_factory()
             if self.pv_level > 0 and hasattr(self._net, 'apply_pv_penetration'):
                 self._net = self._net.apply_pv_penetration(self.pv_level)
         return self._net
@@ -315,9 +396,21 @@ class CoreEvalBridge:
             return bridge_result
             
         except Exception as e:
-            logger.error(f"[Fig {fig_num}] ✗ Real evaluation failed: {e}")
-            # Fallback to synthetic if real fails
-            warnings.warn(f"Real eval failed for Fig {fig_num}, using synthetic fallback")
+            logger.error(f"[Fig {fig_num}] Real evaluation failed: {e}", exc_info=True)
+            if not self.allow_synthetic_fallback:
+                # Re-raise by default. A silent substitution of fabricated
+                # numbers for a genuine failure is worse than a crash: it
+                # produces a figure that looks identical to a real result
+                # while reporting nothing about the actual trained policy.
+                # Set allow_synthetic_fallback=True explicitly (e.g. for
+                # CI smoke tests where only file-shape matters) to opt
+                # back into the old behaviour.
+                raise
+            warnings.warn(
+                f"Real eval failed for Fig {fig_num}, using SYNTHETIC fallback. "
+                f"This result is NOT derived from the trained policy and must "
+                f"not be reported as an experimental finding."
+            )
             return self._synthetic_fallback(fig_num, result)
 
     # ── Config Builders ──
@@ -592,8 +685,17 @@ class CoreEvalBridge:
     # ── Batch Evaluation ──
 
     def run_evaluations(self, fig_nums: List[int], **kwargs) -> Dict[int, BridgeResult]:
-        """Run multiple figure evaluations."""
+        """
+        Run multiple figure evaluations.
+
+        Failures are collected and reported at the end rather than
+        silently papered over with synthetic data for each figure that
+        happened to fail — a batch run that quietly downgrades half its
+        figures to fabricated numbers is far more dangerous than one that
+        reports clearly which figures did not produce real results.
+        """
         results = {}
+        failed: List[int] = []
         for fig_num in fig_nums:
             # Check cache first
             cached = self.load_cached_result(fig_num)
@@ -601,13 +703,25 @@ class CoreEvalBridge:
                 logger.info(f"[Fig {fig_num}] Using cached result")
                 results[fig_num] = cached
                 continue
-            
+
             try:
                 results[fig_num] = self.run_evaluation(fig_num, **kwargs)
             except Exception as e:
-                logger.error(f"[Fig {fig_num}] Evaluation failed: {e}")
-                results[fig_num] = self._synthetic_fallback(fig_num, self._get_base_result())
-        
+                logger.error(f"[Fig {fig_num}] Evaluation failed: {e}", exc_info=True)
+                failed.append(fig_num)
+                if self.allow_synthetic_fallback:
+                    results[fig_num] = self._synthetic_fallback(fig_num, self._get_base_result())
+                # else: fig_num is simply absent from results, which the
+                # caller must handle explicitly rather than unknowingly
+                # receiving fabricated data.
+
+        if failed:
+            logger.error(
+                f"{len(failed)} figure(s) FAILED real evaluation and were "
+                f"{'replaced with synthetic fallback' if self.allow_synthetic_fallback else 'omitted'}: "
+                f"{failed}"
+            )
+
         return results
 
 

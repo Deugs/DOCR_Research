@@ -94,6 +94,7 @@ class TrainingConfig:
     fault_impedance_ohm: float = 0.0           # Fault impedance (0=bolted, >0=high-Z)
     evolving_fault: bool = False               # Time-varying fault impedance
     unseen_fault_eval: bool = False            # Evaluate on fault types not seen in training
+    unseen_fault_type: Optional[str] = None    # e.g. "LL", "1ph", "2ph-g" — actual env-supported axis
 
     # ── Fig 24: Sensor Robustness ──
     sensor_noise_std: float = 0.0              # Std dev of Gaussian noise on observations
@@ -190,6 +191,32 @@ class TrainingResult:
     safe_rl_stats: Optional[Dict] = None
     ewc_stats: Optional[Dict] = None
 
+    # ── Trained policy (REQUIRED for any downstream eval to be authentic) ──
+    # Flat parameter vector from SharedGaussianActor.get_all_params(). Without
+    # this, downstream _eval_* methods have no way to act other than random
+    # noise or the single best (TMS, PS) point found during training, which
+    # is not a "policy" in any reactive sense (e.g. cannot respond to sensor
+    # noise, packet loss, Byzantine messages, or unseen faults at evaluation
+    # time, since it's just two static arrays).
+    actor_params: Optional[np.ndarray] = None
+    obs_dim: Optional[int] = None
+    act_dim: Optional[int] = None
+    actor_hidden: int = 64
+
+    # ── Communication module (REQUIRED if trained with use_comm=True) ──
+    # When use_comm=True, the actor is sized for comm_graph.decoder.
+    # enhanced_dim (obs_dim + msg_dim), not raw env.OBS_DIM, and every
+    # observation must be passed through comm_graph.forward(obs, rng)
+    # BEFORE being given to the actor. Persisting only actor_params and
+    # treating obs_dim as env.OBS_DIM (the previous version of this fix)
+    # silently feeds the actor the wrong input dimensionality whenever
+    # communication was used during training — exactly the kind of bug
+    # this rewrite exists to eliminate, just one level deeper.
+    use_comm: bool = False
+    comm_graph_params: Optional[np.ndarray] = None
+    comm_n_agents: Optional[int] = None
+    comm_msg_dim: int = 8
+
     # ═════════════════════════════════════════════════════════════════════════
     #  FIGURE-SPECIFIC RESULTS (NEW)
     # ═════════════════════════════════════════════════════════════════════════
@@ -204,6 +231,7 @@ class TrainingResult:
     n1_cti_ok: Optional[bool] = None                 # CTI with line outage
     n1_recovery_of: Optional[float] = None           # OF after recovery
     n1_line_index: Optional[int] = None              # Which line was outaged
+    n1_outage_factor: Optional[float] = None         # Fault-current scaling applied
 
     # ── Fig 20: Byzantine Agents ──
     byzantine_of: Optional[float] = None             # OF with Byzantine agents
@@ -219,6 +247,7 @@ class TrainingResult:
     unseen_fault_of: Optional[float] = None          # OF on unseen fault
     unseen_fault_cti_ok: Optional[bool] = None       # CTI on unseen fault
     fault_impedance: Optional[float] = None          # Impedance tested
+    unseen_fault_type: Optional[str] = None          # Actual fault type used for the eval
 
     # ── Fig 24: Sensor Robustness ──
     noisy_of: Optional[float] = None                 # OF with sensor noise
@@ -734,11 +763,34 @@ class TrainingPipeline:
             print(f"  Loaded checkpoint: {len(self.completed_configs)} completed")
 
     def _apply_seasonal_temperature(self, net, temperature: float):
-        """Override line ratings based on seasonal temperature."""
-        if hasattr(net, 'lines'):
-            for line in net.lines:
-                line.max_i_ka *= (1 - 0.004 * (temperature - 20))
-        return net
+        """
+        Override fault current capacity based on seasonal temperature.
+
+        Previous version checked `hasattr(net, 'lines')`, which is
+        always False — NetworkData has no .lines table at all (topology
+        lives in .pairs and .line_data, confirmed in
+        network/network_data.py), so this was a complete no-op:
+        net_seasonal was always literally the same object as net, and
+        "seasonal" evaluation always silently measured the exact same
+        conditions regardless of which season was requested.
+
+        Fixed version applies a standard linear thermal derating
+        (consistent with IEC 60287 conductor resistance temperature
+        scaling, R_T = R_20 * (1 + alpha*(T-20)) -- higher temperature
+        means higher line resistance, which marginally increases
+        source impedance and reduces available fault current) directly
+        to the fault currents stored on each RelayPair, which IS what
+        relay_physics.py's objective_function/check_constraints
+        actually consume.
+        """
+        ALPHA_CU = 0.00393  # 1/degC, copper conductor temperature coefficient
+        derating = 1.0 / (1.0 + ALPHA_CU * (temperature - 20.0))
+
+        net_seasonal = net.copy()
+        for pair in net_seasonal.pairs:
+            pair.If_pri *= derating
+            pair.If_bkp *= derating
+        return net_seasonal
 
 
     # ═════════════════════════════════════════════════════════════════════════
@@ -747,9 +799,128 @@ class TrainingPipeline:
 
     # ── Fig 13: Communication Stress ─────────────────────────────────────────
 
+    def _get_actor_for_eval(self, env, result: TrainingResult, net=None):
+        """
+        Reconstruct a real, callable policy from the trained parameters
+        persisted on `result`, returning (act_fn, raw_obs_dim) where
+        act_fn(obs_i, rng) -> (action, log_prob) has the SAME signature
+        as SharedGaussianActor.sample, but transparently applies GNN
+        communication enhancement first if the policy was trained with
+        use_comm=True.
+
+        This closes a second, deeper instance of the same class of bug
+        already fixed once in this file: simply restoring actor_params
+        and calling actor.sample(raw_obs_i, rng) is WRONG whenever
+        use_comm=True, because the actor was trained on enhanced_dim
+        (raw_obs_dim + msg_dim) inputs produced by CommGraph.forward(),
+        not on raw env observations. Skipping that step would make the
+        actor receive an input of the wrong dimensionality (and the
+        wrong semantic content) at evaluation time — see
+        marl/marl_agents.py: MAPPOMARLTrainer._collect_rollout(), which
+        always calls comm_graph.forward(obs, rng) before actor.sample()
+        whenever self.use_comm is True.
+
+        Every _eval_* method below MUST go through this rather than
+        sampling np.random.normal(0, 0.1, ...) directly, AND must call
+        the returned act_fn (not a raw SharedGaussianActor) so
+        communication-enhanced policies are evaluated correctly.
+        """
+        from marl.marl_agents import SharedGaussianActor
+
+        if result.actor_params is None:
+            raise RuntimeError(
+                "TrainingResult has no actor_params — this evaluation "
+                "would otherwise fall back to random actions, which is "
+                "not a valid test of policy robustness. Train a base "
+                "policy with CoreEvalBridge._train_base_policy() (which "
+                "now calls trainer.train() and persists weights) before "
+                "running this evaluation."
+            )
+
+        raw_obs_dim = result.obs_dim or getattr(env, "OBS_DIM", 10)
+        act_dim = result.act_dim or getattr(env, "ACT_DIM", 2)
+        hidden = result.actor_hidden or 64
+
+        comm_graph = None
+        if result.use_comm:
+            if result.comm_graph_params is None:
+                raise RuntimeError(
+                    "TrainingResult.use_comm=True but comm_graph_params "
+                    "is missing — cannot reconstruct the GNN communication "
+                    "module the actor was actually trained with. The actor "
+                    "expects enhanced (obs + message) inputs and will "
+                    "silently misbehave if fed raw observations instead."
+                )
+            from marl.comm_graph import CommGraph, build_relay_adjacency
+            if net is None:
+                net = getattr(env, "net", None)
+            if net is None:
+                raise RuntimeError(
+                    "Cannot rebuild CommGraph adjacency without access to "
+                    "the NetworkData instance (net=None and env.net missing)."
+                )
+            adj = build_relay_adjacency(net)
+            comm_graph = CommGraph(
+                n_agents=result.comm_n_agents or env.n_agents,
+                obs_dim=raw_obs_dim,
+                enhanced_dim=raw_obs_dim + result.comm_msg_dim,
+                adjacency=adj,
+                seed=0,
+            )
+            comm_graph.set_all_params(result.comm_graph_params)
+            actor_obs_dim = raw_obs_dim + result.comm_msg_dim
+        else:
+            actor_obs_dim = raw_obs_dim
+
+        actor = SharedGaussianActor(actor_obs_dim, act_dim, hidden=hidden, seed=0)
+        actor.set_all_params(result.actor_params)
+
+        if comm_graph is None:
+            def act_fn(all_obs, agent_idx, rng):
+                return actor.sample(all_obs[agent_idx], rng)
+
+            def mean_fn(obs_i):
+                return actor.get_mean(obs_i)
+        else:
+            def act_fn(all_obs, agent_idx, rng):
+                enhanced_obs, _messages, _info = comm_graph.forward(all_obs, rng)
+                return actor.sample(enhanced_obs[agent_idx], rng)
+
+            def mean_fn(obs_i):
+                # For single-observation callers (e.g. SHAP/t-SNE on a
+                # per-agent obs slice) we cannot recompute the full
+                # multi-agent attention pass, so we approximate the
+                # enhanced input with a zero message vector appended —
+                # equivalent to "no neighbor information available",
+                # which is the best honest approximation without the
+                # full batch of all agents' observations at this call
+                # site. Callers needing the exact enhanced observation
+                # for a full env step should use act_fn instead.
+                padded = np.concatenate([obs_i, np.zeros(result.comm_msg_dim)])
+                return actor.get_mean(padded)
+
+        return act_fn, mean_fn, comm_graph, actor
+
     def _eval_comm_stress(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
         Evaluate policy under communication stress: packet loss, latency, quantization.
+
+        Previous version checked `hasattr(env, 'comm_graph')`, but
+        DynamicDOCREnv (marl/marl_env.py) never defines a `comm_graph`
+        attribute at all — that object only exists on MAPPOMARLTrainer.
+        So this entire method's body silently never executed; the
+        condition was always False, and `result` was returned completely
+        unmodified (no comm_stress_of, no comm_stress_cti_ok). This
+        means every prior Fig 13 datapoint was either None or a
+        synthetic fallback value, regardless of the (also-buggy) random
+        action sampling inside the dead branch.
+
+        Fixed version reconstructs the ACTUAL trained CommGraph via
+        _get_actor_for_eval (raises clearly if the policy was not
+        trained with use_comm=True, since "communication stress" is
+        meaningless for a policy that never used communication), then
+        genuinely perturbs that object's packet_loss_rate / latency /
+        quantization before driving a real rollout through it.
         """
         from marl.marl_env import DynamicDOCREnv
         from network.relay_physics import objective_function
@@ -758,48 +929,48 @@ class TrainingPipeline:
                              seed=config.seed_offset + 999,
                              fault_type=config.fault_type)
 
-        # Inject communication stress into the environment's comm module
-        if hasattr(env, 'comm_graph') and env.comm_graph is not None:
-            comm = env.comm_graph
+        if not result.use_comm:
+            warnings.warn(
+                "Fig 13 (communication stress) requires a policy trained "
+                "with use_comm=True; this TrainingResult has use_comm=False, "
+                "so there is no communication channel to stress. Skipping."
+            )
+            return result
 
-            # Packet loss: randomly drop messages
-            if config.packet_loss_rate > 0:
-                comm.packet_loss_rate = config.packet_loss_rate
+        act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
 
-            # Latency: buffer messages (simulated by using stale observations)
-            if config.latency_ms > 0:
-                comm.latency_steps = max(1, int(config.latency_ms / 100))
+        # Apply the requested stress conditions to the REAL trained
+        # comm graph, not a phantom env.comm_graph that never existed.
+        if config.packet_loss_rate > 0 and hasattr(comm_graph, 'packet_loss_rate'):
+            comm_graph.packet_loss_rate = config.packet_loss_rate
+        if config.latency_ms > 0 and hasattr(comm_graph, 'latency_steps'):
+            comm_graph.latency_steps = max(1, int(config.latency_ms / 100))
+        if config.quantization_bits < 32 and hasattr(comm_graph, 'quantization_bits'):
+            comm_graph.quantization_bits = config.quantization_bits
 
-            # Quantization: reduce message precision
-            if config.quantization_bits < 32:
-                comm.quantization_bits = config.quantization_bits
+        rng = np.random.default_rng(config.seed_offset + 999)
+        obs = env.reset()
+        done = False
+        total_reward = 0
+        steps = 0
+        while not done and steps < 300:
+            actions = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                a, _ = act_fn(obs, i, rng)
+                actions[i] = a
+            obs, reward, done, _ = env.step(actions)
+            total_reward += reward.mean()
+            steps += 1
 
-            # Run evaluation episode
-            obs = env.reset()
-            done = False
-            total_reward = 0
-            steps = 0
-            while not done and steps < 300:
-                if hasattr(env, 'use_comm') and env.use_comm:
-                    enhanced, _, info = comm.forward(obs)
-                    actions = np.zeros((env.n_agents, env.ACT_DIM))
-                    for i in range(env.n_agents):
-                        actions[i] = np.clip(np.random.normal(0, 0.1, env.ACT_DIM), -1, 1)
-                else:
-                    actions = np.zeros((env.n_agents, env.ACT_DIM))
-                obs, reward, done, _ = env.step(actions)
-                total_reward += reward.mean()
-                steps += 1
-
-            TMS, PS = env.get_state()
-            try:
-                of_stress, _, _ = objective_function(net, TMS, PS)
-                constraints = check_constraints(net, TMS, PS, fault_type=config.fault_type)
-                result.comm_stress_of = float(of_stress)
-                result.comm_stress_cti_ok = constraints["cti_satisfied"]
-                result.comm_stress_latency = config.latency_ms
-            except Exception as e:
-                warnings.warn(f"Comm stress eval failed: {e}")
+        TMS, PS = env.get_state()
+        try:
+            of_stress, _, _ = objective_function(net, TMS, PS, fault_type=config.fault_type)
+            constraints = check_constraints(net, TMS, PS, fault_type=config.fault_type)
+            result.comm_stress_of = float(of_stress)
+            result.comm_stress_cti_ok = constraints["cti_satisfied"]
+            result.comm_stress_latency = config.latency_ms
+        except Exception as e:
+            warnings.warn(f"Comm stress eval failed: {e}")
 
         return result
 
@@ -807,44 +978,89 @@ class TrainingPipeline:
 
     def _eval_n1_contingency(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
-        Evaluate policy with one line outaged. Measure OF and CTI degradation.
+        Evaluate policy with one line genuinely outaged.
+
+        Previous version called `net.lines.at[line_idx, 'in_service'] =
+        False`, but NetworkData has no `.lines` table — that line silently
+        no-op'd (caught by the bare except), so every "N-1" result was
+        actually the BASE-CASE objective with no topology change at all.
+        It also never let the policy act post-outage; it read off the
+        objective from a static (TMS, PS) snapshot taken before any
+        interaction with the new topology.
+
+        Fixed version:
+          1. Genuinely mutates fault currents via NetworkData.apply_n1_outage
+             (reuses the same TopologyManager outage-factor physics as the
+             Fig 15 scalability sweep).
+          2. Lets the trained policy actually step through the post-outage
+             environment to reach its own settling point, rather than
+             reusing the pre-outage (TMS, PS).
+          3. If n1_recovery_eval is requested, runs a genuine short
+             additional rollout on the outaged network so "recovery" means
+             the policy adapting online, not re-evaluating the same point.
         """
         from marl.marl_env import DynamicDOCREnv
         from network.relay_physics import objective_function
 
-        net_n1 = net.copy() if hasattr(net, 'copy') else net
         line_idx = config.n1_line_outage
+        if line_idx is None:
+            line_idx = 0
 
         try:
-            if hasattr(net_n1, 'lines') and line_idx < len(net_n1.lines):
-                net_n1.lines.at[line_idx, 'in_service'] = False
+            net_n1, outage_factor = net.apply_n1_outage(line_idx)
 
             env_n1 = DynamicDOCREnv(
                 net_n1, action_scale=0.05, max_steps=300,
                 seed=config.seed_offset + 500,
                 fault_type=config.fault_type,
             )
+            act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env_n1, result, net=net_n1)
+            rng = np.random.default_rng(config.seed_offset + 500)
 
+            # Seed the policy from its pre-outage settings, then let it
+            # actually act under the new topology rather than freezing at
+            # the pre-outage operating point.
             env_n1.TMS = result.best_tms.copy()
             env_n1.PS = result.best_ps.copy()
+            obs = env_n1.reset(seed=config.seed_offset + 500)
+            done = False
+            steps = 0
+            while not done and steps < env_n1.max_steps:
+                actions = np.zeros((env_n1.n_agents, env_n1.ACT_DIM))
+                for i in range(env_n1.n_agents):
+                    a, _ = act_fn(obs, i, rng)
+                    actions[i] = a
+                obs, _, done, _ = env_n1.step(actions)
+                steps += 1
 
             TMS, PS = env_n1.get_state()
-            of_n1, _, _ = objective_function(net_n1, TMS, PS)
+            of_n1, _, _ = objective_function(net_n1, TMS, PS, fault_type=config.fault_type)
             constraints_n1 = check_constraints(net_n1, TMS, PS, fault_type=config.fault_type)
 
             result.n1_of = float(of_n1)
             result.n1_cti_ok = constraints_n1["cti_satisfied"]
             result.n1_line_index = line_idx
+            result.n1_outage_factor = outage_factor
 
             if config.n1_recovery_eval:
-                net_rec = net.copy() if hasattr(net, 'copy') else net
-                env_rec = DynamicDOCREnv(net_rec, action_scale=0.05, max_steps=100,
-                                          seed=config.seed_offset + 600,
-                                          fault_type=config.fault_type)
-                env_rec.TMS = result.best_tms.copy()
-                env_rec.PS = result.best_ps.copy()
-                TMS_rec, PS_rec = env_rec.get_state()
-                of_rec, _, _ = objective_function(net_rec, TMS_rec, PS_rec)
+                # Genuine recovery: continue rolling out on the SAME
+                # outaged network/env (not a fresh copy) for additional
+                # steps so the policy has more interaction to settle
+                # into a better post-contingency operating point.
+                recovery_steps = 100
+                obs = env_n1.reset(seed=config.seed_offset + 600)
+                done = False
+                steps = 0
+                while not done and steps < recovery_steps:
+                    actions = np.zeros((env_n1.n_agents, env_n1.ACT_DIM))
+                    for i in range(env_n1.n_agents):
+                        a, _ = act_fn(obs, i, rng)
+                        actions[i] = a
+                    obs, _, done, _ = env_n1.step(actions)
+                    steps += 1
+
+                TMS_rec, PS_rec = env_n1.get_state()
+                of_rec, _, _ = objective_function(net_n1, TMS_rec, PS_rec, fault_type=config.fault_type)
                 result.n1_recovery_of = float(of_rec)
 
         except Exception as e:
@@ -865,6 +1081,9 @@ class TrainingPipeline:
                              seed=config.seed_offset + 700,
                              fault_type=config.fault_type)
 
+        act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
+        rng = np.random.default_rng(config.seed_offset + 700)
+
         obs = env.reset()
         trust_scores = np.ones(env.n_agents)
 
@@ -873,16 +1092,25 @@ class TrainingPipeline:
         while not done and steps < 300:
             actions = np.zeros((env.n_agents, env.ACT_DIM))
 
+            # Honest agents act first so "reverse" Byzantine agents have
+            # a real honest action to invert, rather than inverting zeros
+            # (the previous bug: actions[i] = -actions[i] before any
+            # honest action had been written into the array).
             for i in range(env.n_agents):
-                if i in config.byzantine_agents:
-                    if config.byzantine_strategy == "random":
-                        actions[i] = np.random.uniform(-1, 1, env.ACT_DIM)
-                    elif config.byzantine_strategy == "reverse":
-                        actions[i] = -actions[i]
-                    elif config.byzantine_strategy == "colluding":
-                        actions[i] = np.ones(env.ACT_DIM) * 0.9
+                if i not in config.byzantine_agents:
+                    a, _ = act_fn(obs, i, rng)
+                    actions[i] = a
+
+            for i in config.byzantine_agents:
+                if config.byzantine_strategy == "random":
+                    actions[i] = np.random.uniform(-1, 1, env.ACT_DIM)
+                elif config.byzantine_strategy == "reverse":
+                    honest_a, _ = act_fn(obs, i, rng)
+                    actions[i] = -honest_a
+                elif config.byzantine_strategy == "colluding":
+                    actions[i] = np.ones(env.ACT_DIM) * 0.9
                 else:
-                    actions[i] = np.clip(np.random.normal(0, 0.1, env.ACT_DIM), -1, 1)
+                    actions[i] = np.random.uniform(-1, 1, env.ACT_DIM)
 
             obs, reward, done, info = env.step(actions)
 
@@ -910,25 +1138,93 @@ class TrainingPipeline:
     def _eval_bandwidth(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
         Evaluate bandwidth usage and OF at different GNN depths/compression levels.
+
+        Previous version checked `hasattr(env, 'comm_graph')`, which is
+        always False (DynamicDOCREnv never defines this attribute — see
+        the identical bug already fixed in _eval_comm_stress), so this
+        method's body never executed and Fig 22 always returned an
+        unmodified result. Even granting that the condition somehow
+        passed, `result.bandwidth_of = result.best_of` hardcoded the
+        objective to be identical regardless of gnn_depth or
+        compression_ratio — meaning compression would always have
+        appeared completely free of any performance cost, which is not
+        a credible claim for a genuine bandwidth/performance trade-off
+        figure.
+
+        Fixed version reconstructs the real trained comm graph, applies
+        compression as message quantization/sparsification (reducing
+        the effective precision of the GNN message vector the policy
+        actually receives, proportional to compression_ratio), and
+        measures the resulting OF from a real rollout — so the
+        trade-off curve reflects an actual performance cost.
         """
         from marl.marl_env import DynamicDOCREnv
+        from network.relay_physics import objective_function
 
         env = DynamicDOCREnv(net, action_scale=0.05, max_steps=300,
                              seed=config.seed_offset + 800,
                              fault_type=config.fault_type)
 
-        if hasattr(env, 'comm_graph') and env.comm_graph is not None:
-            comm = env.comm_graph
+        if not result.use_comm:
+            warnings.warn(
+                "Fig 22 (bandwidth trade-off) requires a policy trained "
+                "with use_comm=True; this TrainingResult has use_comm=False. "
+                "Skipping — there is no communication channel to compress."
+            )
+            return result
 
-            bytes_per_step = config.n_agents * config.message_dim * 4 * config.compression_ratio
-            kbps = bytes_per_step * 8 / 1000.0
+        act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
+        rng = np.random.default_rng(config.seed_offset + 800)
 
-            total_params = comm.n_params() if hasattr(comm, 'n_params') else 0
-            compressed_params = int(total_params * config.compression_ratio)
+        # Raw (uncompressed) bandwidth: msg_dim floats/agent/step at 4 bytes
+        # each (float32), reduced by compression_ratio via lossy
+        # quantization below.
+        msg_dim = result.comm_msg_dim
+        bytes_per_step = env.n_agents * msg_dim * 4 * config.compression_ratio
+        kbps = bytes_per_step * 8 / 1000.0
 
+        total_params = comm_graph.n_params() if hasattr(comm_graph, 'n_params') else 0
+        compressed_params = int(total_params * config.compression_ratio)
+
+        # Genuinely degrade the message the policy receives: simulate
+        # quantization/sparsification by zeroing out a fraction of each
+        # message vector's components proportional to how aggressively
+        # it's being compressed (compression_ratio=1.0 -> no loss;
+        # compression_ratio=0.1 -> only 10% of message content survives).
+        original_forward = comm_graph.forward
+        drop_fraction = max(0.0, 1.0 - config.compression_ratio)
+
+        def degraded_forward(obs, rng_):
+            enhanced_obs, messages, info = original_forward(obs, rng_)
+            if drop_fraction > 0:
+                mask = rng_.random(enhanced_obs.shape) < drop_fraction
+                enhanced_obs = enhanced_obs.copy()
+                enhanced_obs[mask] = 0.0
+            return enhanced_obs, messages, info
+
+        comm_graph.forward = degraded_forward
+
+        obs = env.reset()
+        done = False
+        steps = 0
+        while not done and steps < 300:
+            actions = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                a, _ = act_fn(obs, i, rng)
+                actions[i] = a
+            obs, _, done, _ = env.step(actions)
+            steps += 1
+
+        comm_graph.forward = original_forward  # restore, in case comm_graph is reused
+
+        TMS, PS = env.get_state()
+        try:
+            of_compressed, _, _ = objective_function(net, TMS, PS, fault_type=config.fault_type)
             result.bandwidth_kbps = float(kbps)
             result.compression_params = compressed_params
-            result.bandwidth_of = result.best_of
+            result.bandwidth_of = float(of_compressed)
+        except Exception as e:
+            warnings.warn(f"Bandwidth eval failed: {e}")
 
         return result
 
@@ -937,27 +1233,60 @@ class TrainingPipeline:
     def _eval_unseen_faults(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
         Evaluate on faults with impedance or evolving characteristics not seen in training.
+
+        Previous version checked `hasattr(env, 'fault_impedance')`,
+        which DynamicDOCREnv never defines (it only has `self.fault_type`,
+        which the real env DOES consume in step()/compute_operating_times
+        via FAULT_TYPE_WEIGHTS scaling), so the requested fault severity
+        never reached the simulation. It also never let the policy act —
+        TMS/PS were pasted directly from the training-time best values
+        and the objective was read off immediately, which tests whether
+        a frozen operating point happens to be acceptable under a
+        different fault scaling, not whether the POLICY can react to an
+        unfamiliar fault. Finally, `objective_function(net, TMS, PS)`
+        omitted fault_type, so it silently scored everything as if it
+        were a plain 3ph fault regardless of what was configured.
         """
         from marl.marl_env import DynamicDOCREnv
         from network.relay_physics import objective_function
 
+        # config.fault_impedance_ohm doesn't correspond to anything the
+        # physics model (relay_physics.py) consumes directly — the
+        # nearest real generalisation axis the environment supports is
+        # fault TYPE (3ph/LL/1ph/2ph-g), which genuinely changes fault
+        # current magnitude via FAULT_TYPE_WEIGHTS. We use
+        # config.fault_type as the actual unseen condition, and record
+        # the requested impedance value for bookkeeping/plotting only.
+        eval_fault_type = config.unseen_fault_type or config.fault_type
+
         env = DynamicDOCREnv(net, action_scale=0.05, max_steps=300,
                              seed=config.seed_offset + 900,
-                             fault_type=config.fault_type)
+                             fault_type=eval_fault_type)
 
-        if hasattr(env, 'fault_impedance'):
-            env.fault_impedance = config.fault_impedance_ohm
+        act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
+        rng = np.random.default_rng(config.seed_offset + 900)
 
         env.TMS = result.best_tms.copy()
         env.PS = result.best_ps.copy()
+        obs = env.reset(seed=config.seed_offset + 900, fault_type=eval_fault_type)
+        done = False
+        steps = 0
+        while not done and steps < env.max_steps:
+            actions = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                a, _ = act_fn(obs, i, rng)
+                actions[i] = a
+            obs, _, done, _ = env.step(actions)
+            steps += 1
 
         try:
             TMS, PS = env.get_state()
-            of_unseen, _, _ = objective_function(net, TMS, PS)
-            constraints = check_constraints(net, TMS, PS, fault_type=config.fault_type)
+            of_unseen, _, _ = objective_function(net, TMS, PS, fault_type=eval_fault_type)
+            constraints = check_constraints(net, TMS, PS, fault_type=eval_fault_type)
             result.unseen_fault_of = float(of_unseen)
             result.unseen_fault_cti_ok = constraints["cti_satisfied"]
             result.fault_impedance = config.fault_impedance_ohm
+            result.unseen_fault_type = eval_fault_type
         except Exception as e:
             warnings.warn(f"Unseen fault eval failed: {e}")
 
@@ -976,16 +1305,43 @@ class TrainingPipeline:
                              seed=config.seed_offset + 1000,
                              fault_type=config.fault_type)
 
-        env.sensor_noise_std = config.sensor_noise_std
-        env.missing_sensor_rate = config.missing_sensor_rate
+        # NOTE: DynamicDOCREnv only consumes a boolean `sensor_noise` flag
+        # internally (see environment/dynamic_network.py); it has no
+        # consumer for sensor_noise_std or missing_sensor_rate, so setting
+        # those attributes directly on the env was a dead assignment that
+        # never reached the observation the policy actually sees. We
+        # instead corrupt the observation explicitly, here, before it's
+        # passed to the policy — this is what "sensor robustness" has to
+        # mean: does the TRAINED policy degrade gracefully when its inputs
+        # are corrupted, not whether an untouched observation looks noisy.
+        act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
+        rng = np.random.default_rng(config.seed_offset + 1000)
+
+        def _corrupt(o):
+            o = o.copy()
+            if config.sensor_noise_std > 0:
+                o = o + rng.normal(0, config.sensor_noise_std, o.shape)
+            if config.missing_sensor_rate > 0:
+                mask = rng.random(o.shape) < config.missing_sensor_rate
+                o[mask] = 0.0
+            return o
 
         obs = env.reset()
         done = False
         steps = 0
         while not done and steps < 300:
+            # Corrupt EVERY agent's raw observation before any comm-graph
+            # forward pass, since act_fn (when use_comm=True) computes
+            # GNN attention over the full multi-agent observation array —
+            # corrupting only obs[i] in isolation would leave clean
+            # neighbor messages flowing into a noisy agent's decision,
+            # understating how sensor faults actually propagate through
+            # the learned communication channel.
+            noisy_obs = np.array([_corrupt(obs[i]) for i in range(env.n_agents)])
             actions = np.zeros((env.n_agents, env.ACT_DIM))
             for i in range(env.n_agents):
-                actions[i] = np.clip(np.random.normal(0, 0.1, env.ACT_DIM), -1, 1)
+                a, _ = act_fn(noisy_obs, i, rng)
+                actions[i] = a
             obs, reward, done, _ = env.step(actions)
             steps += 1
 
@@ -1007,6 +1363,22 @@ class TrainingPipeline:
     def _eval_zero_shot_transfer(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
         Transfer trained policy to different system without fine-tuning.
+
+        Previous version pasted result.best_tms/best_ps directly onto the
+        target environment's state and read off objective_function
+        immediately, without the policy ever acting. That tests whether
+        a FROZEN numeric operating point transfers, not whether the
+        POLICY transfers — a materially different and weaker claim than
+        "zero-shot transfer", which should mean: does the trained actor,
+        when it observes the target system's own state, produce
+        reasonable actions on a topology it never trained on?
+
+        Note: if n_target != n_source (e.g. transferring 8-bus -> 30-bus),
+        the policy is a SHARED per-agent network (SharedGaussianActor),
+        so it can be applied to any number of agents without
+        architecture changes — that part of the original code's
+        assumption was directionally correct, just never exercised
+        because the policy never got to act.
         """
         from network.network_data import NETWORKS
         from marl.marl_env import DynamicDOCREnv
@@ -1027,17 +1399,29 @@ class TrainingPipeline:
                              fault_type=config.fault_type)
 
         try:
-            n_target = env.n_agents
-            n_source = len(result.best_tms)
-            if n_target == n_source:
-                env.TMS = result.best_tms.copy()
-                env.PS = result.best_ps.copy()
-            else:
-                env.TMS[:min(n_target, n_source)] = result.best_tms[:min(n_target, n_source)]
-                env.PS[:min(n_target, n_source)] = result.best_ps[:min(n_target, n_source)]
+            # use_comm policies need comm_n_agents to match the TARGET
+            # system's agent count for the GNN adjacency to be valid;
+            # rebuilding via _get_actor_for_eval with net=target_net
+            # ensures build_relay_adjacency() reflects the target
+            # topology, not the source one the policy was trained on.
+            act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(
+                env, result, net=target_net
+            )
+            rng = np.random.default_rng(config.seed_offset + 1100)
+
+            obs = env.reset(seed=config.seed_offset + 1100)
+            done = False
+            steps = 0
+            while not done and steps < env.max_steps:
+                actions = np.zeros((env.n_agents, env.ACT_DIM))
+                for i in range(env.n_agents):
+                    a, _ = act_fn(obs, i, rng)
+                    actions[i] = a
+                obs, _, done, _ = env.step(actions)
+                steps += 1
 
             TMS, PS = env.get_state()
-            of_transfer, _, _ = objective_function(target_net, TMS, PS)
+            of_transfer, _, _ = objective_function(target_net, TMS, PS, fault_type=config.fault_type)
             constraints = check_constraints(target_net, TMS, PS, fault_type=config.fault_type)
 
             result.transfer_of = float(of_transfer)
@@ -1075,7 +1459,7 @@ class TrainingPipeline:
                 PS_test = np.full(n_relays, psm)
 
                 try:
-                    of_val, _, _ = objective_function(net, TMS_test, PS_test)
+                    of_val, _, _ = objective_function(net, TMS_test, PS_test, fault_type=config.fault_type)
                     constraints = check_constraints(net, TMS_test, PS_test, fault_type=config.fault_type)
                     of_grid[i, j] = of_val
                     cti_grid[i, j] = 1.0 if constraints["cti_satisfied"] else 0.0
@@ -1096,16 +1480,44 @@ class TrainingPipeline:
     def _eval_fault_contributions(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
         Use pandapower short-circuit study to compute fault current contributions.
+
+        Previous version called `pandapower.shortcircuit.calc_sc(net, ...)`
+        directly on `net`, which is a NetworkData dataclass instance, not
+        a pandapower network object — calc_sc expects a pandapower net
+        (with .bus, .line, .sgen tables etc.) and would raise immediately
+        on any NetworkData input, landing in the except branch every
+        time and silently recording {"error": ...} as the "result".
+
+        Fixed version builds the actual PandapowerNetwork wrapper (which
+        DOES expose a real .pp_net), applies the configured PV
+        penetration to the DG/sgen elements first (so the SC study
+        reflects the PV level actually being evaluated, not whatever
+        default penetration the network was built with), then runs the
+        short-circuit study on pp_net.
         """
         try:
+            from network.pandapower_network import build_pandapower_network, PANDAPOWER_AVAILABLE
+
+            if not PANDAPOWER_AVAILABLE:
+                warnings.warn("pandapower not installed; fault contribution eval requires it")
+                result.fault_contributions = {"error": "pandapower not installed"}
+                return result
+
+            pp_wrapper = build_pandapower_network(net)
+            pp_wrapper.update_pv_penetration(config.pv_level)
+            pp_wrapper.run_power_flow()
+
             import pandapower.shortcircuit as sc
-            sc.calc_sc(net, fault=config.fault_type)
+            sc.calc_sc(pp_wrapper.pp_net, fault=config.fault_type, case="max")
+
             contributions = {}
-            if hasattr(net, 'res_bus_sc'):
-                total_ik = net.res_bus_sc['ikss_ka'].sum()
-                for bus_idx, ik in net.res_bus_sc['ikss_ka'].items():
-                    bus_name = net.bus.name.at[bus_idx] if hasattr(net.bus, 'name') else f"bus_{bus_idx}"
-                    contributions[bus_name] = float(ik / total_ik * 100) if total_ik > 0 else 0.0
+            pp_net = pp_wrapper.pp_net
+            if hasattr(pp_net, 'res_bus_sc') and len(pp_net.res_bus_sc) > 0:
+                total_ik = pp_net.res_bus_sc['ikss_ka'].sum()
+                for bus_idx, ik in pp_net.res_bus_sc['ikss_ka'].items():
+                    bus_name = pp_net.bus.name.at[bus_idx] if hasattr(pp_net.bus, 'name') else f"bus_{bus_idx}"
+                    contributions[str(bus_name)] = float(ik / total_ik * 100) if total_ik > 0 else 0.0
+
             result.fault_contributions = contributions
         except Exception as e:
             warnings.warn(f"Fault contribution eval failed: {e}")
@@ -1118,6 +1530,19 @@ class TrainingPipeline:
     def _eval_daily_pv(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
         Simulate 24-hour operation with varying irradiance.
+
+        Previous version sampled actions via
+        np.random.normal(0, 0.05, ...) instead of the trained policy,
+        so "adaptive relay response" was actually a random walk's
+        response. It also set `env.current_pv_level` mid-episode without
+        ever calling env.reset(pv_level=...) again — but
+        current_pv_level only feeds into the fault-current/observation
+        pipeline THROUGH dist_net.reset() (see marl/marl_env.py:
+        DynamicDOCREnv.reset), which step() never calls. So changing
+        current_pv_level between steps had no effect on the actual
+        fault-current physics for that simulated hour; only the next
+        full reset() would have picked it up, and that never happened
+        inside the loop.
         """
         from marl.marl_env import DynamicDOCREnv
         from network.relay_physics import objective_function
@@ -1128,9 +1553,12 @@ class TrainingPipeline:
             hours = np.arange(24)
             irradiance = np.maximum(0, np.sin(np.pi * hours / 12) * 1000)
 
-        env = DynamicDOCREnv(net, action_scale=0.05, max_steps=300,
+        env = DynamicDOCREnv(net, action_scale=0.05, max_steps=50,
                              seed=config.seed_offset + 1200,
                              fault_type=config.fault_type)
+
+        act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
+        rng = np.random.default_rng(config.seed_offset + 1200)
 
         tms_traj = []
         ps_traj = []
@@ -1138,23 +1566,29 @@ class TrainingPipeline:
 
         for h in range(24):
             pv_factor = irradiance[h] / 1000.0
-            if hasattr(env, 'current_pv_level'):
-                env.current_pv_level = config.pv_level * pv_factor
+            hour_pv_level = float(np.clip(config.pv_level * pv_factor, 0.0, 1.0))
 
-            actions = np.zeros((env.n_agents, env.ACT_DIM))
-            for i in range(env.n_agents):
-                actions[i] = np.clip(np.random.normal(0, 0.05, env.ACT_DIM), -1, 1)
+            # Genuinely apply the hour's PV level: reset() is the only
+            # path that feeds pv_level into dist_net.reset(), which
+            # recomputes fault currents for the new generation mix.
+            obs = env.reset(seed=config.seed_offset + 1200 + h, pv_level=hour_pv_level)
 
-            obs, _, done, _ = env.step(actions)
-            if done:
-                obs = env.reset()
+            done = False
+            steps = 0
+            while not done and steps < env.max_steps:
+                actions = np.zeros((env.n_agents, env.ACT_DIM))
+                for i in range(env.n_agents):
+                    a, _ = act_fn(obs, i, rng)
+                    actions[i] = a
+                obs, _, done, _ = env.step(actions)
+                steps += 1
 
             TMS, PS = env.get_state()
             tms_traj.append(TMS.copy())
             ps_traj.append(PS.copy())
 
             try:
-                of_h, _, _ = objective_function(net, TMS, PS)
+                of_h, _, _ = objective_function(net, TMS, PS, fault_type=config.fault_type)
                 of_traj.append(float(of_h))
             except Exception:
                 of_traj.append(np.nan)
@@ -1202,50 +1636,78 @@ class TrainingPipeline:
 
     def _eval_sympathetic_tripping(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
-        Compare traditional vs MARL settings for sympathetic tripping.
+        Compare MARL vs traditional settings for sympathetic tripping.
+
+        Previous version had two independent bugs that together meant
+        sympathetic_trips and traditional_trips were ALWAYS 0:
+          1. `env.TMS = result.best_tms.copy()` was set BEFORE
+             `env.reset()`, but DynamicDOCREnv.reset() unconditionally
+             re-randomizes TMS/PS internally (see marl_env.py:
+             `self.TMS = self.rng.uniform(...)`), silently discarding
+             the assignment on every one of the 10 episodes.
+          2. `info.get('backup_trip', False)` and
+             `hasattr(env, 'inject_fault')` reference an info key and a
+             method that do not exist anywhere in DynamicDOCREnv — the
+             real step() info dict never contains 'backup_trip', and
+             there is no inject_fault() method, so the condition was
+             always False and the hasattr check always failed silently.
+
+        Fixed version uses the real, physically meaningful signal
+        already computed every step: CTI margin (t_bkp - t_pri). A
+        sympathetic/uncoordinated trip is exactly the case where the
+        backup relay's margin over the primary collapses below the CTI
+        threshold (it would trip at the same time as, or before, the
+        primary) — this is what `check_constraints()['cti_violations']`
+        already counts, so we use it directly rather than inventing a
+        new ad hoc signal.
         """
         from marl.marl_env import DynamicDOCREnv
 
-        env = DynamicDOCREnv(net, action_scale=0.05, max_steps=300,
-                             seed=config.seed_offset + 1300,
-                             fault_type=config.fault_type)
-
         n_trips_marl = 0
         n_trips_trad = 0
+        n_episodes = 10
 
-        # With MARL settings
-        env.TMS = result.best_tms.copy()
-        env.PS = result.best_ps.copy()
+        # With MARL (trained policy) settings — let the policy actually act.
+        env_marl = DynamicDOCREnv(net, action_scale=0.05, max_steps=50,
+                                  seed=config.seed_offset + 1300,
+                                  fault_type=config.fault_type)
+        act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env_marl, result, net=net)
+        rng = np.random.default_rng(config.seed_offset + 1300)
 
-        for _ in range(10):
-            obs = env.reset()
-            if hasattr(env, 'inject_fault'):
-                env.inject_fault()
+        for ep in range(n_episodes):
+            obs = env_marl.reset(seed=config.seed_offset + 1300 + ep)
             done = False
             steps = 0
-            while not done and steps < 50:
-                actions = np.zeros((env.n_agents, env.ACT_DIM))
-                obs, _, done, info = env.step(actions)
-                if info.get('backup_trip', False):
-                    n_trips_marl += 1
+            while not done and steps < env_marl.max_steps:
+                actions = np.zeros((env_marl.n_agents, env_marl.ACT_DIM))
+                for i in range(env_marl.n_agents):
+                    a, _ = act_fn(obs, i, rng)
+                    actions[i] = a
+                obs, _, done, info = env_marl.step(actions)
                 steps += 1
+            TMS, PS = env_marl.get_state()
+            c = check_constraints(net, TMS, PS, fault_type=config.fault_type)
+            n_trips_marl += c["cti_violations"]
 
-        # With traditional settings
-        env.TMS = np.ones_like(result.best_tms)
-        env.PS = np.ones_like(result.best_ps) * 2.0
+        # With traditional (fixed, non-adaptive) settings — zero action
+        # every step is the correct way to represent "no adaptation",
+        # since DynamicDOCREnv actions are deltas, not absolute settings.
+        env_trad = DynamicDOCREnv(net, action_scale=0.05, max_steps=50,
+                                  seed=config.seed_offset + 1300,
+                                  fault_type=config.fault_type)
 
-        for _ in range(10):
-            obs = env.reset()
-            if hasattr(env, 'inject_fault'):
-                env.inject_fault()
+        for ep in range(n_episodes):
+            obs = env_trad.reset(seed=config.seed_offset + 1300 + ep)
+            env_trad.TMS = np.ones(env_trad.n_agents)
+            env_trad.PS = np.ones(env_trad.n_agents) * 2.0
             done = False
             steps = 0
-            while not done and steps < 50:
-                actions = np.zeros((env.n_agents, env.ACT_DIM))
-                obs, _, done, info = env.step(actions)
-                if info.get('backup_trip', False):
-                    n_trips_trad += 1
+            while not done and steps < env_trad.max_steps:
+                obs, _, done, info = env_trad.step(np.zeros((env_trad.n_agents, env_trad.ACT_DIM)))
                 steps += 1
+            TMS, PS = env_trad.get_state()
+            c = check_constraints(net, TMS, PS, fault_type=config.fault_type)
+            n_trips_trad += c["cti_violations"]
 
         result.sympathetic_trips = n_trips_marl
         result.traditional_trips = n_trips_trad
@@ -1257,6 +1719,16 @@ class TrainingPipeline:
     def _eval_shap(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
         Compute SHAP values for actor policy decisions.
+
+        Previous version's `actor_predict(X)` returned
+        `np.random.randn(len(X), env.ACT_DIM)` — a function with NO
+        dependence on its input X at all. SHAP attributing "feature
+        importance" to a function that ignores its input is meaningless;
+        every attribution would be sampling noise. Background collection
+        also drove the env with random actions rather than the trained
+        policy, so even the input DISTRIBUTION being explained was wrong
+        (states a random policy visits, not states the trained policy
+        actually visits).
         """
         try:
             import shap
@@ -1266,27 +1738,43 @@ class TrainingPipeline:
                                  seed=config.seed_offset + 1400,
                                  fault_type=config.fault_type)
 
+            act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
+            rng = np.random.default_rng(config.seed_offset + 1400)
+
             background = []
             obs = env.reset()
             for _ in range(config.shap_n_background):
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
                 for i in range(env.n_agents):
-                    actions[i] = np.clip(np.random.normal(0, 0.1, env.ACT_DIM), -1, 1)
+                    a, _ = act_fn(obs, i, rng)
+                    actions[i] = a
+                # Record the per-agent observation actually consumed by
+                # the policy (not the flattened multi-agent obs), since
+                # the actor is a per-agent function of a single obs_dim
+                # vector and that's what we want feature attribution over.
+                for i in range(env.n_agents):
+                    background.append(obs[i].copy())
                 obs, _, done, _ = env.step(actions)
-                background.append(obs.flatten())
                 if done:
                     obs = env.reset()
 
             background = np.array(background)
 
             def actor_predict(X):
-                return np.random.randn(len(X), env.ACT_DIM)
+                # Real forward pass through the trained policy's mean
+                # action (via mean_fn, which correctly approximates the
+                # comm-enhanced input when use_comm=True) — deterministic,
+                # so SHAP's perturbation analysis reflects the actual
+                # function being explained.
+                return np.array([mean_fn(x) for x in X])
 
-            explainer = shap.KernelExplainer(actor_predict, background[:10])
-            shap_vals = explainer.shap_values(background[:5])
+            n_bg = min(50, len(background))
+            n_explain = min(20, len(background))
+            explainer = shap.KernelExplainer(actor_predict, background[:n_bg])
+            shap_vals = explainer.shap_values(background[:n_explain])
 
             result.shap_values = np.array(shap_vals)
-            result.shap_base_value = float(explainer.expected_value)
+            result.shap_base_value = float(np.mean(explainer.expected_value))
 
         except ImportError:
             warnings.warn("shap library not installed; skipping SHAP eval")
@@ -1300,12 +1788,22 @@ class TrainingPipeline:
     def _eval_tsne(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
         Collect observations and actions for t-SNE visualization.
+
+        This figure's entire purpose is to show the TRAINED policy's
+        decision boundary in observation space. Sampling from
+        np.random.normal(0, 0.1, ...) instead collects the decision
+        boundary of independent Gaussian noise, which is uninformative
+        about the policy and will produce an embedding that's just an
+        isotropic blob with no structure tied to relay physics.
         """
         from marl.marl_env import DynamicDOCREnv
 
         env = DynamicDOCREnv(net, action_scale=0.05, max_steps=300,
                              seed=config.seed_offset + 1500,
                              fault_type=config.fault_type)
+
+        act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
+        rng = np.random.default_rng(config.seed_offset + 1500)
 
         observations = []
         actions = []
@@ -1314,7 +1812,8 @@ class TrainingPipeline:
         for _ in range(config.tsne_n_samples):
             act = np.zeros((env.n_agents, env.ACT_DIM))
             for i in range(env.n_agents):
-                act[i] = np.clip(np.random.normal(0, 0.1, env.ACT_DIM), -1, 1)
+                a, _ = act_fn(obs, i, rng)
+                act[i] = a
 
             observations.append(obs.copy())
             actions.append(act.copy())
@@ -1348,7 +1847,23 @@ class TrainingPipeline:
 
     def _eval_critical_pairs(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
-        Extract Lagrange multipliers and violation rates from Safe RL.
+        Extract Lagrange multipliers and violation margins for each P/B pair.
+
+        Previous version's fallback branch checked for a 'cti_details'
+        key in check_constraints()'s return dict — that key does not
+        exist (see network/relay_physics.py: check_constraints returns
+        cti_satisfied, cti_violations, cti_min, cti_mean, t_pri, t_bkp,
+        delta_cti, ... but never cti_details), so the fallback was dead
+        code. Combined with safe_rl_stats['lagrange_multipliers'] never
+        being populated for any CoreEvalBridge-sourced TrainingResult,
+        critical_pairs was always an empty list regardless of how
+        constrained any given pair actually was.
+
+        Fixed version uses the real delta_cti array (t_bkp - t_pri per
+        pair) that check_constraints already computes, and reports an
+        honest zero Lagrange multiplier with a note when no Safe RL
+        dual variables are available, rather than silently fabricating
+        structure via a dead key lookup.
         """
         critical_pairs = []
 
@@ -1361,20 +1876,23 @@ class TrainingPipeline:
                     "lambda": float(lam),
                     "violation_rate": result.safe_rl_stats.get('violation_rates', {}).get(pair_idx, 0.0),
                     "distance_to_violation": result.safe_rl_stats.get('distances', {}).get(pair_idx, 0.0),
+                    "lambda_source": "safe_rl_dual_variable",
                 })
-
-        if not critical_pairs:
-            from network.relay_physics import check_constraints
+        else:
+            from network.relay_physics import check_constraints, CTI
             constraints = check_constraints(net, result.best_tms, result.best_ps,
                                             fault_type=config.fault_type)
-            if 'cti_details' in constraints:
-                for detail in constraints['cti_details']:
+            delta_cti = constraints.get("delta_cti")
+            if delta_cti is not None:
+                for pair_idx, pair in enumerate(net.pairs):
+                    margin = float(delta_cti[pair_idx]) - CTI
                     critical_pairs.append({
-                        "primary": detail.get('primary', -1),
-                        "backup": detail.get('backup', -1),
+                        "primary": pair.primary,
+                        "backup": pair.backup,
                         "lambda": 0.0,
-                        "violation_rate": 1.0 if detail.get('violated', False) else 0.0,
-                        "distance_to_violation": detail.get('margin', 0.0),
+                        "violation_rate": 1.0 if margin < 0 else 0.0,
+                        "distance_to_violation": margin,
+                        "lambda_source": "no_safe_rl_duals_available",
                     })
 
         result.critical_pairs = critical_pairs
@@ -1384,7 +1902,22 @@ class TrainingPipeline:
 
     def _eval_compression(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
-        Evaluate model after quantization and/or pruning.
+        Evaluate policy after quantization and/or pruning of its weights.
+
+        Previous version set env.TMS/env.PS to the trained best values,
+        immediately read back objective_function on that SAME unchanged
+        TMS/PS, and reported `compressed_of` — which is therefore
+        mathematically guaranteed to equal best_of exactly (since
+        nothing about the network OR the policy's actual weights ever
+        changed), making compression_accuracy_drop always identically
+        zero regardless of quantize_bits or prune_ratio. That is not
+        evidence of "compression-robust" performance; it's an artifact
+        of never having compressed anything that affects behavior.
+
+        Fixed version actually quantizes and prunes the ACTOR's weight
+        vector (the only artifact "compression" can meaningfully apply
+        to in this numpy-only architecture), then lets the genuinely
+        degraded policy act in the environment.
         """
         from marl.marl_env import DynamicDOCREnv
         from network.relay_physics import objective_function
@@ -1397,19 +1930,64 @@ class TrainingPipeline:
 
         pruned_params = int(base_params * (1 - config.prune_ratio))
         size_kb = pruned_params * bytes_per_param / 1024.0
-
         result.compressed_size_kb = float(size_kb)
 
         env = DynamicDOCREnv(net, action_scale=0.05, max_steps=300,
                              seed=config.seed_offset + 1600,
                              fault_type=config.fault_type)
 
-        env.TMS = result.best_tms.copy()
-        env.PS = result.best_ps.copy()
+        if result.actor_params is None:
+            warnings.warn("Compression eval requires a trained policy (actor_params is None)")
+            return result
 
+        # Genuinely compress the actor's weights:
+        #   - Quantization: round to the requested bit depth's effective
+        #     resolution over the weight's observed range.
+        #   - Pruning: zero out the smallest-magnitude weights up to
+        #     prune_ratio, the standard magnitude-pruning heuristic.
+        compressed_params = result.actor_params.copy()
+
+        if config.quantize_bits and config.quantize_bits < 32:
+            levels = 2 ** config.quantize_bits
+            w_min, w_max = compressed_params.min(), compressed_params.max()
+            w_range = max(w_max - w_min, 1e-9)
+            step = w_range / levels
+            compressed_params = np.round((compressed_params - w_min) / step) * step + w_min
+
+        if config.prune_ratio > 0:
+            n_prune = int(len(compressed_params) * config.prune_ratio)
+            if n_prune > 0:
+                prune_idx = np.argsort(np.abs(compressed_params))[:n_prune]
+                compressed_params[prune_idx] = 0.0
+
+        from marl.marl_agents import SharedGaussianActor
+        compressed_actor = SharedGaussianActor(
+            result.obs_dim or env.OBS_DIM, result.act_dim or env.ACT_DIM,
+            hidden=result.actor_hidden or 64, seed=0,
+        )
+        compressed_actor.set_all_params(compressed_params)
+
+        rng = np.random.default_rng(config.seed_offset + 1600)
+        obs = env.reset()
+        done = False
+        steps = 0
+        while not done and steps < 300:
+            actions = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                # Note: this evaluates compression of the ACTOR only.
+                # If result.use_comm, the comm graph is left
+                # uncompressed here — Fig 22 (bandwidth) already covers
+                # comm-channel compression specifically, so Fig 53
+                # isolates actor compression to avoid conflating the
+                # two effects in one figure.
+                a, _ = compressed_actor.sample(obs[i], rng)
+                actions[i] = a
+            obs, _, done, _ = env.step(actions)
+            steps += 1
+
+        TMS, PS = env.get_state()
         try:
-            TMS, PS = env.get_state()
-            of_comp, _, _ = objective_function(net, TMS, PS)
+            of_comp, _, _ = objective_function(net, TMS, PS, fault_type=config.fault_type)
             result.compressed_of = float(of_comp)
             result.compression_accuracy_drop = float(of_comp - result.best_of)
         except Exception as e:
@@ -1421,7 +1999,30 @@ class TrainingPipeline:
 
     def _eval_adversarial(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
-        Evaluate under FGSM/PGD adversarial perturbations.
+        Evaluate under FGSM/PGD adversarial perturbations on the trained policy.
+
+        Previous version had three independent bugs that together made
+        the figure meaningless:
+          1. "FGSM" (Fast GRADIENT Sign Method) used
+             np.sign(np.random.randn(...)) — a random sign, not the sign
+             of any gradient of any loss with respect to the observation.
+          2. The adversarial observation (`adv_obs`) was computed but
+             never passed to the policy — actions were instead sampled
+             from np.random.normal(0, 0.1, ...), so the attack never
+             reached the thing it was supposed to be attacking.
+          3. `perturbation` referenced after the loop only holds the
+             value from the LAST of 10 iterations, reported as if it
+             characterised the whole run.
+
+        Fixed version computes a true finite-difference gradient of a
+        scalar "harm" loss (negative norm of the mean action vector,
+        a reasonable proxy for "make the relay setting change as
+        differently as possible from its undisturbed decision") with
+        respect to the input observation, through the real actor's
+        forward pass — the closest defensible analogue to backprop-FGSM
+        available without an autodiff framework in this numpy-only
+        actor. The perturbed observation is then the ACTUAL input to
+        env.step(), so the attack is real.
         """
         from marl.marl_env import DynamicDOCREnv
         from network.relay_physics import objective_function
@@ -1430,33 +2031,74 @@ class TrainingPipeline:
                              seed=config.seed_offset + 1700,
                              fault_type=config.fault_type)
 
+        act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
+        rng = np.random.default_rng(config.seed_offset + 1700)
+
+        def _grad_sign(obs_i, h=1e-3):
+            """
+            Finite-difference estimate of d(||mean_action||)/d(obs_i),
+            then take its sign. This is the numpy-only analogue of
+            FGSM's sign(grad_x L) when no autodiff is available.
+            Uses mean_fn (not the raw actor) so the gradient is taken
+            with respect to the same effective input the trained policy
+            actually consumes, including its comm-enhanced approximation
+            when use_comm=True.
+            """
+            base = mean_fn(obs_i)
+            base_loss = np.linalg.norm(base)
+            grad = np.zeros_like(obs_i)
+            for k in range(len(obs_i)):
+                bump = obs_i.copy()
+                bump[k] += h
+                loss_k = np.linalg.norm(mean_fn(bump))
+                grad[k] = (loss_k - base_loss) / h
+            return np.sign(grad)
+
         obs = env.reset()
         n_success = 0
         n_total = 10
+        perturbation_norms = []
 
         for _ in range(n_total):
             clean_obs = obs.copy()
+            adv_obs = clean_obs.copy()
 
-            if config.adversarial_attack == "FGSM":
-                perturbation = config.attack_epsilon * np.sign(np.random.randn(*clean_obs.shape))
-            elif config.adversarial_attack == "PGD":
-                perturbation = np.random.randn(*clean_obs.shape)
-                perturbation = np.clip(perturbation, -config.attack_epsilon, config.attack_epsilon)
-            else:
-                perturbation = config.attack_epsilon * np.random.randn(*clean_obs.shape)
+            for i in range(env.n_agents):
+                if config.adversarial_attack == "FGSM":
+                    grad_sign = _grad_sign(clean_obs[i])
+                    perturbation_i = config.attack_epsilon * grad_sign
+                elif config.adversarial_attack == "PGD":
+                    # Multi-step PGD: iterate FGSM-style steps and project
+                    # back into the epsilon-ball each step.
+                    perturbed = clean_obs[i].copy()
+                    step_size = config.attack_epsilon / 4.0
+                    for _pgd_step in range(4):
+                        grad_sign = _grad_sign(perturbed)
+                        perturbed = perturbed + step_size * grad_sign
+                        delta = np.clip(perturbed - clean_obs[i],
+                                         -config.attack_epsilon, config.attack_epsilon)
+                        perturbed = clean_obs[i] + delta
+                    perturbation_i = perturbed - clean_obs[i]
+                else:
+                    perturbation_i = config.attack_epsilon * rng.standard_normal(clean_obs[i].shape)
 
-            adv_obs = clean_obs + perturbation
+                adv_obs[i] = clean_obs[i] + perturbation_i
+                perturbation_norms.append(float(np.linalg.norm(perturbation_i)))
 
+            # The policy now actually acts on the ADVERSARIAL observation —
+            # this is the step the previous version skipped entirely.
             actions = np.zeros((env.n_agents, env.ACT_DIM))
             for i in range(env.n_agents):
-                actions[i] = np.clip(np.random.normal(0, 0.1, env.ACT_DIM), -1, 1)
+                a, _ = act_fn(adv_obs, i, rng)
+                actions[i] = a
 
-            obs_adv, _, done, _ = env.step(actions)
-            obs = adv_obs if not done else env.reset()
+            obs, _, done, _ = env.step(actions)
+            if done:
+                obs = env.reset()
 
             TMS, PS = env.get_state()
             try:
-                of_adv, _, _ = objective_function(net, TMS, PS)
+                of_adv, _, _ = objective_function(net, TMS, PS, fault_type=config.fault_type)
                 constraints = check_constraints(net, TMS, PS, fault_type=config.fault_type)
                 if not constraints["cti_satisfied"] or of_adv > result.best_of * 1.5:
                     n_success += 1
@@ -1465,10 +2107,10 @@ class TrainingPipeline:
 
         TMS, PS = env.get_state()
         try:
-            of_adv, _, _ = objective_function(net, TMS, PS)
+            of_adv, _, _ = objective_function(net, TMS, PS, fault_type=config.fault_type)
             result.adversarial_of = float(of_adv)
             result.adversarial_success_rate = n_success / n_total
-            result.attack_perturbation_norm = float(np.linalg.norm(perturbation))
+            result.attack_perturbation_norm = float(np.mean(perturbation_norms)) if perturbation_norms else 0.0
         except Exception as e:
             warnings.warn(f"Adversarial eval failed: {e}")
 
@@ -1479,6 +2121,15 @@ class TrainingPipeline:
     def _eval_seasonal(self, config: TrainingConfig, net, result: TrainingResult) -> TrainingResult:
         """
         Evaluate under seasonal irradiance/temperature conditions.
+
+        Previous version's temperature derating was a complete no-op
+        (see _apply_seasonal_temperature, now fixed), and even granting
+        a genuine net_seasonal, this method pasted result.best_tms/
+        best_ps directly onto env and read off objective_function
+        without the policy ever acting — so "seasonal generalisation"
+        never actually exercised the trained policy's behaviour under
+        the changed conditions, only a frozen number's compatibility
+        with them.
         """
         from marl.marl_env import DynamicDOCREnv
         from network.relay_physics import objective_function
@@ -1491,23 +2142,32 @@ class TrainingPipeline:
         }
 
         profile = seasonal_profiles.get(config.season, {"irradiance_factor": 1.0, "temp": 20.0})
+        net_seasonal = self._apply_seasonal_temperature(net, profile["temp"])
+        seasonal_pv_level = float(np.clip(config.pv_level * profile["irradiance_factor"], 0.0, 1.0))
+        if seasonal_pv_level > 0 and hasattr(net_seasonal, 'apply_pv_penetration'):
+            net_seasonal = net_seasonal.apply_pv_penetration(seasonal_pv_level)
 
-        env = DynamicDOCREnv(net, action_scale=0.05, max_steps=300,
+        env = DynamicDOCREnv(net_seasonal, action_scale=0.05, max_steps=300,
                              seed=config.seed_offset + 1800,
                              fault_type=config.fault_type)
 
-        if hasattr(env, 'current_pv_level'):
-            env.current_pv_level = config.pv_level * profile["irradiance_factor"]
+        act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net_seasonal)
+        rng = np.random.default_rng(config.seed_offset + 1800)
 
-        net_seasonal = self._apply_seasonal_temperature(net, profile["temp"])
-        env.net = net_seasonal
-
-        env.TMS = result.best_tms.copy()
-        env.PS = result.best_ps.copy()
+        obs = env.reset(seed=config.seed_offset + 1800, pv_level=seasonal_pv_level)
+        done = False
+        steps = 0
+        while not done and steps < env.max_steps:
+            actions = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                a, _ = act_fn(obs, i, rng)
+                actions[i] = a
+            obs, _, done, _ = env.step(actions)
+            steps += 1
 
         try:
             TMS, PS = env.get_state()
-            of_seasonal, _, _ = objective_function(net_seasonal, TMS, PS)
+            of_seasonal, _, _ = objective_function(net_seasonal, TMS, PS, fault_type=config.fault_type)
             constraints = check_constraints(net_seasonal, TMS, PS, fault_type=config.fault_type)
 
             result.seasonal_of = float(of_seasonal)

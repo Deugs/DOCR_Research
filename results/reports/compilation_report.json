@@ -1,0 +1,49 @@
+{
+  "timestamp": "2026-06-19T09:21:05.930393",
+  "fast_mode": false,
+  "output_dir": "results",
+  "figures_expected": 58,
+  "figures_generated": 33,
+  "figures_manual": 17,
+  "training_strategy": "11 core runs (A-K) + post-processing",
+  "estimated_gpu_days": "8-10 (full)",
+  "cache_status": {
+    "exists": true,
+    "entries": 0,
+    "cores_present": []
+  },
+  "phases": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "core_runs": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "I",
+    "J",
+    "K"
+  ],
+  "config": {
+    "system": "8bus",
+    "pv_penetration": 1.0,
+    "fault_type": "3ph",
+    "n_runs": 50,
+    "n_episodes": 5000,
+    "use_comm": false,
+    "use_safety": true,
+    "use_ewc": true
+  }
+}

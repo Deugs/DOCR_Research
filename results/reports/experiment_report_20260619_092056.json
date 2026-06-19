@@ -1,0 +1,76 @@
+{
+  "timestamp": "2026-06-19T09:21:01.018448",
+  "fast_mode": false,
+  "total_elapsed_seconds": 4.861600160598755,
+  "eta": "0:00:00",
+  "phases": {
+    "8": {
+      "name": "Statistical Aggregation",
+      "status": "complete",
+      "duration_seconds": 4.861600160598755,
+      "figures_generated": [
+        11,
+        31,
+        32,
+        33,
+        55,
+        56,
+        57
+      ],
+      "figures_failed": [],
+      "details": {}
+    }
+  },
+  "figures": {
+    "11": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.44901227951049805,
+      "error": null
+    },
+    "31": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.1832900047302246,
+      "error": null
+    },
+    "32": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.2340717315673828,
+      "error": null
+    },
+    "33": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.3154277801513672,
+      "error": null
+    },
+    "55": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.30124568939208984,
+      "error": null
+    },
+    "56": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.4814741611480713,
+      "error": null
+    },
+    "57": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 1.1146364212036133,
+      "error": null
+    }
+  },
+  "summary": {
+    "total_phases": 1,
+    "completed_phases": 1,
+    "failed_phases": 0,
+    "total_figures": 7,
+    "completed_figures": 7,
+    "failed_figures": 0
+  }
+}

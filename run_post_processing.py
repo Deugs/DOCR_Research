@@ -1601,7 +1601,7 @@ def fig_38_attention_evolution():
     logger.info("\\n[Fig 38] Attention Weight Evolution")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
     if data is None:
-        n_agents = 7
+        n_agents = 14
         data = {f"attention_snap_0": np.ones((n_agents, n_agents)) / n_agents,
                 f"attention_snap_100": np.random.dirichlet(np.ones(n_agents), n_agents),
                 f"attention_snap_500": np.random.dirichlet(np.ones(n_agents) * 2, n_agents),
