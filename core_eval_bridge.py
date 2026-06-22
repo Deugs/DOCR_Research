@@ -106,7 +106,7 @@ class CoreEvalBridge:
         seed: int = 42,
         fast_mode: bool = False,
         system: str = "8bus",
-        pv_level: float = 1.0,
+        pv_level: float = 0.6,
         fault_type: str = "3ph",
         cache_dir: Optional[Path] = None,
         allow_synthetic_fallback: bool = False,
@@ -482,7 +482,7 @@ class CoreEvalBridge:
             method="MAPPO-Safe-EWC", system=self.system, pv_level=self.pv_level,
             fault_type=self.fault_type,
             train_system=self.system,
-            eval_system=kwargs.get("eval_system", "30bus"),
+            eval_system=kwargs.get("eval_system", "14bus"),
             freeze_transfer_weights=True,
         )
 

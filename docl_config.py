@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 DOCR-MARL Configuration System
@@ -78,10 +77,10 @@ SYSTEM_METADATA = {
 class SystemConfig:
     """Power system configuration."""
     name: str = "8bus"                    # System type: 3bus, 8bus, 14bus, 30bus, 39bus, 57bus, 118bus
-    pv_penetration: float = 1.0           # 0.0 to 1.0 (100%)
+    pv_penetration: float = 0.6           # 0.0 to 1.0 — active sweep: 0.0, 0.2, 0.4, 0.6
     fault_type: str = "3ph"               # 3ph, LL, 1ph, 2ph-g
     use_pandapower: bool = False          # Use pandapower for dynamic simulation
-    curriculum_stage: int = 5             # 0-5 (maps to PV levels 0%,20%,40%,60%,80%,100%)
+    curriculum_stage: int = 3             # 0-5 (0%,20%,40%,60%,80%,100%) — 3 = 60% PV (current max)
 
 
 @dataclass
@@ -135,6 +134,7 @@ class ExperimentConfig:
     fast_mode: bool = False             # Reduced iterations for testing
     use_synthetic: bool = False            # Enable synthetic fallback on failure
     parallel: bool = False                # Enable parallel execution (future)
+    seed: int = 42                       # Global random seed (also in TrainingConfig.seed for training)
     
     # Cores to run (A-K)
     cores: List[str] = field(default_factory=lambda: list("ABCDEFGHIJK"))
@@ -268,30 +268,41 @@ class DOCRConfig:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 PRESETS = {
+    "thesis_sweep": {
+        "description": "Active thesis configuration: 8/14/39-bus, 0/20/40/60% PV",
+        "system": {"name": "8bus", "pv_penetration": 0.6, "fault_type": "3ph", "curriculum_stage": 3},
+        "training": {"n_runs": 50, "n_episodes": 5000, "use_safety": True, "use_ewc": True, "use_comm": True},
+    },
+    "thesis_sweep_fast": {
+        "description": "Fast smoke test: 8-bus, 0/20/40/60% PV",
+        "system": {"name": "8bus", "pv_penetration": 0.6, "fault_type": "3ph", "curriculum_stage": 3},
+        "training": {"n_runs": 2, "n_episodes": 500, "use_safety": True, "use_ewc": True},
+        "experiment": {"fast_mode": True},
+    },
     "8bus_full": {
-        "description": "Full 8-bus experiment (default thesis configuration)",
-        "system": {"name": "8bus", "pv_penetration": 1.0, "fault_type": "3ph"},
+        "description": "Full 8-bus experiment — max PV 60% (active sweep)",
+        "system": {"name": "8bus", "pv_penetration": 0.6, "fault_type": "3ph", "curriculum_stage": 3},
         "training": {"n_runs": 50, "n_episodes": 5000, "use_safety": True, "use_ewc": True},
     },
     "8bus_fast": {
         "description": "Fast 8-bus smoke test",
-        "system": {"name": "8bus", "pv_penetration": 1.0, "fault_type": "3ph"},
+        "system": {"name": "8bus", "pv_penetration": 0.6, "fault_type": "3ph", "curriculum_stage": 3},
         "training": {"n_runs": 2, "n_episodes": 500, "use_safety": True, "use_ewc": True},
         "experiment": {"fast_mode": True},
     },
     "14bus_full": {
-        "description": "Full 14-bus meshed network experiment",
-        "system": {"name": "14bus", "pv_penetration": 1.0, "fault_type": "3ph"},
+        "description": "Full 14-bus meshed network experiment — max PV 60% (active sweep)",
+        "system": {"name": "14bus", "pv_penetration": 0.6, "fault_type": "3ph", "curriculum_stage": 3},
         "training": {"n_runs": 50, "n_episodes": 5000, "use_safety": True, "use_ewc": True},
     },
-    "30bus_full": {
-        "description": "Full 30-bus medium-scale experiment",
-        "system": {"name": "30bus", "pv_penetration": 1.0, "fault_type": "3ph"},
+    "39bus_full": {
+        "description": "Full 39-bus New England experiment — max PV 60% (active sweep)",
+        "system": {"name": "39bus", "pv_penetration": 0.6, "fault_type": "3ph", "curriculum_stage": 3},
         "training": {"n_runs": 30, "n_episodes": 5000, "use_safety": True, "use_ewc": True},
     },
-    "39bus_full": {
-        "description": "Full 39-bus New England stability experiment",
-        "system": {"name": "39bus", "pv_penetration": 1.0, "fault_type": "3ph"},
+    "30bus_full": {
+        "description": "Full 30-bus experiment (not in active thesis sweep — see thesis_sweep)",
+        "system": {"name": "30bus", "pv_penetration": 1.0, "fault_type": "3ph"},
         "training": {"n_runs": 30, "n_episodes": 5000, "use_safety": True, "use_ewc": True},
     },
     "3bus_toy": {
@@ -304,17 +315,17 @@ PRESETS = {
         "description": "Scalability analysis across all systems",
         "system": {"name": "8bus"},
         "training": {"n_runs": 10, "n_episodes": 1000},
-        "experiment": {"cores": ["F"]},  # Only Core F (scalability)
+        "experiment": {"cores": ["F"]},
     },
     "curriculum_learning": {
-        "description": "Curriculum learning 0%->100% PV on 8-bus",
+        "description": "Curriculum learning 0%->60% PV on 8-bus",
         "system": {"name": "8bus", "pv_penetration": 0.0},
         "training": {"n_runs": 10, "n_episodes": 500, "curriculum": True},
         "experiment": {"cores": ["B"]},
     },
     "ablation_study": {
         "description": "Systematic ablation study",
-        "system": {"name": "8bus", "pv_penetration": 1.0},
+        "system": {"name": "8bus", "pv_penetration": 0.6},
         "training": {"n_runs": 10, "n_episodes": 500},
         "experiment": {"cores": ["D"]},
     },
@@ -387,7 +398,7 @@ Examples:
     sys_group = parser.add_argument_group("System Configuration")
     sys_group.add_argument("--system", "-s", type=str,
                            choices=list(SYSTEM_METADATA.keys()),
-                           help="IEEE test system (3bus, 8bus, 14bus, 30bus, 39bus, 57bus, 118bus)")
+                           help="IEEE test system (active sweep: 8bus, 14bus, 39bus — others available)")
     sys_group.add_argument("--pv", type=float, metavar="[0-1]",
                            help="PV penetration level (0.0 to 1.0)")
     sys_group.add_argument("--fault-type", type=str,
@@ -567,10 +578,10 @@ def generate_example_config(path: str):
     example = DOCRConfig(
         system=SystemConfig(
             name="8bus",
-            pv_penetration=1.0,
+            pv_penetration=0.6,          # Active sweep max: 0/20/40/60%
             fault_type="3ph",
             use_pandapower=False,
-            curriculum_stage=5,
+            curriculum_stage=3,          # 60% PV
         ),
         training=TrainingConfig(
             n_runs=50,
@@ -584,7 +595,8 @@ def generate_example_config(path: str):
         ),
         experiment=ExperimentConfig(
             fast_mode=False,
-            use_synthetic=True,
+            use_synthetic=False,
+            seed=42,
             cores=list("ABCDEFGHIJK"),
             output_dir="results",
             log_level="INFO",
@@ -594,7 +606,7 @@ def generate_example_config(path: str):
             dpi=200,
             fig_format="pdf",
         ),
-        description="Example DOCR-MARL configuration for 8-bus system with full PV penetration",
+        description="DOCR-MARL thesis configuration — 8/14/39-bus, 0/20/40/60% PV sweep",
     )
     
     path = Path(path)

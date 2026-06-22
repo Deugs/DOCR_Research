@@ -46,8 +46,8 @@ class TrainingConfig:
     # ── Core identification ──
     method: str  # "GA-SQP", "IPPO", "MAPPO", "MAPPO-Comm", "MAPPO-Safe", "MAPPO-Safe-EWC",
                  # "HWOA", "HHO", "JAYA", "EEO", "Single-PPO"
-    system: str  # "8bus", "30bus", "39bus"
-    pv_level: float  # 0.0, 0.2, 0.4, 0.6, 0.8, 1.0
+    system: str  # "8bus", "14bus", "39bus"
+    pv_level: float  # 0.0, 0.2, 0.4, 0.6
     fault_type: str  # "3ph", "LL", "1ph", "2ph-g"
     topology_changes: Optional[Dict] = None
     n_runs: int = 10
@@ -2192,11 +2192,11 @@ def create_experiment_matrix(
 ) -> List[TrainingConfig]:
     """Create base experiment configuration matrix (unchanged from original)."""
     if systems is None:
-        systems = ["8bus", "30bus"]
+        systems = ["8bus", "14bus", "39bus"]
     if methods is None:
         methods = ["GA-SQP", "MAPPO", "MAPPO-Safe", "MAPPO-Safe-EWC", "HWOA", "JAYA"]
     if pv_levels is None:
-        pv_levels = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        pv_levels = [0.0, 0.2, 0.4, 0.6]
     if fault_types is None:
         fault_types = ["3ph"]
 
@@ -2419,7 +2419,7 @@ def create_fig25_zero_shot_matrix(
     if train_systems is None:
         train_systems = ["8bus"]
     if eval_systems is None:
-        eval_systems = ["30bus", "39bus"]
+        eval_systems = ["14bus", "39bus"]
 
     configs = []
     for base in base_configs:
@@ -2872,7 +2872,7 @@ if __name__ == "__main__":
     print("=" * 70)
 
     suite = create_full_experiment_suite(
-        systems=["8bus", "30bus"],
+        systems=["8bus", "14bus", "39bus"],
         methods=["MAPPO", "MAPPO-Comm", "MAPPO-Safe"],
         pv_levels=[0.0, 0.5, 1.0],
         fault_types=["3ph"],
@@ -3115,7 +3115,7 @@ class ExperimentPresets:
         Core results: method comparison across PV levels.
         """
         return create_experiment_matrix(
-            systems=["8bus", "30bus"],
+            systems=["8bus", "14bus", "39bus"],
             methods=["GA-SQP", "HWOA", "JAYA", "MAPPO", "MAPPO-Comm", "MAPPO-Safe"],
             pv_levels=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
             fault_types=["3ph"],
@@ -3130,7 +3130,7 @@ class ExperimentPresets:
         Includes: N-1, comm stress, sensor robustness, unseen faults.
         """
         base = create_experiment_matrix(
-            systems=["8bus", "30bus"],
+            systems=["8bus", "14bus", "39bus"],
             methods=["MAPPO", "MAPPO-Comm", "MAPPO-Safe"],
             pv_levels=[0.0, 0.5, 1.0],
             fault_types=["3ph"],
@@ -3161,7 +3161,7 @@ class ExperimentPresets:
         )
         return {
             "base": base,
-            "fig25_transfer": create_fig25_zero_shot_matrix(base, train_systems=["8bus"], eval_systems=["30bus", "39bus"]),
+            "fig25_transfer": create_fig25_zero_shot_matrix(base, train_systems=["8bus"], eval_systems=["14bus", "39bus"]),
             "fig53_compression": create_fig53_compression_matrix(base),
             "fig54_adversarial": create_fig54_adversarial_matrix(base),
         }
@@ -3173,7 +3173,7 @@ class ExperimentPresets:
         Focused subset with statistical significance.
         """
         base = create_experiment_matrix(
-            systems=["8bus", "30bus"],
+            systems=["8bus", "14bus", "39bus"],
             methods=["GA-SQP", "MAPPO", "MAPPO-Comm", "MAPPO-Safe", "MAPPO-Safe-EWC"],
             pv_levels=[0.0, 0.5, 1.0],
             fault_types=["3ph", "LL"],
@@ -3184,7 +3184,7 @@ class ExperimentPresets:
             "base": base,
             "fig14_n1": create_fig14_n1_contingency_matrix(base, line_indices=[0, 1, 2]),
             "fig13_comm": create_fig13_comm_stress_matrix(base, stress_levels=[0.0, 0.5]),
-            "fig25_transfer": create_fig25_zero_shot_matrix(base, eval_systems=["30bus"]),
+            "fig25_transfer": create_fig25_zero_shot_matrix(base, eval_systems=["14bus"]),
         }
 
     @staticmethod
@@ -3342,7 +3342,7 @@ def example_2_full_suite():
     print("=" * 70)
 
     suite = create_full_experiment_suite(
-        systems=["8bus", "30bus"],
+        systems=["8bus", "14bus", "39bus"],
         methods=["MAPPO", "MAPPO-Comm", "MAPPO-Safe"],
         pv_levels=[0.0, 0.5, 1.0],
         figures=["base", "13", "14", "22", "24", "25"],

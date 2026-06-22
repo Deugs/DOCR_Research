@@ -2,7 +2,6 @@
 stat_analysis.py
 ────────────────
 Phase 4: Statistical validation for DOCR benchmark comparison.
-Supports all IEEE test systems: 3, 8, 14, 30, 39, 57, 118 buses.
 
 Implements:
 1. Friedman Test      — Non-parametric ANOVA for multiple algorithms

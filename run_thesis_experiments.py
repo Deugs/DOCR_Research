@@ -818,12 +818,33 @@ FIGURE_CORE_MAP = {
 PHASE_FIGURES = {
     1: [],
     2: [],
-    3: [9, 10, 16, 21, 37, 38, 41],
+    # Figs 5, 6, 7, 8, 12 added: these have real generation code in
+    # run_post_processing.py (FIGURE_FUNCTIONS) and are fed by Core
+    # A/B training data (run_core_training.py explicitly lists
+    # "Core B feeds Figs 5,6,7,16,29,39"), but were absent from every
+    # dispatch table in this file (PHASE_FIGURES, MANUAL_FIGURE_SCRIPTS,
+    # TRULY_MANUAL_FIGURES) — meaning a full pipeline run computed the
+    # underlying training data but never actually rendered these plots.
+    3: [5, 6, 7, 8, 9, 10, 12, 16, 21, 37, 38, 41],
     4: [13, 14, 20, 22, 24, 54],
     5: [15, 23, 25],
     6: [18, 53],
-    7: [43, 44, 45, 46, 47, 48, 49, 50],
-    8: [11, 31, 32, 33, 55, 56, 57],
+    # Fig 58 added: Core K output (seasonal generalisation), same
+    # supplementary-analysis grouping as 43-47.
+    7: [43, 44, 45, 46, 47, 48, 49, 50, 58],
+    # Figs 39, 40, 42 added to Phase 8 (the last phase that actually
+    # calls generate_figures_batch): ablation/hparam/warm-start figures
+    # (Core B/D/E), previously unreachable from any phase. Fig 39 in
+    # particular is the EWC ablation figure — the one figure that
+    # actually demonstrates the EWC continual-learning fix made
+    # elsewhere in this codebase, so its absence from the pipeline
+    # would have silently meant that fix was never visualised or
+    # checked end-to-end as part of a real run.
+    # NOTE: these were NOT placed under key 9 — run_phase9 ("Final
+    # Compilation") never calls generate_figures_batch at all, it only
+    # counts already-generated PDFs and writes a summary report, so any
+    # figure numbers listed there would silently never be produced.
+    8: [11, 31, 32, 33, 55, 56, 57, 39, 40, 42],
     9: [],
 }
 
@@ -854,6 +875,99 @@ def run_phase2(progress: ExperimentProgress):
             check=False,
             timeout=7200 if config.experiment.fast_mode else 86400
         )
+
+        # ── Objective 4: Multi-system, multi-method baseline comparison ──────
+        # benchmark_suite.py is the ONLY code that runs the full Obj4
+        # comparison required by the thesis: GA-SQP, HWOA, HHO, JAYA, EEO
+        # vs MARL variants across IEEE 8/30/39-bus at all PV levels.
+        # It was previously an orphan standalone script never called from
+        # this pipeline, meaning the named metaheuristic baselines from
+        # Objective 4 were never part of any automated experiment run.
+        log("\n[Phase 2] Running Objective 4 benchmark comparison (GA-SQP/HWOA/HHO/JAYA/EEO vs MARL)...")
+        try:
+            from evaluation.benchmark_suite import BenchmarkSuite, BenchmarkConfig
+
+            obj4_systems = ["8bus", "14bus", "39bus"]
+            obj4_pv_levels = [0.0, 0.2, 0.4, 0.6]
+            obj4_methods = [
+                "GA-SQP", "HWOA", "HHO", "JAYA", "EEO",
+                "MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO",
+            ]
+
+            n_runs = 3 if config.experiment.fast_mode else config.training.n_runs
+            marl_steps = 5000 if config.experiment.fast_mode else 30000
+            meta_iter = 100 if config.experiment.fast_mode else 500
+
+            all_pv_results = {}
+            for pv_level in obj4_pv_levels:
+                log(f"  PV level: {int(pv_level*100)}%")
+                bc = BenchmarkConfig(
+                    systems=obj4_systems,
+                    methods=obj4_methods,
+                    n_runs=n_runs,
+                    pv_level=pv_level,
+                    fault_type=config.system.fault_type,
+                    marl_steps=marl_steps,
+                    max_iter=meta_iter,
+                    pop_size=20 if config.experiment.fast_mode else 30,
+                    seed_base=config.experiment.seed,
+                    verbose=False,
+                )
+                suite = BenchmarkSuite(config=bc)
+                suite.run_all()
+                suite.print_comparison_table()
+                all_pv_results[pv_level] = suite.results
+
+                # Save results per PV level
+                results_path = (
+                    Path(config.experiment.output_dir)
+                    / f"benchmark_pv{int(pv_level*100):03d}.pkl"
+                )
+                try:
+                    import pickle
+                    with open(results_path, "wb") as f:
+                        pickle.dump(suite.results, f)
+                    log(f"    Saved: {results_path}")
+                except Exception as save_err:
+                    log(f"    Warning: could not save results: {save_err}")
+
+                # Statistical significance tests across methods, for this PV level
+                try:
+                    from evaluation.stat_analysis import run_benchmark_analysis
+
+                    # BenchmarkSuite.results is {system: [run_dict, ...]}
+                    # where each run_dict is {method: result_dict}.
+                    # run_benchmark_analysis expects
+                    # {system: {method: [value, value, ...]}} — transform
+                    # before calling, rather than guessing a nonexistent
+                    # compare_methods() API that was never real.
+                    transformed = {}
+                    for sys_name, run_list in suite.results.items():
+                        transformed[sys_name] = {}
+                        for run_dict in run_list:
+                            for method, result in run_dict.items():
+                                of_val = result.get("OF") if isinstance(result, dict) else result
+                                if of_val is None:
+                                    continue
+                                transformed[sys_name].setdefault(method, []).append(of_val)
+
+                    stat_report = run_benchmark_analysis(transformed, metric="OF", verbose=False)
+                    stat_path = (
+                        Path(config.experiment.output_dir)
+                        / f"stat_comparison_pv{int(pv_level*100):03d}.txt"
+                    )
+                    with open(stat_path, "w") as f:
+                        f.write(str(stat_report))
+                    log(f"    Statistical report saved: {stat_path}")
+                except Exception as stat_err:
+                    log(f"    Warning: statistical tests skipped for PV{int(pv_level*100)}%: {stat_err}")
+
+            log("[Phase 2] Objective 4 benchmark comparison complete.")
+
+        except ImportError as e:
+            log(f"  Warning: benchmark_suite not available ({e}). Objective 4 comparison skipped.")
+        except Exception as e:
+            log(f"  Warning: Objective 4 benchmark failed ({e}). Core training results still valid.")
 
 
 def run_phase3(progress: ExperimentProgress):

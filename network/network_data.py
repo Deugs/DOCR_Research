@@ -120,14 +120,49 @@ class NetworkData:
         )
 
     @property
+    def _uses_distinct_bus_convention(self) -> bool:
+        """
+        True if this network's RelayPairs encode bus_pri != bus_bkp
+        (get_8bus()'s hand-authored convention: the two endpoint buses
+        of the protection zone), False if bus_pri == bus_bkp for all
+        pairs (get_14bus()/get_30bus()/get_39bus()'s generated
+        convention: the single shared junction bus both the primary and
+        backup relay look into — also a physically valid description of
+        primary/backup coordination, just a different encoding).
+
+        Two genuinely different, both-valid conventions exist in this
+        codebase's network constructors; line/topology code must detect
+        which is in play rather than assume one universally, or it will
+        silently degenerate (e.g. an edge-based line count collapsing to
+        a handful of "lines" on networks using the junction-bus
+        convention, which is what get_14bus()/get_39bus() use).
+        """
+        if not self.pairs:
+            return True
+        return any(p.bus_pri != p.bus_bkp for p in self.pairs)
+
+    @property
     def n_lines(self) -> int:
         """
         Number of distinct lines in the network. There is no separate
         `lines` table on NetworkData (topology is implicit in RelayPair
-        bus indices), so this is derived from the number of unique
-        (bus_pri, bus_bkp) edges referenced by the protection pairs.
+        relay/bus indices), and that information is encoded with two
+        different conventions across this codebase's network
+        constructors (see _uses_distinct_bus_convention) — so this
+        picks the correct identification strategy for whichever
+        convention the current network actually uses.
         """
-        edges = {tuple(sorted((p.bus_pri, p.bus_bkp))) for p in self.pairs}
+        if self._uses_distinct_bus_convention:
+            edges = {tuple(sorted((p.bus_pri, p.bus_bkp))) for p in self.pairs}
+        else:
+            # Junction-bus convention: every relay's own line is
+            # identified by which junction bus it protects toward, so
+            # group by (relay_index, junction_bus) pairs across primary
+            # AND backup relay roles to recover the distinct lines.
+            edges = set()
+            for p in self.pairs:
+                edges.add((p.primary, p.bus_pri))
+                edges.add((p.backup, p.bus_bkp))
         return max(len(edges), 1)
 
     def apply_n1_outage(self, line_idx: int) -> Tuple['NetworkData', float]:
@@ -139,17 +174,29 @@ class NetworkData:
         which silently failed because NetworkData has no `.lines` table) with
         a real physics-based fault-current rescaling, reusing the same
         TopologyManager machinery already validated for Fig 15 scalability
-        runs. Outaging a line removes a parallel fault-current path, which
-        is modelled here as a uniform reduction applied to every pair whose
-        primary or backup bus sits on the affected edge — consistent with
-        topology_manager.TopologyManager.get_outage_factor().
+        runs.
+
+        Convention-aware: see _uses_distinct_bus_convention. On networks
+        using the junction-bus convention (bus_pri == bus_bkp for every
+        pair, e.g. get_14bus()/get_39bus()), a bus-pair edge is not a
+        meaningful unit — every pair already shares one bus by
+        definition — so the outaged "line" is instead identified by a
+        specific (relay_index, bus) combination, and affected pairs are
+        those where the OUTAGED relay participates as primary or backup.
 
         Returns the outage_factor so callers can report how severe the
         applied contingency was (useful for sanity-checking Fig 14 output).
         """
         from environment.topology_manager import TopologyManager
 
-        edges = sorted({tuple(sorted((p.bus_pri, p.bus_bkp))) for p in self.pairs})
+        distinct_convention = self._uses_distinct_bus_convention
+
+        if distinct_convention:
+            edges = sorted({tuple(sorted((p.bus_pri, p.bus_bkp))) for p in self.pairs})
+        else:
+            edges = sorted({(p.primary, p.bus_pri) for p in self.pairs} |
+                            {(p.backup, p.bus_bkp) for p in self.pairs})
+
         line_idx = int(line_idx) % max(len(edges), 1)
         outaged_edge = edges[line_idx]
 
@@ -159,12 +206,21 @@ class NetworkData:
 
         new_net = self.copy()
         for p in new_net.pairs:
-            pair_edge = tuple(sorted((p.bus_pri, p.bus_bkp)))
-            touches_outage = (
-                pair_edge == outaged_edge
-                or p.bus_pri in outaged_edge
-                or p.bus_bkp in outaged_edge
-            )
+            if distinct_convention:
+                pair_edge = tuple(sorted((p.bus_pri, p.bus_bkp)))
+                touches_outage = (
+                    pair_edge == outaged_edge
+                    or p.bus_pri in outaged_edge
+                    or p.bus_bkp in outaged_edge
+                )
+            else:
+                # outaged_edge is (relay_index, bus) — a pair is affected
+                # if either its primary or backup relay IS that specific
+                # outaged relay/bus combination.
+                touches_outage = (
+                    (p.primary, p.bus_pri) == outaged_edge
+                    or (p.backup, p.bus_bkp) == outaged_edge
+                )
             if touches_outage:
                 # Fewer parallel paths -> lower fault current seen by
                 # relays electrically adjacent to the removed line.
