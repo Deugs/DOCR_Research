@@ -1,0 +1,45 @@
+2026-06-28 13:19:15,622 | INFO     | 
+2026-06-28 13:19:15,622 | INFO     | ======================================================================
+2026-06-28 13:19:15,622 | INFO     | [1m[95mDOCR-MARL THESIS: COMPLETE EXPERIMENT SUITE[0m
+2026-06-28 13:19:15,622 | INFO     | Strategy: 11 core training runs + unified post-processing
+2026-06-28 13:19:15,622 | INFO     | System: 8BUS | PV: 60% | Fault: 3ph
+2026-06-28 13:19:15,622 | INFO     | Runs: 2 | Episodes: 500
+2026-06-28 13:19:15,622 | INFO     | Estimated: ~8-10 GPU-days (full) / ~1-2 hours (fast)
+2026-06-28 13:19:15,622 | INFO     | ======================================================================
+2026-06-28 13:19:15,622 | INFO     | 
+2026-06-28 13:19:15,622 | INFO     | ======================================================================
+2026-06-28 13:19:15,622 | INFO     | [1m[96mPHASE 1: Manual Diagrams & Architecture[0m
+2026-06-28 13:19:15,622 | INFO     | ======================================================================
+2026-06-28 13:19:15,622 | INFO     | Phase 1: 15 auto-generatable + 2 truly manual figures
+2026-06-28 13:19:15,622 | INFO     | Output directory: results\figures\figs_01_10
+2026-06-28 13:19:16,964 | INFO     | [92m  [Fig 01] ✓ Generated in 1.34s[0m
+2026-06-28 13:19:17,379 | INFO     | [92m  [Fig 02] ✓ Generated in 0.41s[0m
+2026-06-28 13:19:17,998 | INFO     | [92m  [Fig 03] ✓ Generated in 0.62s[0m
+2026-06-28 13:19:18,518 | INFO     | [92m  [Fig 04] ✓ Generated in 0.52s[0m
+2026-06-28 13:19:19,375 | INFO     | [92m  [Fig 17] ✓ Generated in 0.86s[0m
+2026-06-28 13:19:20,048 | INFO     | [92m  [Fig 19] ✓ Generated in 0.67s[0m
+2026-06-28 13:19:20,832 | INFO     | [92m  [Fig 26] ✓ Generated in 0.78s[0m
+2026-06-28 13:19:21,287 | INFO     | [92m  [Fig 27] ✓ Generated in 0.45s[0m
+2026-06-28 13:19:21,811 | INFO     | [92m  [Fig 28] ✓ Generated in 0.52s[0m
+2026-06-28 13:19:22,350 | INFO     | [92m  [Fig 29] ✓ Generated in 0.54s[0m
+2026-06-28 13:19:23,557 | INFO     | [92m  [Fig 30] ✓ Generated in 1.21s[0m
+2026-06-28 13:19:24,908 | INFO     | [92m  [Fig 34] ✓ Generated in 1.35s[0m
+2026-06-28 13:19:26,107 | INFO     | [92m  [Fig 35] ✓ Generated in 1.20s[0m
+2026-06-28 13:19:27,345 | INFO     | [92m  [Fig 51] ✓ Generated in 1.24s[0m
+2026-06-28 13:19:28,642 | INFO     | [92m  [Fig 52] ✓ Generated in 1.30s[0m
+2026-06-28 13:19:28,642 | INFO     |   [Fig 36] ○ Truly manual - create in docs/diagrams/ or LaTeX
+2026-06-28 13:19:28,642 | INFO     |   [Fig 26a] ○ Truly manual - create in docs/diagrams/ or LaTeX
+2026-06-28 13:19:28,643 | INFO     | Phase 1 complete: 15 generated, 0 failed, 2 manual
+2026-06-28 13:19:28,643 | INFO     | [92m✓ Phase 1 Manual Diagrams & Architecture: COMPLETE (0:00:13)[0m
+2026-06-28 13:19:28,643 | INFO     | 
+2026-06-28 13:19:28,644 | INFO     | ======================================================================
+2026-06-28 13:19:28,644 | INFO     | [1m[96mPHASE 2: Core Training Runs (A-K with Real Evals)[0m
+2026-06-28 13:19:28,644 | INFO     | ======================================================================
+2026-06-28 13:19:28,645 | INFO     | Running unified core training via run_core_training.py...
+2026-06-28 13:19:28,645 | INFO     |   System: 8BUS | PV: 60% | Fault: 3ph
+2026-06-28 13:19:28,645 | INFO     |   Runs: 2 | Episodes: 500
+2026-06-28 13:19:28,646 | INFO     |   Features: GNN=✗ | Safety=✓ | EWC=✓
+2026-06-28 13:19:28,646 | INFO     | 
+2026-06-28 13:19:28,647 | INFO     | [96m──────────────────────────────────────────────────────────────────────[0m
+2026-06-28 13:19:28,647 | INFO     | [1m[94m▶ Phase 2: Unified Core Training (all 11 cores A-K)[0m
+2026-06-28 13:19:28,648 | INFO     |   CMD: python run_core_training.py --all --system 8bus --pv 0.6 --n-runs 2 --episodes 500

@@ -1,1 +1,52 @@
-{}
+{
+  "b49eaa6997a39bb7": {
+    "name": "core_A_mappo_safe_ewc_8bus_100pv",
+    "created": "2026-06-22T09:53:25.102986",
+    "config_keys": [
+      "name",
+      "method",
+      "system",
+      "pv",
+      "n_runs",
+      "n_episodes",
+      "seed"
+    ],
+    "size_mb": 0.2974233627319336
+  },
+  "c6882b2e182cdf5b": {
+    "name": "core_B_curriculum",
+    "created": "2026-06-22T09:53:25.384433",
+    "config_keys": [
+      "name",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed"
+    ],
+    "size_mb": 0.006617546081542969
+  },
+  "3469a5d021a4848f": {
+    "name": "core_B_curriculum",
+    "created": "2026-06-25T13:54:06.961611",
+    "config_keys": [
+      "name",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed"
+    ],
+    "size_mb": 0.004906654357910156
+  },
+  "8ef557e9e5d0fd8f": {
+    "name": "core_C_baselines",
+    "created": "2026-06-30T05:22:25.702225",
+    "config_keys": [
+      "name",
+      "methods",
+      "n_runs",
+      "n_episodes",
+      "seed"
+    ],
+    "size_mb": 0.020175933837890625
+  }
+}

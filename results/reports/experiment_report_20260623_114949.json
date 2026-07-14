@@ -1,0 +1,140 @@
+{
+  "timestamp": "2026-06-27T06:59:24.121967",
+  "fast_mode": false,
+  "total_elapsed_seconds": 328174.8894164562,
+  "eta": "18 days, 16:30:20",
+  "phases": {
+    "1": {
+      "name": "Manual Diagrams & Architecture",
+      "status": "complete",
+      "duration_seconds": 21.389599323272705,
+      "figures_generated": [
+        1,
+        2,
+        3,
+        4,
+        17,
+        19,
+        26,
+        27,
+        28,
+        29,
+        30,
+        34,
+        35,
+        51,
+        52
+      ],
+      "figures_failed": [],
+      "details": {}
+    },
+    "2": {
+      "name": "Core Training Runs (A-K with Real Evals)",
+      "status": "running",
+      "duration_seconds": null,
+      "figures_generated": [],
+      "figures_failed": [],
+      "details": {}
+    }
+  },
+  "figures": {
+    "1": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.520387887954712,
+      "error": null
+    },
+    "2": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.5160865783691406,
+      "error": null
+    },
+    "3": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.6109640598297119,
+      "error": null
+    },
+    "4": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.5973060131072998,
+      "error": null
+    },
+    "17": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.0479803085327148,
+      "error": null
+    },
+    "19": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.8157057762145996,
+      "error": null
+    },
+    "26": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.4312326908111572,
+      "error": null
+    },
+    "27": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.5316846370697021,
+      "error": null
+    },
+    "28": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.16786789894104,
+      "error": null
+    },
+    "29": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.205610990524292,
+      "error": null
+    },
+    "30": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 2.1581053733825684,
+      "error": null
+    },
+    "34": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 2.748948812484741,
+      "error": null
+    },
+    "35": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 2.1217803955078125,
+      "error": null
+    },
+    "51": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 2.1978538036346436,
+      "error": null
+    },
+    "52": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.5453152656555176,
+      "error": null
+    }
+  },
+  "summary": {
+    "total_phases": 9,
+    "completed_phases": 1,
+    "failed_phases": 0,
+    "total_figures": 58,
+    "completed_figures": 15,
+    "failed_figures": 0
+  }
+}

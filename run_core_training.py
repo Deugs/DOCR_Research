@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 run_core_training.py — Unified Core Training Launcher for DOCR-MARL (ALL PHASES)
@@ -463,8 +462,91 @@ def _try_experimental(fn, fallback_fn, *args, **kwargs):
             logger.error(f"Experimental failed and synthetic fallback DISABLED: {e}")
             raise
 
+
+def _make_act_fn(trainer):
+    """
+    Return a callable act_fn(all_obs, agent_idx, rng) -> (action, log_prob)
+    that correctly handles both use_comm=True and use_comm=False policies.
+
+    This is the shared fix for the matmul dimension mismatch that caused
+    every Core run to crash and fall back to synthetic data:
+
+        trainer.actor.sample(obs[i], rng)
+            → ValueError: matmul: size 10 is different from 18
+
+    When use_comm=True, MAPPOMARLTrainer builds an actor sized for
+    (obs_dim + msg_dim) = 18-dim input, not raw env.OBS_DIM = 10-dim.
+    Every call to actor.sample must first pass the FULL multi-agent
+    obs array through comm_graph.forward() to produce the enhanced
+    observations before sampling any individual agent's action.
+    This is exactly what MAPPOMARLTrainer._collect_rollout() does
+    internally — the runner functions were just never updated to match.
+
+    act_fn must receive all_obs (shape [n_agents, obs_dim]) and an
+    agent_idx, NOT a single obs slice, so the GNN attention can run
+    across all agents before selecting the per-agent enhanced vector.
+    """
+    use_comm = getattr(trainer, 'use_comm', False)
+    comm_graph = getattr(trainer, 'comm_graph', None)
+
+    if use_comm and comm_graph is not None:
+        def act_fn(all_obs, agent_idx, rng):
+            enhanced_obs, _, _ = comm_graph.forward(all_obs, rng)
+            return trainer.actor.sample(enhanced_obs[agent_idx], rng)
+    else:
+        def act_fn(all_obs, agent_idx, rng):
+            return trainer.actor.sample(all_obs[agent_idx], rng)
+
+    return act_fn
+
+
+def _train_and_collect(trainer, env, n_steps, rng, desc="train"):
+    """
+    Actually train the policy (call trainer.train(total_steps=n_steps))
+    then return the best (TMS, PS) seen across a short evaluation rollout.
+
+    Previously every Core runner looped episodes calling actor.sample()
+    but NEVER called trainer.train() at all — the actor weights were
+    frozen at random initialisation for the entire run.  This function
+    is the single authoritative "do real training" entry point for all
+    Core runners.
+    """
+    from network.relay_physics import objective_function, check_constraints
+
+    logger.debug(f"  [{desc}] trainer.train(total_steps={n_steps})...")
+    trainer.train(total_steps=n_steps, verbose=False)
+    logger.debug(f"  [{desc}] Training complete.")
+
+    act_fn = _make_act_fn(trainer)
+    net = env.net
+
+    best_of = float('inf')
+    best_tms, best_ps = None, None
+
+    for ep in range(20):
+        obs = env.reset(seed=rng.integers(0, 2**31))
+        done = False
+        while not done:
+            actions = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                a, _ = act_fn(obs, i, rng)
+                actions[i] = a
+            obs, _, done, _ = env.step(actions)
+
+        TMS, PS = env.get_state()
+        try:
+            of_val, _, _ = objective_function(net, TMS, PS, fault_type="3ph")
+            if of_val < best_of:
+                best_of = of_val
+                best_tms, best_ps = TMS.copy(), PS.copy()
+        except Exception:
+            pass
+
+    return best_of, best_tms, best_ps, act_fn
+
+
 # ═════════════════════════════════════════════════════════════════
-# CORE RUN A — MAPPO-Safe-EWC 8-Bus 100% PV
+# CORE RUN A — MAPPO-Safe-EWC 8-Bus 60% PV (max of active sweep)
 # ═════════════════════════════════════════════════════════════════
 def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None, 
                progress: ExperimentProgress = None):
@@ -531,92 +613,77 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
     from network.relay_physics import check_constraints
-    
+
     net = get_8bus()
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=5)
-    
-    # Use provided dims or derive from environment
+    # curriculum_stage=3 → 60% PV (active sweep max; was hardcoded to 5=100%)
+    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=3)
+
     n_agents = n_agents or env.n_agents
     n_pairs = n_pairs or (env.net.n_pairs if hasattr(env.net, 'n_pairs') else 20)
-    
-    # FIX: Validate observation dimensions
-    obs_sample = env.reset(seed=seed)
-    expected_obs_dim = env.OBS_DIM  # 10 features as defined in DynamicDOCREnv
-    actual_obs_dim = len(obs_sample[0]) if hasattr(obs_sample[0], '__len__') else obs_sample[0].shape[0]
-    
-    if actual_obs_dim != expected_obs_dim:
-        logger.warning(f"Obs dim mismatch: expected {expected_obs_dim}, got {actual_obs_dim}. "
-                      f"n_agents={env.n_agents}, n_relays={net.n_relays}")
-    
-    # FIX: use_comm=False for Core A to avoid obs_dim mismatch with GNN-enhanced observations
-    # Core A focuses on MAPPO-Safe-EWC; GNN communication is evaluated in ablation studies
-    trainer = MAPPOMARLTrainer(env, use_comm=False, seed=seed)
-    
-    # Safety layer and EWC are placeholder features - check if implemented
-    if hasattr(trainer, 'use_safety'): 
-        trainer.use_safety = True
-    if hasattr(trainer, 'use_ewc'): 
-        trainer.use_ewc = True
-    
+
+    # use_comm=True for MAPPO-Safe-EWC (the full method with GNN).
+    # Previously use_comm=False was used as a workaround for the matmul
+    # crash — now fixed via _make_act_fn which routes obs through the
+    # comm graph before calling actor.sample().
+    trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
+    if hasattr(trainer, 'use_safety'): trainer.use_safety = True
+    if hasattr(trainer, 'use_ewc'):    trainer.use_ewc = True
+
     logger_obj = UnifiedTrainingLogger(
-        n_agents=env.n_agents, 
+        n_agents=env.n_agents,
         n_pairs=env.net.n_pairs if hasattr(env.net, 'n_pairs') else n_pairs,
         snapshot_episodes=[0, 100, 500, 1000, 5000] if n_episodes >= 5000 else [0, 50, 100, 250, 500]
     )
     rng = np.random.default_rng(seed)
-    
-    with ProgressTracker(total=n_episodes, desc="[Core A] Episodes", unit="ep", enable=False) as pbar:
-        for ep in range(n_episodes):
+
+    # Convert episode budget to step budget (env max_steps per episode)
+    total_steps = n_episodes * getattr(env, 'max_steps', 300)
+
+    # ── THE ACTUAL FIX: call trainer.train() ──────────────────────────────
+    # Previously this function looped over episodes calling actor.sample()
+    # WITHOUT ever calling trainer.train(), meaning actor weights were
+    # frozen at random initialisation for the entire Core A run.
+    logger.info(f"  [Core A] trainer.train(total_steps={total_steps})...")
+    history = trainer.train(total_steps=total_steps, verbose=False)
+    logger.info(f"  [Core A] Training complete.")
+
+    act_fn = _make_act_fn(trainer)
+
+    # Post-training evaluation rollout (for logging/convergence curves)
+    with ProgressTracker(total=min(n_episodes, 200), desc="[Core A] Eval", unit="ep", enable=False) as pbar:
+        for ep in range(min(n_episodes, 200)):
             obs = env.reset(seed=seed + ep)
             done = False
             ep_reward = 0.0
             ep_safety_acts = 0
             ep_projections = 0
             while not done:
-                actions_raw = np.zeros((env.n_agents, env.ACT_DIM))
-                actions_safe = np.zeros((env.n_agents, env.ACT_DIM))
+                actions = np.zeros((env.n_agents, env.ACT_DIM))
                 for i in range(env.n_agents):
-                    a_raw, _ = trainer.actor.sample(obs[i], rng)
-                    actions_raw[i] = a_raw
-                    # Safety projection placeholder
-                    if hasattr(trainer, 'safety_layer') and trainer.safety_layer is not None:
-                        a_safe = trainer.safety_layer.project(a_raw, obs[i])
-                        if not np.allclose(a_raw, a_safe):
-                            ep_safety_acts += 1
-                            ep_projections += 1
-                        actions_safe[i] = a_safe
-                    else:
-                        actions_safe[i] = a_raw
-                obs, reward, done, info = env.step(actions_safe)
+                    a, _ = act_fn(obs, i, rng)
+                    actions[i] = a
+                obs, reward, done, info = env.step(actions)
                 ep_reward += float(np.mean(reward))
-                
+
             TMS, PS = env.get_state()
             c = check_constraints(env.net, TMS, PS)
-            viol_count = c["cti_violations"]
-            
-            # Lagrange multiplier norm placeholder
-            lag_norm = 0.0
-            if hasattr(trainer, 'lagrange_multipliers'):
-                lag_norm = float(np.linalg.norm(trainer.lagrange_multipliers))
-            
-            # Attention weights placeholder (only if comm enabled)
-            attn = None
-            if hasattr(trainer, 'actor') and hasattr(trainer.actor, 'attention_weights'):
-                attn = trainer.actor.attention_weights.copy()
-                
+            lag_norm = float(np.linalg.norm(trainer.lagrange_multipliers)) \
+                if hasattr(trainer, 'lagrange_multipliers') else 0.0
+            attn = getattr(getattr(trainer, 'actor', None), 'attention_weights', None)
+            if attn is not None:
+                attn = attn.copy()
+
             logger_obj.log_episode(
-                ep=ep, global_return=ep_reward, 
-                per_agent_rewards=np.random.rand(env.n_agents) * ep_reward,
-                cti_violations=viol_count, lagrange_norm=lag_norm, 
-                safety_acts=ep_safety_acts,
-                attention_matrix=attn, action_projections=ep_projections
+                ep=ep, global_return=ep_reward,
+                per_agent_rewards=np.ones(env.n_agents) * ep_reward / env.n_agents,
+                cti_violations=c["cti_violations"], lagrange_norm=lag_norm,
+                safety_acts=ep_safety_acts, attention_matrix=attn,
+                action_projections=ep_projections
             )
-            
-            if ep % 500 == 0:
-                logger.info(f"  Ep {ep:5d}/{n_episodes}: return={ep_reward:8.3f} viol={viol_count:3d} lag={lag_norm:6.3f}")
+            if ep % 50 == 0:
+                logger.info(f"  Ep {ep:5d}: return={ep_reward:8.3f} viol={c['cti_violations']:3d}")
             pbar.update(1)
-            pbar.set_postfix(return_val=f"{ep_reward:.2f}", viol=viol_count)
-            
+
     return logger_obj.to_dict()
 
 
@@ -685,16 +752,10 @@ def _aggregate_runs(runs_data: List[Dict]) -> Dict:
     for ep, mats in all_snapshots.items():
         aggregated[f"attention_snap_{ep}_mean"] = np.mean(mats, axis=0)
         
-    # When use_comm=False, attention_entropies is empty for all runs
-    entropy_runs = [r["attention_entropies"] for r in runs_data if len(r["attention_entropies"]) > 0]
-    if len(entropy_runs) > 0:
-        entropies = np.stack(entropy_runs)
+    entropies = np.stack([r["attention_entropies"] for r in runs_data if len(r["attention_entropies"]) > 0])
+    if len(entropies) > 0:
         aggregated["attention_entropy_mean"] = entropies.mean(axis=0)
         aggregated["attention_entropy_std"] = entropies.std(axis=0)
-    else:
-        # No attention entropy data available (e.g., use_comm=False)
-        aggregated["attention_entropy_mean"] = np.array([])
-        aggregated["attention_entropy_std"] = np.array([])
         
     return aggregated
 
@@ -710,7 +771,7 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
     
     config = {
         "name": "core_B_curriculum", 
-        "tasks": [0.0, 0.25, 0.5, 0.75, 1.0], 
+        "tasks": [0.0, 0.20, 0.40, 0.60],  # active sweep (was 0/25/50/75/100%)
         "episodes_per_task": episodes_per_task, 
         "n_runs": n_runs, 
         "seed": seed
@@ -723,10 +784,10 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
     run_name = "Core B"
     if progress:
         progress.start_run(run_name, total_steps=n_runs * 2,
-                          desc=f"Curriculum 0%->100% PV — {n_runs} runs (with/without EWC)")
+                          desc=f"Curriculum 0%->60% PV — {n_runs} runs (with/without EWC)")
         
     logger.info("=" * 70)
-    logger.info("CORE RUN B: Curriculum Training (0% -> 100% PV)")
+    logger.info("CORE RUN B: Curriculum Training (0% -> 60% PV)")
     logger.info(f"  Tasks: {config['tasks']}, Episodes/task: {episodes_per_task}")
     logger.info("  Feeds: Figs 5, 6, 7, 16, 29, 39")
     logger.info("=" * 70)
@@ -765,55 +826,115 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
 
 
 def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
-    TASKS = [0.0, 0.25, 0.5, 0.75, 1.0]
+    # Updated to 0/20/40/60% PV — the active thesis sweep.
+    # Was [0.0, 0.25, 0.5, 0.75, 1.0] which included 100% PV (outside
+    # the new scope) and used 0.25/0.75 (not multiples of 0.2).
+    TASKS = [0.0, 0.20, 0.40, 0.60]
+
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
-    
+    from marl.continual_trainer import create_ewc_trainer, EWCConfig
+
     net = get_8bus()
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=0)
-    trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
-    if hasattr(trainer, 'use_safety'): trainer.use_safety = True
-    if hasattr(trainer, 'use_ewc'): trainer.use_ewc = use_ewc
+    base_trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
+    if hasattr(base_trainer, 'use_safety'): base_trainer.use_safety = True
+    if hasattr(base_trainer, 'use_ewc'):    base_trainer.use_ewc = use_ewc
+
+    ewc_wrapper = create_ewc_trainer(base_trainer, EWCConfig()) if use_ewc else None
+
     rng = np.random.default_rng(seed)
-    
+    act_fn = _make_act_fn(base_trainer)
+
+    # Convert episode budget to step budget
+    steps_per_task = episodes_per_task * 300
+
     task_performances = []
+    prev_task_name = None
+    prev_fisher = None
+
     with ProgressTracker(total=len(TASKS), desc=f"[Core B] Tasks (EWC={use_ewc})", unit="task", enable=False) as pbar:
         for task_idx, pv in enumerate(TASKS):
-            env.curriculum_stage = int(pv * 5)
-            for ep in range(episodes_per_task):
-                obs = env.reset(seed=seed + task_idx * 10000 + ep)
-                done = False
-                while not done:
-                    actions = np.zeros((env.n_agents, env.ACT_DIM))
+            env.curriculum_stage = int(pv * 5)  # 0.0→0, 0.2→1, 0.4→2, 0.6→3
+
+            if use_ewc and ewc_wrapper is not None and prev_task_name is not None:
+                # Apply EWC gradient correction before each new task
+                cur = base_trainer.actor.get_all_params()
+                ewc_grad = ewc_wrapper.apply_ewc_to_gradient(cur, np.zeros_like(cur))
+                base_trainer.actor.set_all_params(cur - 0.01 * ewc_grad)
+
+            # ── ACTUAL TRAINING ───────────────────────────────────────────
+            base_trainer.train(total_steps=steps_per_task, verbose=False)
+            task_name = f"PV{int(pv*100):03d}"
+
+            if use_ewc and ewc_wrapper is not None:
+                cur = base_trainer.actor.get_all_params()
+                # Estimate Fisher for the task just completed before
+                # register_task() consolidates the previous one.
+                obs_f = env.reset(seed=seed + 9000 + task_idx)
+                s_obs, s_act = [], []
+                done_f = False; sf = 0
+                while not done_f and sf < 30:
+                    acts = np.zeros((env.n_agents, env.ACT_DIM))
+                    # Collect enhanced observations (what the actor actually
+                    # sees) for Fisher estimation — using raw obs would
+                    # cause the same 10-vs-18 matmul crash in log_prob.
+                    if base_trainer.comm_graph is not None:
+                        enhanced_f, _, _ = base_trainer.comm_graph.forward(obs_f, rng)
+                    else:
+                        enhanced_f = obs_f
                     for i in range(env.n_agents):
-                        a, _ = trainer.actor.sample(obs[i], rng)
-                        actions[i] = a
-                    obs, _, done, _ = env.step(actions)
-                    
-            # Evaluate across all tasks
+                        a, _ = act_fn(obs_f, i, rng)
+                        acts[i] = a
+                        s_obs.append(enhanced_f[i].copy())
+                        s_act.append(a.copy())
+                    obs_f, _, done_f, _ = env.step(acts); sf += 1
+
+                n_p = len(cur)
+                fisher = np.zeros(n_p)
+                idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+                h = 1e-3
+                for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+                    bl = np.mean([base_trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    b2 = cur.copy(); b2[p_idx] += h
+                    base_trainer.actor.set_all_params(b2)
+                    ul = np.mean([base_trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    fisher[p_idx] = ((ul - bl) / h) ** 2
+                base_trainer.actor.set_all_params(cur)
+
+                ewc_wrapper.ewc_regularizer.register_task(task_name, cur)
+                if prev_task_name is not None:
+                    ewc_wrapper.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+                prev_task_name = task_name
+                prev_fisher = fisher
+
+            # Evaluate across all tasks seen so far
             task_perf = []
             for eval_pv in TASKS:
                 env.curriculum_stage = int(eval_pv * 5)
                 rewards = []
                 for ep in range(30):
                     obs = env.reset(seed=seed + 50000 + int(eval_pv * 1000) + ep)
-                    done = False
-                    ep_reward = 0
+                    done = False; ep_reward = 0
                     while not done:
                         actions = np.zeros((env.n_agents, env.ACT_DIM))
                         for i in range(env.n_agents):
-                            a, _ = trainer.actor.sample(obs[i], rng)
+                            a, _ = act_fn(obs, i, rng)
                             actions[i] = a
                         obs, r, done, _ = env.step(actions)
-                        ep_reward += r
+                        ep_reward += float(np.mean(r))
                     rewards.append(ep_reward)
-                task_perf.append(np.mean(rewards))
+                task_perf.append(float(np.mean(rewards)))
             task_performances.append(task_perf)
             pbar.update(1)
             pbar.set_postfix(pv=f"{pv:.0%}")
-            
-    return {"task_performances": np.array(task_performances), "use_ewc": use_ewc, "final_checkpoint": "saved"}
+
+    return {
+        "task_performances": np.array(task_performances),
+        "use_ewc": use_ewc,
+        "final_checkpoint": "saved",
+    }
 
 
 def _generate_synthetic_curriculum(use_ewc: bool, seed: int, episodes_per_task: int, n_agents: int = 14):
@@ -907,33 +1028,41 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int):
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
-    
+
     net = get_8bus()
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=5)
+    # curriculum_stage=3 → 60% PV (active sweep max)
+    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=3)
     if method == "Traditional":
         return _evaluate_traditional(env, net, n_episodes, seed)
-        
-    use_comm = method in ["MAPPO-Safe", "MAPPO"]
+
+    use_comm = method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO"]
     trainer = MAPPOMARLTrainer(env, use_comm=use_comm, seed=seed)
-    if hasattr(trainer, 'use_safety'): trainer.use_safety = (method == "MAPPO-Safe")
-    rng = np.random.default_rng(seed)
-    
+    if hasattr(trainer, 'use_safety'): trainer.use_safety = (method in ["MAPPO-Safe-EWC", "MAPPO-Safe"])
+    if hasattr(trainer, 'use_ewc'):    trainer.use_ewc = (method == "MAPPO-Safe-EWC")
+
+    # ── ACTUAL TRAINING ───────────────────────────────────────────────────
+    total_steps = n_episodes * 300
+    trainer.train(total_steps=total_steps, verbose=False)
+
+    act_fn = _make_act_fn(trainer)
+    rng = np.random.default_rng(seed + 9999)
+
     returns = []
-    with ProgressTracker(total=n_episodes, desc=f"[Core C] {method} ep", unit="ep", enable=False) as pbar:
-        for ep in range(n_episodes):
+    with ProgressTracker(total=min(n_episodes, 200), desc=f"[Core C] {method} eval", unit="ep", enable=False) as pbar:
+        for ep in range(min(n_episodes, 200)):
             obs = env.reset(seed=seed + ep)
             done = False
-            ep_return = 0
+            ep_return = 0.0
             while not done:
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
                 for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
+                    a, _ = act_fn(obs, i, rng)
                     actions[i] = a
                 obs, reward, done, _ = env.step(actions)
                 ep_return += float(np.mean(reward))
             returns.append(ep_return)
             pbar.update(1)
-            
+
     return np.array(returns)
 
 
@@ -1036,33 +1165,36 @@ def run_core_D(n_runs: int = None, n_episodes: int = None, seed: int = None,
 def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
     use_comm = "GNN" in config_name
     use_safe = "Safe" in config_name
-    use_ewc = "EWC" in config_name
+    use_ewc  = "EWC" in config_name
     use_curr = "Curr" in config_name
-    
+
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
     from network.relay_physics import check_constraints
-    
+
     net = get_8bus()
-    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=5, seed=seed)
+    # curriculum_stage=3 → 60% PV; use 0 if curriculum training is enabled
+    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph",
+                          curriculum_stage=0 if use_curr else 3, seed=seed)
     trainer = MAPPOMARLTrainer(env, use_comm=use_comm, seed=seed)
     if hasattr(trainer, 'use_safety'): trainer.use_safety = use_safe
-    if hasattr(trainer, 'use_ewc'): trainer.use_ewc = use_ewc
-    rng = np.random.default_rng(seed)
-    
-    with ProgressTracker(total=n_episodes, desc=f"[Core D] {config_name} train", unit="ep", enable=False) as pbar:
-        for ep in range(n_episodes):
-            obs = env.reset(seed=seed + ep)
-            done = False
-            while not done:
-                actions = np.zeros((env.n_agents, env.ACT_DIM))
-                for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
-                    actions[i] = a
-                obs, _, done, _ = env.step(actions)
-            pbar.update(1)
-            
+    if hasattr(trainer, 'use_ewc'):    trainer.use_ewc = use_ewc
+
+    total_steps = n_episodes * 300
+
+    if use_curr:
+        # Curriculum over 0/20/40/60%
+        steps_per_task = total_steps // 4
+        for pv in [0.0, 0.20, 0.40, 0.60]:
+            env.curriculum_stage = int(pv * 5)
+            trainer.train(total_steps=steps_per_task, verbose=False)
+    else:
+        trainer.train(total_steps=total_steps, verbose=False)
+
+    act_fn = _make_act_fn(trainer)
+    rng = np.random.default_rng(seed + 9999)
+
     of_values, cti_values = [], []
     with ProgressTracker(total=50, desc=f"[Core D] {config_name} eval", unit="ep", enable=False) as pbar:
         for ep in range(50):
@@ -1072,7 +1204,7 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
             while not done:
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
                 for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
+                    a, _ = act_fn(obs, i, rng)
                     actions[i] = a
                 obs, _, done, info = env.step(actions)
                 ep_of = min(ep_of, info.get("OF", float('inf')))
@@ -1081,8 +1213,8 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
             c = check_constraints(net, TMS, PS)
             cti_values.append(c["cti_violations"])
             pbar.update(1)
-            
-    return np.mean(of_values), np.mean(cti_values)
+
+    return float(np.mean(of_values)), float(np.mean(cti_values))
 
 
 def _generate_synthetic_ablation(config_name: str, seed: int):
@@ -1173,27 +1305,20 @@ def _run_hparam_single(lambda_ewc, alpha_lambda, hidden_dim, seed, n_steps):
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
-    
+
     net = get_8bus()
-    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=5, seed=seed)
-    trainer = MAPPOMARLTrainer(env, use_comm=False, hidden_actor=hidden_dim, hidden_critic=hidden_dim, seed=seed)
-    rng = np.random.default_rng(seed)
-    
-    n_eps = n_steps // 50
-    with ProgressTracker(total=n_eps, desc=f"[Core E] HParam train", unit="ep", enable=False) as pbar:
-        for ep in range(n_eps):
-            obs = env.reset(seed=seed + ep)
-            done = False
-            while not done:
-                actions = np.zeros((env.n_agents, env.ACT_DIM))
-                for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
-                    actions[i] = a
-                obs, _, done, _ = env.step(actions)
-            pbar.update(1)
-            
+    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=3, seed=seed)
+    trainer = MAPPOMARLTrainer(env, use_comm=False,
+                                hidden_actor=hidden_dim, hidden_critic=hidden_dim, seed=seed)
+
+    # ── ACTUAL TRAINING ───────────────────────────────────────────────────
+    trainer.train(total_steps=n_steps, verbose=False)
+
+    act_fn = _make_act_fn(trainer)
+    rng = np.random.default_rng(seed + 9999)
+
     of_values = []
-    with ProgressTracker(total=30, desc=f"[Core E] HParam eval", unit="ep", enable=False) as pbar:
+    with ProgressTracker(total=30, desc="[Core E] HParam eval", unit="ep", enable=False) as pbar:
         for ep in range(30):
             obs = env.reset(seed=seed + 999 + ep)
             done = False
@@ -1201,14 +1326,14 @@ def _run_hparam_single(lambda_ewc, alpha_lambda, hidden_dim, seed, n_steps):
             while not done:
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
                 for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
+                    a, _ = act_fn(obs, i, rng)
                     actions[i] = a
                 obs, _, done, info = env.step(actions)
                 ep_of = min(ep_of, info.get("OF", float('inf')))
             of_values.append(ep_of)
             pbar.update(1)
-            
-    return np.mean(of_values), 0
+
+    return float(np.mean(of_values)), 0
 
 
 def _generate_synthetic_hparam(lambda_ewc, alpha_lambda, hidden_dim, seed, n_steps):
@@ -1287,28 +1412,39 @@ def _run_scalability_single(sys_name: str, seed: int):
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
     
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=5)
+    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=3)
     trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
     rng = np.random.default_rng(seed)
-    
+
     t0 = time.time()
-    with ProgressTracker(total=100, desc=f"[Core F] {sys_name} train", unit="ep", enable=False) as pbar:
-        for ep in range(100):
-            obs = env.reset(seed=seed + ep)
-            done = False
-            while not done:
-                actions = np.zeros((env.n_agents, env.ACT_DIM))
-                for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
-                    actions[i] = a
-                obs, _, done, _ = env.step(actions)
-            pbar.update(1)
-            
+
+    # ── ACTUAL TRAINING ───────────────────────────────────────────────────
+    # 100 episode budget kept short deliberately for scalability analysis
+    # (this core measures training-time scaling, not final performance)
+    trainer.train(total_steps=100 * 300, verbose=False)
+
+    act_fn = _make_act_fn(trainer)
     train_time = time.time() - t0
+
+    # Brief evaluation to measure final performance at this scale
+    of_values = []
+    for ep in range(10):
+        obs = env.reset(seed=seed + 999 + ep)
+        done = False
+        ep_of = float('inf')
+        while not done:
+            actions = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                a, _ = act_fn(obs, i, rng)
+                actions[i] = a
+            obs, _, done, info = env.step(actions)
+            ep_of = min(ep_of, info.get("OF", float('inf')))
+        of_values.append(ep_of)
+
     return {
-        "n_relays": n_relays, 
-        "train_time": train_time, 
-        "final_performance": 0.8 - n_relays * 0.005
+        "n_relays": n_relays,
+        "train_time": train_time,
+        "final_performance": float(np.mean(of_values)),
     }
 
 
