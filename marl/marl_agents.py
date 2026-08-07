@@ -601,14 +601,28 @@ class MAPPOMARLTrainer:
 
         return obs
 
-    def train(self, total_steps=30000, verbose=True, log_every=2000):
-        """Train MAPPO with optional GNN communication."""
+    def train(self, total_steps=30000, verbose=True, log_every=2000,
+              early_stop_patience=None, early_stop_min_delta=1e-4):
+        """Train MAPPO with optional GNN communication.
+
+        early_stop_patience: if set, stop once `early_stop_patience`
+        consecutive rollout evaluations pass without the best objective
+        function improving by more than early_stop_min_delta. Disabled by
+        default (None) — total_steps is otherwise a fixed budget regardless
+        of whether the policy has already converged, which wastes compute on
+        easy configurations without helping hard ones. When curriculum
+        learning is enabled, early stopping only takes effect once the final
+        curriculum stage has been reached, so it can't cut a run off before
+        every stage has been visited.
+        """
         obs = self.env.reset()
         step = 0
         history = []
         best_OF = np.inf
         best_TMS = self.env.TMS.copy()
         best_PS = self.env.PS.copy()
+        no_improve_count = 0
+        early_stopped = False
         t0 = time.perf_counter()
 
         stage_history = {i: [] for i in range(self.curriculum_stages)}
@@ -682,10 +696,12 @@ class MAPPOMARLTrainer:
                 OF_now, _, _ = OF_fn(self.env.net, TMS, PS)
                 cti_ok = False
 
+            improved = OF_now < best_OF - early_stop_min_delta
             if OF_now < best_OF:
                 best_OF = OF_now
                 best_TMS = TMS.copy()
                 best_PS = PS.copy()
+            no_improve_count = 0 if improved else no_improve_count + 1
 
             history.append(OF_now)
             cti_satisfaction_history.append(1.0 if cti_ok else 0.0)
@@ -722,6 +738,15 @@ class MAPPOMARLTrainer:
                       f"CTI_ok={cti_ok}{stage_info}{comm_info}  "
                       f"t={time.perf_counter() - t0:.1f}s")
 
+            if early_stop_patience is not None:
+                curriculum_done = (not self.curriculum) or (self.current_stage >= self.curriculum_stages - 1)
+                if curriculum_done and no_improve_count >= early_stop_patience:
+                    early_stopped = True
+                    if verbose:
+                        print(f"  Early stop at step {step}/{total_steps}: "
+                              f"no improvement > {early_stop_min_delta} for {no_improve_count} rollouts")
+                    break
+
         elapsed = time.perf_counter() - t0
         if verbose:
             print(f"  Done. Best OF = {best_OF:.4f}  [{elapsed:.1f}s]")
@@ -743,6 +768,8 @@ class MAPPOMARLTrainer:
             "stage_history":    stage_history if self.curriculum else {},
             "use_comm":         self.use_comm,
             "comm_bandwidth":   np.mean(self.comm_bandwidth_history) if self.comm_bandwidth_history else 0.0,
+            "early_stopped":    early_stopped,
+            "stopped_at_step":  step,
             # ── Tier-2 additions ──────────────────────────────────────────────
             "attention_snapshots": self.attention_snapshots,        # Figs 8, 38
             "per_agent_returns":   self.per_agent_returns,          # Fig 37
