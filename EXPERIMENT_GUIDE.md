@@ -252,16 +252,68 @@ change results:
   consecutive rollouts, instead of always running the full fixed
   `total_steps` budget. Gated on reaching the final curriculum stage when
   curriculum learning is enabled.
-- `baselines/experiments/unified_exp_fig05.py --n_workers N` parallelizes
-  the (method, PV level, seed) job grid across N processes — each job is
-  independently seeded and self-contained, so results are bit-identical
-  regardless of N (verified). Each worker is pinned to 1 BLAS thread via
-  `threadpoolctl`; without this, N worker processes each trying to use all
-  available cores for NumPy/BLAS oversubscribes the machine and makes
-  `--n_workers 4` *slower* than sequential, not faster — measured directly
-  during development (1m4s sequential vs 1m11s naively-parallel, vs 18s
-  once thread-pinned). Default is `--n_workers 1` (sequential); pass a
-  worker count matching available cores to use this.
+- The same batching approach was applied to `marl/single_agent_ppo.py`
+  (14.7x on `log_prob`) and `marl/comm_graph_gradient.py`'s critic (4.1x),
+  both verified bit-identical to their per-timestep originals.
+  **Not** applied to `marl/comm_graph.py`'s GNN attention layer — measured
+  *slower* when batched (0.5x–0.9x at n=14–46 agents). The O(n²) pairwise
+  tensor construction (`repeat`+`concatenate`) allocates a large temporary
+  array per call; batching over the rollout multiplies that allocation by
+  the rollout length, which costs more than the Python loop it removes.
+  Benchmark before assuming a vectorization helps — it does for plain
+  matmul-based layers, not for this attention mechanism.
+- `--n_workers N` parallelizes independent (method/config, seed) job grids
+  across N processes in `baselines/experiments/unified_exp_fig05.py`,
+  `baselines/experiments/exp_fig05_pv_sweep_evaluation.py`,
+  `experiments/exp_fig12_convergence_curves.py`,
+  `marl/experiments/exp_fig15_scalability.py`,
+  `marl/experiments/exp_fig16_ewc_effectiveness.py`,
+  `marl/experiments/exp_fig39_ablation.py`, and
+  `marl/experiments/exp_fig40_hparam_grid.py` — each job is independently
+  seeded and self-contained, so results are bit-identical regardless of N
+  (verified). Each worker is pinned to 1 BLAS thread via `threadpoolctl`;
+  without this, N worker processes each trying to use all available cores
+  for NumPy/BLAS oversubscribes the machine and makes `--n_workers 4`
+  *slower* than sequential, not faster — measured directly during
+  development (1m4s sequential vs 1m11s naively-parallel, vs 18s once
+  thread-pinned, on `unified_exp_fig05.py`). Default is `--n_workers 1`
+  (sequential); pass a worker count matching available cores to use this.
+  Results are pre-allocated by seed/config index (never appended in
+  completion order) so paired statistical tests across methods stay
+  correctly aligned regardless of which worker finishes first, and seed
+  offsets use `zlib.crc32` instead of `hash()` (Python randomizes `hash()`
+  per process by default, which silently breaks reproducibility across
+  worker processes).
+- While instrumenting the above scripts for parallelization, three
+  pre-existing correctness bugs were found and fixed (unrelated to
+  parallelization itself, but each blocked the script from completing a
+  run at all):
+  - `marl/experiments/exp_fig39_ablation.py`'s Fisher-information estimator
+    (`_estimate_fisher_for_task`) sampled actions from raw environment
+    observations even when `use_comm=True`, crashing with a matmul
+    dimension mismatch the moment EWC ran on a comm-enabled config (2 of 5
+    ablation arms). Fixed to apply the same comm-graph enhancement already
+    used correctly elsewhere in the file.
+  - `marl/experiments/exp_fig16_ewc_effectiveness.py` and
+    `marl/experiments/exp_fig40_hparam_grid.py` each called `main()` with
+    more positional arguments than the function accepted (an undefined
+    `system` in the latter's case) — both scripts raised immediately on
+    invocation. Fixed by adding the missing `system`/`n_workers` parameters
+    and threading `system` through to the network-loading calls that had
+    been silently ignoring it.
+  - `baselines/experiments/exp_fig05_pv_sweep_evaluation.py` only added its
+    own directory to `sys.path`, not the repo root, so running it directly
+    (`python3 baselines/experiments/exp_fig05_pv_sweep_evaluation.py`)
+    failed with `ModuleNotFoundError: No module named 'network'`. Fixed to
+    match the repo-root-relative pattern used elsewhere.
+
+Note: a separate, pre-existing `sys.path` bug of the same shape (adding
+only the script's own directory, not the repo root) is present in roughly
+20 files under the top-level `experiments/` directory (e.g.
+`exp_fig14_n1_contingency.py`, `exp_fig18_inference_latency.py`, and most
+others there) — confirmed by running one directly. These were not touched
+here since they're unrelated to training efficiency; fixing them is a
+separate cleanup task.
 
 ### 2.3 Running phases individually
 
