@@ -214,11 +214,29 @@ docstring pattern and were almost certainly generated in one batch; each now
 imports `evaluation.experiments._synthetic_label.mark_synthetic` and
 watermarks its own output.
 
+**A second, separate implementation of most of these same figures lives in
+`run_post_processing.py`** (`fig_NN_*` functions, dispatched via
+`FIGURE_FUNCTIONS` — this is the code path `run_thesis_experiments.py`
+actually calls, not the CLI adapters above). 41 of its functions follow the
+pattern `data = load_cache(name); if data is None: data = {hardcoded}` —
+i.e. they silently fall back to fabricated numbers whenever the named
+`results/core_cache/` entry is missing. As of 2026-08-07 every one of these
+41 functions now sets `is_synthetic = data is None`, logs a warning naming
+the missing cache, and watermarks the figure when the fallback actually
+fires. Only 3 of the 11 core caches they reference currently exist
+(`core_A_mappo_safe_ewc_8bus_100pv`, `core_B_curriculum`, `core_C_baselines`
+— see `results/core_cache/cache_index.json`), so most `run_post_processing.py`
+figures generated from a fresh checkout are still synthetic today — they are
+just honestly labeled as such now instead of silently passed off as real.
+See the module docstring at the top of `run_post_processing.py` for the full
+list of missing caches, and `tests/test_phase6.py` / `tests/test_phase7.py`
+for regression coverage locking this behavior in.
+
 Figures produced by `evaluation/utils/exp_fig06_cti_violation_rate.py` and the
 repaired `baselines/experiments/unified_exp_fig05.py` (Fig 5, now including
 GA-SQP/HWOA/HHO/JAYA/EEO with real Wilcoxon/Mann-Whitney + Cliff's delta
-testing) are genuine — they train/evaluate real models. Everything else not
-listed above was not audited as part of this pass; verify before citing.
+testing) are genuine — they train/evaluate real models when their Core cache
+is present.
 
 ### 2.3 Running phases individually
 

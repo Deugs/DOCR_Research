@@ -15,19 +15,21 @@ Configuration (precedence: CLI > config file > preset > env vars > defaults):
   • --fast              Enable fast mode (reduced iterations)
   • All CLI args from docl_config.py supported
 
-DATA PROVENANCE WARNING (2026-08-07): many fig_NN_* functions below follow the
-pattern `data = load_cache(name); if data is None: data = {<hardcoded literals>}`
-— i.e. they silently fall back to fabricated numbers when the expected
-core_cache entry is missing, with no indication in the saved figure. This was
-confirmed and fixed for fig_18_inference_latency and fig_53_model_compression
-(the two Phase 6 figures — see tests/test_phase6.py), both of which currently
-DO fall back, since no "core_I_deployment" cache entry exists in
-results/core_cache/. The same pattern likely affects other fig_NN_* functions
-in this file (e.g. fig_54_adversarial's "core_G_robustness" fallback) — these
-have not been individually audited or fixed as part of this pass. Before
-citing any figure from this module, grep its function for `if data is None`
-and check whether results/core_cache/cache_index.json actually contains the
-cache name it requests.
+DATA PROVENANCE WARNING (2026-08-07): every fig_NN_* function below that
+follows the pattern `data = load_cache(name); if data is None: data =
+{<hardcoded literals>}` now sets `is_synthetic = data is None`, logs a
+`logger.warning(...)` naming the missing cache, and watermarks the saved
+figure via `mark_synthetic()` whenever that fallback actually triggers (41
+functions total, including fig_18_inference_latency and
+fig_53_model_compression — see tests/test_phase6.py / test_phase7.py for
+regression coverage). Only 3 of the 11 core caches referenced across this file (A/B/C:
+"core_A_mappo_safe_ewc_8bus_100pv", "core_B_curriculum", "core_C_baselines")
+currently exist in results/core_cache/ — see cache_index.json. Caches D
+through K (ablation, hparam, scalability, robustness, transfer, deployment,
+protection, seasonal) are all missing, so most figures generated from a
+fresh checkout will still be synthetic; they are now just honestly labeled
+as such rather than silently presented as real. Run the relevant Core
+training (see EXPERIMENT_GUIDE.md) to replace them with real data.
 """
 
 import argparse
@@ -515,7 +517,9 @@ def fig_05_objective_vs_pv():
     """Fig 5: Objective vs PV — from Core B curriculum evaluations."""
     logger.info("\\n[Fig 05] Objective Function vs. PV Penetration")
     data = load_cache("core_B_curriculum")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 05: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         pv_levels = [0.0, 0.25, 0.5, 0.75, 1.0]
         data = {"task_evaluations": [{pv: {"objective": 1.0 + pv * 1.5 + np.random.rand() * 0.3} for pv in pv_levels} for _ in range(10)]}
     
@@ -538,6 +542,9 @@ def fig_05_objective_vs_pv():
     ax.set_xticklabels([f"{int(p*100)}%" for p in pv_levels])
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=11)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(5, "figs_01_10"))
 
 
@@ -549,7 +556,9 @@ def fig_06_cti_vs_pv():
     """Fig 6: CTI vs PV — from Core B curriculum evaluations."""
     logger.info("\\n[Fig 06] CTI Violation Rate vs. PV Penetration")
     data = load_cache("core_B_curriculum")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 06: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         pv_levels = [0.0, 0.25, 0.5, 0.75, 1.0]
         data = {"task_evaluations": [{pv: {"cti_rate": max(0, 0.5 - pv * 0.4 + np.random.rand() * 0.1)} for pv in pv_levels} for _ in range(10)]}
     
@@ -571,6 +580,9 @@ def fig_06_cti_vs_pv():
     ax.set_xticks(pv_levels)
     ax.set_xticklabels([f"{int(p*100)}%" for p in pv_levels])
     ax.grid(True, alpha=0.3)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(6, "figs_01_10"))
 
 
@@ -582,7 +594,9 @@ def fig_07_curriculum():
     """Fig 7: Curriculum progression — from Core B."""
     logger.info("\\n[Fig 07] Curriculum Learning Progression")
     data = load_cache("core_B_curriculum")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 07: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"with_ewc": [{"task_performances": np.array([[0.8,0,0,0,0],[0.78,0.82,0,0,0],[0.75,0.80,0.85,0,0],[0.73,0.78,0.83,0.87,0],[0.72,0.77,0.82,0.86,0.88]])}]}
     
     ewc_mats = [r["task_performances"] for r in data.get("with_ewc", [])]
@@ -604,6 +618,9 @@ def fig_07_curriculum():
                 ax.text(j, i, f"{avg_mat[i, j]:.2f}", ha="center", va="center", fontsize=10, 
                        color="white" if avg_mat[i, j] < 0.5 else "black")
     plt.colorbar(im, ax=ax, shrink=0.8, label="Performance")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(7, "figs_01_10"))
 
 
@@ -615,7 +632,9 @@ def fig_08_attention_weights():
     """Fig 8: Attention weights heatmap — from Core A final snapshot."""
     logger.info("\\n[Fig 08] Learned GNN Attention Weights")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 08: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         n_agents = 7
         data = {f"attention_snap_{n_agents}_mean": np.random.dirichlet(np.ones(n_agents) * 3, n_agents)}
     
@@ -643,6 +662,9 @@ def fig_08_attention_weights():
     ax.set_title("Distribution of Attention Weights", fontsize=12)
     ax.grid(True, alpha=0.3)
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
     save_fig(fig, get_fig_path(8, "figs_01_10"))
 
 
@@ -654,7 +676,9 @@ def fig_09_cti_violations():
     """Fig 9: CTI dynamics — from Core A."""
     logger.info("\\n[Fig 09] CTI Violation Dynamics During Training")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 09: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         n_eps = 2000
         data = {"episodes": np.arange(n_eps), "cti_violation_rates_mean": np.maximum(0, 80 * np.exp(-np.arange(n_eps) / 400) + np.random.randn(n_eps) * 2),
                 "cumulative_violations_mean": np.cumsum(np.random.poisson(2, n_eps)), "global_returns_mean": -5 + 8 * (1 - np.exp(-np.arange(n_eps) / 300))}
@@ -696,6 +720,9 @@ def fig_09_cti_violations():
     ax.set_title("Safety Projection Frequency", fontsize=11)
     ax.grid(True, alpha=0.3)
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
     save_fig(fig, get_fig_path(9, "figs_01_10"))
 
 
@@ -707,7 +734,9 @@ def fig_10_lagrange_multipliers():
     """Fig 10: Lagrange evolution — from Core A."""
     logger.info("\\n[Fig 10] Lagrange Multiplier Evolution")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 10: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         n_eps = 2000
         data = {"episodes": np.arange(n_eps), "lagrange_norms_mean": 0.5 + 8 * (1 - np.exp(-np.arange(n_eps) / 300)) + np.random.randn(n_eps) * 0.2,
                 "lagrange_norms_std": np.ones(n_eps) * 0.5}
@@ -724,6 +753,9 @@ def fig_10_lagrange_multipliers():
     ax.set_title("Figure 10 — Lagrange Multiplier Evolution per P/B Pair", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
     save_fig(fig, get_fig_path(10, "figs_01_10"))
 
 
@@ -735,7 +767,9 @@ def fig_11_nemenyi():
     """Fig 11: Nemenyi test — from Core C baseline comparison."""
     logger.info("\\n[Fig 11] Nemenyi Critical Difference Diagram")
     data = load_cache("core_C_baselines")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 11: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -761,6 +795,9 @@ def fig_11_nemenyi():
     
     ax.set_title("Figure 11 — Nemenyi Critical Difference Diagram (alpha = 0.05)", fontsize=13)
     ax.axis("off")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_C_baselines cache missing")
     save_fig(fig, get_fig_path(11, "figs_11_20"))
 
 
@@ -838,7 +875,9 @@ def fig_13_communication_stress():
     """Fig 13: Performance under communication stress — from Core G."""
     logger.info("\\n[Fig 13] Communication Stress Robustness")
     data = load_cache("core_G_robustness")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 13: 'core_G_robustness' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"communication": {"packet_loss": {pl: max(0, 0.85 - pl * 0.8) for pl in [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]},
                 "latency": {lat: max(0, 0.85 - lat / 1000 * 0.3) for lat in [0, 100, 200, 300, 400, 500]}}}
     
@@ -866,6 +905,9 @@ def fig_13_communication_stress():
     ax.set_title("Latency Impact", fontsize=12)
     ax.grid(True, alpha=0.3)
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_G_robustness cache missing")
     save_fig(fig, get_fig_path(13, "figs_11_20"))
 
 
@@ -904,7 +946,9 @@ def fig_15_scalability():
     """Fig 15: Scalability — from Core F."""
     logger.info("\\n[Fig 15] Scalability Analysis")
     data = load_cache("core_F_scalability")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 15: 'core_F_scalability' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {
             "3bus": {"n_relays": 6, "train_time": 45, "final_performance": 0.92},
             "8bus": {"n_relays": 14, "train_time": 120, "final_performance": 0.85},
@@ -947,6 +991,9 @@ def fig_15_scalability():
     ax.set_ylim(0.5, 1.0)
     ax.grid(True, alpha=0.3)
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_F_scalability cache missing")
     save_fig(fig, get_fig_path(15, "figs_11_20"))
 
 # ==================================================================
@@ -957,7 +1004,9 @@ def fig_16_ewc_effectiveness():
     """Fig 16: EWC effectiveness — from Core B."""
     logger.info("\\n[Fig 16] EWC Effectiveness")
     data = load_cache("core_B_curriculum")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 16: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"with_ewc": [{"task_performances": np.array([[0.85,0,0,0,0],[0.83,0.84,0,0,0],[0.82,0.83,0.84,0,0],[0.81,0.82,0.83,0.84,0],[0.80,0.81,0.82,0.83,0.84]])}],
                 "without_ewc": [{"task_performances": np.array([[0.85,0,0,0,0],[0.70,0.84,0,0,0],[0.55,0.68,0.83,0,0],[0.45,0.52,0.65,0.82,0],[0.35,0.42,0.50,0.60,0.80]])}]}
     
@@ -995,6 +1044,9 @@ def fig_16_ewc_effectiveness():
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(16, "figs_11_20"))
 
 
@@ -1080,7 +1132,9 @@ def fig_20_byzantine():
     """Fig 20: Byzantine resilience — from Core G."""
     logger.info("\\n[Fig 20] Byzantine Agent Detection")
     data = load_cache("core_G_robustness")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 20: 'core_G_robustness' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"byzantine": {"random": 0.72, "collusion": 0.62, "fdi": 0.67}}
     
     byz = data.get("byzantine", {})
@@ -1097,6 +1151,9 @@ def fig_20_byzantine():
     ax.set_title("Figure 20 — Byzantine Agent Detection via Trust Score Evolution", fontsize=13)
     ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3, axis="y")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_G_robustness cache missing")
     save_fig(fig, get_fig_path(20, "figs_11_20"))
 
 
@@ -1108,7 +1165,9 @@ def fig_21_action_projection():
     """Fig 21: Action projection — from Core A safety activation data."""
     logger.info("\\n[Fig 21] Action Projection Efficacy")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 21: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         n_eps = 2000
         data = {"episodes": np.arange(n_eps), "safety_activations_mean": 50 * np.exp(-np.arange(n_eps) / 300) + np.random.randn(n_eps) * 2,
                 "safety_activations_std": np.ones(n_eps) * 3}
@@ -1125,6 +1184,9 @@ def fig_21_action_projection():
     ax.set_title("Figure 21 — Action Projection Efficacy During Training", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
     save_fig(fig, get_fig_path(21, "figs_21_30"))
 
 
@@ -1136,7 +1198,9 @@ def fig_22_bandwidth_tradeoff():
     """Fig 22: Bandwidth tradeoff — from Core G."""
     logger.info("\\n[Fig 22] Bandwidth vs. Performance Trade-off")
     data = load_cache("core_G_robustness")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 22: 'core_G_robustness' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"bandwidth": {1: {"performance": 0.80, "bandwidth_mb": 12}, 2: {"performance": 0.85, "bandwidth_mb": 24},
                               3: {"performance": 0.84, "bandwidth_mb": 36}, 4: {"performance": 0.82, "bandwidth_mb": 48}}}
     
@@ -1162,6 +1226,9 @@ def fig_22_bandwidth_tradeoff():
     
     fig.suptitle("Figure 22 — Bandwidth vs. Performance Trade-off", fontsize=13)
     fig.tight_layout()
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_G_robustness cache missing")
     save_fig(fig, get_fig_path(22, "figs_21_30"))
 
 
@@ -1173,7 +1240,9 @@ def fig_23_unseen_faults():
     """Fig 23: Generalization to unseen fault types — from Core H."""
     logger.info("\\n[Fig 23] Generalization to Unseen Fault Types")
     data = load_cache("core_H_transfer")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 23: 'core_H_transfer' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"unseen_faults": {"bolted": 0.85, "high-impedance": 0.78, "evolving": 0.72, "simultaneous": 0.68}}
     
     faults = data.get("unseen_faults", {})
@@ -1190,6 +1259,9 @@ def fig_23_unseen_faults():
     ax.set_title("Figure 23 — Generalization to Unseen Fault Types", fontsize=13)
     ax.set_xlim(0, 1)
     ax.grid(True, alpha=0.3, axis="x")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_H_transfer cache missing")
     save_fig(fig, get_fig_path(23, "figs_21_30"))
 
 
@@ -1201,7 +1273,9 @@ def fig_24_sensor_robustness():
     """Fig 24: Sensor robustness — from Core G."""
     logger.info("\\n[Fig 24] Sensor Robustness")
     data = load_cache("core_G_robustness")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 24: 'core_G_robustness' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"sensor": {"noise": {0.0: 0.85, 0.05: 0.75, 0.1: 0.65, 0.15: 0.55, 0.2: 0.45},
                            "bias": {0.0: 0.85, 0.05: 0.78, 0.1: 0.70},
                            "missing": {0.0: 0.85, 0.1: 0.80, 0.2: 0.72}}}
@@ -1240,6 +1314,9 @@ def fig_24_sensor_robustness():
     ax.set_title("Missing Measurements", fontsize=12)
     ax.grid(True, alpha=0.3)
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_G_robustness cache missing")
     save_fig(fig, get_fig_path(24, "figs_21_30"))
 
 
@@ -1251,7 +1328,9 @@ def fig_25_zero_shot_transfer():
     """Fig 25: Zero-shot transfer — from Core H."""
     logger.info("\\n[Fig 25] Zero-Shot Transfer 8->30 Bus")
     data = load_cache("core_H_transfer")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 25: 'core_H_transfer' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"zero_shot": {"warm_start": {"performance": 0.75, "convergence_ep": 500}, "cold_start": {"performance": 0.20, "convergence_ep": 2000}}}
     
     zs = data.get("zero_shot", {})
@@ -1281,6 +1360,9 @@ def fig_25_zero_shot_transfer():
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_H_transfer cache missing")
     save_fig(fig, get_fig_path(25, "figs_21_30"))
 
 # ==================================================================
@@ -1291,7 +1373,9 @@ def fig_29_ewc_continual():
     """Fig 29: EWC visualization — from Core B."""
     logger.info("\\n[Fig 29] EWC Continual Adaptation")
     data = load_cache("core_B_curriculum")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 29: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"with_ewc": [{"task_performances": np.random.rand(5, 5) * 0.3 + 0.6}],
                 "without_ewc": [{"task_performances": np.random.rand(5, 5) * 0.3 + 0.4}]}
     
@@ -1325,6 +1409,9 @@ def fig_29_ewc_continual():
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(29, "figs_21_30"))
 
 
@@ -1336,7 +1423,9 @@ def fig_31_multi_metric_ranking():
     """Fig 31: Overall performance ranking — from Core C."""
     logger.info("\\n[Fig 31] Multi-Metric Ranking")
     data = load_cache("core_C_baselines")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 31: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -1363,6 +1452,9 @@ def fig_31_multi_metric_ranking():
     
     ax.set_title("Figure 31 — Overall Performance Ranking with Critical Difference", fontsize=13)
     ax.axis("off")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_C_baselines cache missing")
     save_fig(fig, get_fig_path(31, "figs_31_40"))
 
 
@@ -1374,7 +1466,9 @@ def fig_32_effect_size():
     """Fig 32: Effect size — MAPPO-Safe-EWC vs baselines from Core C."""
     logger.info("\\n[Fig 32] Effect Size Analysis")
     data = load_cache("core_C_baselines")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 32: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -1402,6 +1496,9 @@ def fig_32_effect_size():
     ax.set_title("Figure 32 — Effect Size Analysis: MAPPO-Safe-EWC vs. Baselines", fontsize=13)
     ax.legend(fontsize=9, loc="lower right")
     ax.grid(True, alpha=0.3, axis="x")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_C_baselines cache missing")
     save_fig(fig, get_fig_path(32, "figs_31_40"))
 
 
@@ -1413,7 +1510,9 @@ def fig_33_radar_chart():
     """Fig 33: Multi-dimensional method comparison — from Core C."""
     logger.info("\\n[Fig 33] Multi-Dimensional Method Comparison")
     data = load_cache("core_C_baselines")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 33: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -1440,6 +1539,9 @@ def fig_33_radar_chart():
     ax.set_title("Figure 33 — Multi-Dimensional Method Comparison (8-Bus, 100% PV)", fontsize=13, y=1.08)
     ax.legend(fontsize=9, loc="upper right", bbox_to_anchor=(1.3, 1.1))
     ax.grid(True)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_C_baselines cache missing")
     save_fig(fig, get_fig_path(33, "figs_31_40"))
 
 
@@ -1561,7 +1663,9 @@ def fig_37_per_agent_curves():
     """Fig 37: Per-agent curves — from Core A per-agent reward data."""
     logger.info("\\n[Fig 37] Per-Agent Learning Curves")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 37: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         n_eps, n_agents = 2000, 7
         data = {"episodes": np.arange(n_eps), "per_agent_returns_mean": np.random.randn(n_eps, n_agents).cumsum(axis=0) * 0.01 + np.linspace(-1, 1, n_eps)[:, None]}
     
@@ -1609,6 +1713,9 @@ def fig_37_per_agent_curves():
     ax.grid(True, alpha=0.3, axis="x")
     ax.invert_yaxis()
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
     save_fig(fig, get_fig_path(37, "figs_31_40"))
 
 
@@ -1620,7 +1727,9 @@ def fig_38_attention_evolution():
     """Fig 38: Attention evolution — from Core A attention snapshots."""
     logger.info("\\n[Fig 38] Attention Weight Evolution")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 38: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         n_agents = 14
         data = {f"attention_snap_0": np.ones((n_agents, n_agents)) / n_agents,
                 f"attention_snap_100": np.random.dirichlet(np.ones(n_agents), n_agents),
@@ -1670,6 +1779,9 @@ def fig_38_attention_evolution():
     ax.legend(fontsize=8, ncol=len(snapshots))
     ax.grid(True, alpha=0.3)
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
     save_fig(fig, get_fig_path(38, "figs_31_40"))
 
 
@@ -1681,7 +1793,9 @@ def fig_39_ablation():
     """Fig 39: Ablation — from Core D."""
     logger.info("\\n[Fig 39] Systematic Ablation Study")
     data = load_cache("core_D_ablation")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 39: 'core_D_ablation' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         configs = ["MAPPO", "MAPPO+GNN", "MAPPO+GNN+Safe", "MAPPO+GNN+Safe+EWC", "MAPPO+GNN+Safe+EWC+Curr"]
         data = {cfg: [{"OF": 5.0 - i * 0.5 + np.random.rand() * 0.2, "CTI": 5.0 - i * 0.8 + np.random.rand() * 0.5} for _ in range(10)] for i, cfg in enumerate(configs)}
     
@@ -1727,6 +1841,9 @@ def fig_39_ablation():
     ax.axvline(0, color="white", lw=1)
     ax.grid(True, alpha=0.3, axis="x")
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_D_ablation cache missing")
     save_fig(fig, get_fig_path(39, "figs_31_40"))
 
 
@@ -1738,7 +1855,9 @@ def fig_40_hyperparameter():
     """Fig 40: Hyperparameter grid — from Core E."""
     logger.info("\\n[Fig 40] Hyperparameter Sensitivity Heatmap")
     data = load_cache("core_E_hparam")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 40: 'core_E_hparam' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = []
         for lamb in [1e2, 1e3, 1e4, 1e5, 1e6]:
             for alpha in [1e-5, 1e-4, 1e-3, 1e-2]:
@@ -1772,6 +1891,9 @@ def fig_40_hyperparameter():
         ax.set_title(f"d_h = {hidden}", fontsize=10)
         plt.colorbar(im, ax=ax, shrink=0.7, label="OF (s)")
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_E_hparam cache missing")
     save_fig(fig, get_fig_path(40, "figs_31_40"))
 
 
@@ -1783,7 +1905,9 @@ def fig_41_sample_efficiency():
     """Fig 41: Sample efficiency — from Core A convergence data."""
     logger.info("\\n[Fig 41] Sample Efficiency Comparison")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 41: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         n_eps = 2000
         data = {"global_returns_mean": -5 + 8 * (1 - np.exp(-np.arange(n_eps) / 300))}
     
@@ -1804,6 +1928,9 @@ def fig_41_sample_efficiency():
     ax.set_title("Figure 41 — Sample Efficiency Comparison", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
     save_fig(fig, get_fig_path(41, "figs_31_40"))
 
 
@@ -1815,7 +1942,9 @@ def fig_42_warm_start():
     """Fig 42: Warm-start vs cold-start — from Core B extension."""
     logger.info("\\n[Fig 42] Warm-Start vs. Cold-Start Initialization")
     data = load_cache("core_B_curriculum")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 42: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"with_ewc": [{"task_performances": np.array([[0.85,0,0,0,0],[0.83,0.84,0,0,0],[0.82,0.83,0.84,0,0],[0.81,0.82,0.83,0.84,0],[0.80,0.81,0.82,0.83,0.84]])}]}
     
     ewc_mats = [r["task_performances"] for r in data.get("with_ewc", [])]
@@ -1837,6 +1966,9 @@ def fig_42_warm_start():
     ax.legend(fontsize=11)
     ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3, axis="y")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(42, "figs_31_40"))
 
 # ==================================================================
@@ -1847,7 +1979,9 @@ def fig_43_coordination_diagram():
     """Fig 43: Coordination diagram — from Core J."""
     logger.info("\\n[Fig 43] Relay Coordination Time-Distance Diagram")
     data = load_cache("core_J_protection")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 43: 'core_J_protection' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         n_pairs = 21
         distances = np.linspace(0, 10, n_pairs)
         op_times_primary = 0.1 + 0.05 * distances + np.random.normal(0, 0.01, n_pairs)
@@ -1870,6 +2004,9 @@ def fig_43_coordination_diagram():
     ax.set_title("Figure 43 — Relay Coordination Time-Distance Diagram (8-Bus, 100% PV)", fontsize=13)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_J_protection cache missing")
     save_fig(fig, get_fig_path(43, "figs_41_50"))
 
 
@@ -1881,7 +2018,9 @@ def fig_44_fault_contribution():
     """Fig 44: Fault current contribution pie chart — from Core J."""
     logger.info("\\n[Fig 44] Fault Current Contribution Pie Chart")
     data = load_cache("core_J_protection")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 44: 'core_J_protection' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"fault_contribution": {"PV": 35, "Grid": 45, "Synchronous": 20}}
     
     contrib = data.get("fault_contribution", {"PV": 35, "Grid": 45, "Synchronous": 20})
@@ -1897,6 +2036,9 @@ def fig_44_fault_contribution():
         autotext.set_color('white')
         autotext.set_fontweight('bold')
     ax.set_title("Figure 44 — Fault Current Contribution Pie Chart (100% PV)", fontsize=13)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_J_protection cache missing")
     save_fig(fig, get_fig_path(44, "figs_41_50"))
 
 
@@ -1908,7 +2050,9 @@ def fig_45_daily_profile():
     """Fig 45: Daily PV generation profile — from Core J."""
     logger.info("\\n[Fig 45] Daily PV Profile & Adaptive Relay Response")
     data = load_cache("core_J_protection")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 45: 'core_J_protection' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         hours = np.arange(24)
         pv_gen = np.maximum(0, np.sin(np.pi * hours / 12) * 100)
         relay_response = 0.2 + 0.1 * (1 - pv_gen / 100)
@@ -1941,6 +2085,9 @@ def fig_45_daily_profile():
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
     ax1.grid(True, alpha=0.3)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_J_protection cache missing")
     save_fig(fig, get_fig_path(45, "figs_41_50"))
 
 
@@ -1952,7 +2099,9 @@ def fig_46_relay_curves():
     """Fig 46: Relay operating curves — from Core J."""
     logger.info("\\n[Fig 46] Relay Operating Characteristic Curves")
     data = load_cache("core_J_protection")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 46: 'core_J_protection' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         current_multiples = np.linspace(1, 20, 100)
         tds, psm = 0.5, 2.0
         op_time = tds * 0.14 / ((current_multiples / psm) ** 0.02 - 1)
@@ -1977,6 +2126,9 @@ def fig_46_relay_curves():
     ax.set_ylim(0, 5)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_J_protection cache missing")
     save_fig(fig, get_fig_path(46, "figs_41_50"))
 
 
@@ -1988,7 +2140,9 @@ def fig_47_sympathetic_tripping():
     """Fig 47: Sympathetic tripping prevention — from Core J."""
     logger.info("\\n[Fig 47] Sympathetic Tripping Prevention Analysis")
     data = load_cache("core_J_protection")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 47: 'core_J_protection' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"sympathetic": {"cases_prevented": 15, "cases_total": 20, "prevention_rate": 0.75}}
     
     sym = data.get("sympathetic", {"cases_prevented": 15, "cases_total": 20, "prevention_rate": 0.75})
@@ -2024,6 +2178,9 @@ def fig_47_sympathetic_tripping():
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3, axis="y")
     
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_J_protection cache missing")
     save_fig(fig, get_fig_path(47, "figs_41_50"))
 
 
@@ -2035,7 +2192,9 @@ def fig_48_shap():
     """Fig 48: SHAP feature importance — from Core A checkpoint."""
     logger.info("\\n[Fig 48] SHAP Feature Importance")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 48: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         pass
     
     np.random.seed(42)
@@ -2053,6 +2212,9 @@ def fig_48_shap():
     ax.set_title("Figure 48 — SHAP Feature Importance for Relay Decisions", fontsize=13)
     ax.invert_yaxis()
     ax.grid(True, alpha=0.3, axis="x")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
     save_fig(fig, get_fig_path(48, "figs_41_50"))
 
 
@@ -2064,7 +2226,9 @@ def fig_49_decision_boundary():
     """Fig 49: Decision boundary — 2D projection from Core A."""
     logger.info("\\n[Fig 49] Decision Boundary Visualization")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 49: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         pass
     
     np.random.seed(42)
@@ -2087,6 +2251,9 @@ def fig_49_decision_boundary():
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     plt.colorbar(scatter, ax=ax, label="Action Class")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
     save_fig(fig, get_fig_path(49, "figs_41_50"))
 
 
@@ -2098,7 +2265,9 @@ def fig_50_critical_pairs():
     """Fig 50: Critical pair identification — from Core A violation patterns."""
     logger.info("\\n[Fig 50] Critical P/B Pair Identification")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 50: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         pass
     
     np.random.seed(42)
@@ -2115,6 +2284,9 @@ def fig_50_critical_pairs():
     ax.set_title("Figure 50 — Critical P/B Pair Identification & Priority Ranking", fontsize=13)
     ax.invert_yaxis()
     ax.grid(True, alpha=0.3, axis="x")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
     save_fig(fig, get_fig_path(50, "figs_41_50"))
 
 
@@ -2206,7 +2378,9 @@ def fig_54_adversarial():
     """Fig 54: Adversarial robustness — from Core G."""
     logger.info("\\n[Fig 54] Adversarial Robustness")
     data = load_cache("core_G_robustness")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 54: 'core_G_robustness' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"adversarial": {"fgsm": {0.01: 0.82, 0.05: 0.70, 0.1: 0.55, 0.2: 0.35}, "pgd": {0.01: 0.80, 0.05: 0.65, 0.1: 0.45, 0.2: 0.20}}}
     
     adv = data.get("adversarial", {})
@@ -2224,6 +2398,9 @@ def fig_54_adversarial():
     ax.legend(fontsize=11)
     ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_G_robustness cache missing")
     save_fig(fig, get_fig_path(54, "figs_51_58"))
 
 
@@ -2235,7 +2412,9 @@ def fig_55_comparison_table():
     """Fig 55: Comprehensive method comparison table — from Core C."""
     logger.info("\\n[Fig 55] Comprehensive Method Comparison Table")
     data = load_cache("core_C_baselines")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 55: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -2266,6 +2445,9 @@ def fig_55_comparison_table():
         table[(0, i)].set_text_props(weight='bold', color='white')
     
     ax.set_title("Figure 55 — Comprehensive Method Comparison Table (8-Bus, 100% PV)", fontsize=13, pad=20)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_C_baselines cache missing")
     save_fig(fig, get_fig_path(55, "figs_51_58"))
 
 
@@ -2277,7 +2459,9 @@ def fig_56_pareto_front():
     """Fig 56: Multi-objective Pareto front — from Core C."""
     logger.info("\\n[Fig 56] Multi-Objective Pareto Front")
     data = load_cache("core_C_baselines")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 56: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -2306,6 +2490,9 @@ def fig_56_pareto_front():
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     plt.colorbar(scatter, ax=ax, label="Combined Score")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_C_baselines cache missing")
     save_fig(fig, get_fig_path(56, "figs_51_58"))
 
 
@@ -2317,7 +2504,9 @@ def fig_57_bootstrap_ci():
     """Fig 57: Bootstrap CI convergence — from Core A."""
     logger.info("\\n[Fig 57] Bootstrap Confidence Interval Convergence")
     data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 57: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         n_eps = 2000
         data = {"global_returns_mean": -5 + 8 * (1 - np.exp(-np.arange(n_eps) / 300)),
                 "global_returns_std": np.ones(n_eps) * 0.8}
@@ -2343,6 +2532,9 @@ def fig_57_bootstrap_ci():
     ax.set_xscale("log")
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
     save_fig(fig, get_fig_path(57, "figs_51_58"))
 
 
@@ -2354,7 +2546,9 @@ def fig_58_seasonal():
     """Fig 58: Seasonal generalization — from Core K."""
     logger.info("\\n[Fig 58] Seasonal/Weather Generalization")
     data = load_cache("core_K_seasonal")
+    is_synthetic = data is None
     if data is None:
+        logger.warning("Fig 58: 'core_K_seasonal' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"spring": {"performance": 0.83, "pv_variability": 0.3}, "summer": {"performance": 0.80, "pv_variability": 0.5},
                 "autumn": {"performance": 0.84, "pv_variability": 0.25}, "winter": {"performance": 0.82, "pv_variability": 0.15}}
     
@@ -2384,6 +2578,9 @@ def fig_58_seasonal():
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
     ax1.grid(True, alpha=0.3, axis="y")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_K_seasonal cache missing")
     save_fig(fig, get_fig_path(58, "figs_51_58"))
 
 # ═════════════════════════════════════════════════════════════════
