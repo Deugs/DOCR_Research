@@ -53,9 +53,18 @@ class MLP:
         self.b3 = np.zeros(out_dim)
 
     def forward(self, x):
-        h1 = relu(self.W1 @ x + self.b1)
-        h2 = relu(self.W2 @ h1 + self.b2)
-        return self.W3 @ h2 + self.b3
+        """x: (in_dim,) single input, or (T, in_dim) batch — see
+        marl/marl_agents.py's MLP.forward for why batching this matters
+        (ES perturbation evaluation re-scores a whole rollout at once)."""
+        x = np.asarray(x)
+        if x.ndim == 1:
+            h1 = relu(self.W1 @ x + self.b1)
+            h2 = relu(self.W2 @ h1 + self.b2)
+            return self.W3 @ h2 + self.b3
+        else:
+            h1 = relu(x @ self.W1.T + self.b1)
+            h2 = relu(h1 @ self.W2.T + self.b2)
+            return h2 @ self.W3.T + self.b3
 
     def get_params(self):
         return np.concatenate([
@@ -112,13 +121,22 @@ class CentralizedGaussianActor:
 
         return action_norm, log_prob
 
-    def log_prob(self, obs, action_norm) -> float:
-        """Compute log probability of action."""
+    def log_prob(self, obs, action_norm):
+        """Compute log probability of action(s).
+
+        obs/action_norm of shape (obs_dim,)/(act_dim,) -> scalar float.
+        obs/action_norm of shape (T, obs_dim)/(T, act_dim) -> (T,) array,
+        replacing what used to require a Python loop of T individual
+        log_prob() calls at every ES perturbation evaluation.
+        """
+        obs = np.asarray(obs)
         mean = self.get_mean(obs)
         std = np.exp(np.clip(self.log_std, -4, 0))
         z = (action_norm - mean) / (std + 1e-8)
-        return float(np.sum(
-            -0.5 * (z**2 + 2*self.log_std + np.log(2*np.pi))))
+        terms = -0.5 * (z**2 + 2 * self.log_std + np.log(2 * np.pi))
+        if obs.ndim == 1:
+            return float(np.sum(terms))
+        return np.sum(terms, axis=-1)
 
     def decode_action(self, action_norm, ps_min, ps_max):
         """
@@ -165,6 +183,12 @@ class CentralizedCritic:
 
     def value(self, obs) -> float:
         return float(self.net.forward(obs)[0])
+
+    def value_batch(self, obs_batch: np.ndarray) -> np.ndarray:
+        """Batched form of value(): obs_batch (T, obs_dim) -> (T,) predictions
+        via one vectorized MLP.forward call instead of a Python loop over T
+        individual value() calls (used by the ES critic update)."""
+        return self.net.forward(obs_batch).ravel()
 
     def get_params(self):
         return self.net.get_params()
@@ -367,10 +391,7 @@ class SinglePPOTrainer:
             eps = self.rng.normal(0, sigma, len(theta))
             for sign in (+1, -1):
                 self.actor.set_all_params(theta + sign * eps)
-                new_lp = np.array([
-                    self.actor.log_prob(obs_batch[t], act_batch[t])
-                    for t in range(len(obs_batch))
-                ])
+                new_lp = self.actor.log_prob(obs_batch, act_batch)
                 ratio = np.exp(np.clip(new_lp - old_lp, -5, 5))
                 clip_r = np.clip(ratio, 1 - self.clip_eps, 1 + self.clip_eps)
                 surr = float(np.mean(np.minimum(ratio * adv_batch, clip_r * adv_batch)))
@@ -392,7 +413,7 @@ class SinglePPOTrainer:
             eps = self.rng.normal(0, sigma, len(theta))
             for sign in (+1, -1):
                 self.critic.set_params(theta + sign * eps)
-                pred = np.array([self.critic.value(obs_batch[t]) for t in range(len(obs_batch))])
+                pred = self.critic.value_batch(obs_batch)
                 loss = -float(np.mean((ret_batch - pred) ** 2))
                 noises.append(sign * eps)
                 losses.append(loss)
@@ -411,7 +432,7 @@ class SinglePPOTrainer:
 
             # Decode action for environment step
             TMS, PS = self.actor.decode_action(action_norm, self.env.ps_min, self.env.ps_max)
-            self.env.set_state(TMS, PS)
+            self.env.set_relay_settings(TMS, PS)
 
             next_obs, reward, done, info = self.env.step(action_norm)
 
@@ -445,14 +466,24 @@ class SinglePPOTrainer:
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
         return adv, ret
 
-    def train(self, total_steps=30000, verbose=True, log_every=2000):
-        """Train centralized PPO."""
+    def train(self, total_steps=30000, verbose=True, log_every=2000,
+              early_stop_patience=None, early_stop_min_delta=1e-4):
+        """Train centralized PPO.
+
+        early_stop_patience: if set, stop once this many consecutive
+        rollout evaluations pass without the best objective improving by
+        more than early_stop_min_delta. Disabled by default (None) — see
+        MAPPOMARLTrainer.train() in marl/marl_agents.py for the same
+        opt-in pattern and rationale.
+        """
         obs = self.env.reset()
         step = 0
         history = []
         best_OF = np.inf
         best_TMS = self.env.TMS.copy()
         best_PS = self.env.PS.copy()
+        no_improve_count = 0
+        early_stopped = False
         t0 = time.perf_counter()
 
         if verbose:
@@ -483,16 +514,25 @@ class SinglePPOTrainer:
             from network.relay_physics import objective_function
             OF_now, _, _ = objective_function(self.env.net, TMS, PS)
 
+            improved = OF_now < best_OF - early_stop_min_delta
             if OF_now < best_OF:
                 best_OF = OF_now
                 best_TMS = TMS.copy()
                 best_PS = PS.copy()
+            no_improve_count = 0 if improved else no_improve_count + 1
 
             history.append(OF_now)
 
             if verbose and step % log_every < self.rollout_len:
                 print(f"  step {step:6d}/{total_steps}  OF={OF_now:.4f}  best={best_OF:.4f}  "
                       f"t={time.perf_counter() - t0:.1f}s")
+
+            if early_stop_patience is not None and no_improve_count >= early_stop_patience:
+                early_stopped = True
+                if verbose:
+                    print(f"  Early stop at step {step}/{total_steps}: "
+                          f"no improvement > {early_stop_min_delta} for {no_improve_count} rollouts")
+                break
 
         elapsed = time.perf_counter() - t0
         if verbose:
@@ -506,6 +546,8 @@ class SinglePPOTrainer:
             "OF": best_OF,
             "history": history,
             "elapsed": elapsed,
+            "early_stopped": early_stopped,
+            "stopped_at_step": step,
         }
 
 
