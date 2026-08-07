@@ -22,7 +22,7 @@ Usage:
 """
 
 import sys, os, argparse
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
 from network.network_data import NETWORKS

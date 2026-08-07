@@ -307,13 +307,42 @@ change results:
     failed with `ModuleNotFoundError: No module named 'network'`. Fixed to
     match the repo-root-relative pattern used elsewhere.
 
-Note: a separate, pre-existing `sys.path` bug of the same shape (adding
-only the script's own directory, not the repo root) is present in roughly
-20 files under the top-level `experiments/` directory (e.g.
-`exp_fig14_n1_contingency.py`, `exp_fig18_inference_latency.py`, and most
-others there) — confirmed by running one directly. These were not touched
-here since they're unrelated to training efficiency; fixing them is a
-separate cleanup task.
+### 2.2.3 Standalone-invocation bugs fixed repo-wide (2026-08-07)
+
+A full sweep (`python3 <script> --help` from repo root, for every script
+with a `sys.path.insert`/`__main__` block) found and fixed every remaining
+instance of the `sys.path` bug noted above, plus a few unrelated crash
+bugs turned up by the same sweep:
+
+- ~25 files across `experiments/`, `mains/`, `marl/` (top level),
+  `marl/utils/`, and `evaluation/utils/` only added their own directory to
+  `sys.path`, not the repo root, so `from network...`/`from marl...`
+  failed immediately with `ModuleNotFoundError` whenever run directly
+  (they worked only when something else had already fixed up `sys.path`
+  first, e.g. via `run_thesis_experiments.py`'s direct-call path). Fixed
+  to the same repo-root-relative pattern used elsewhere.
+- `marl/experiments/attention_evolution.py` and
+  `marl/experiments/curriculum_trainer.py` each registered `--system`
+  twice with `argparse`, which raises `ArgumentError` unconditionally —
+  neither script could run at all, regardless of arguments.
+- `mains/main1.py` imported `MARLTrainer`, a class that no longer exists
+  in `marl/marl_agents.py` (renamed to `MAPPOMARLTrainer` — every other
+  `mains/main*.py` already used the new name). Fixed the import and the
+  two call sites.
+- `phase2_scripts/*.py` (5 of 7 files) assumed the `exp_fig*.py` file they
+  wrap lives alongside them — true only if this legacy adapter package
+  (see `README_PHASE2_ADAPTERS.md`) had been copied over the repo root as
+  its own instructions describe, which never happened. In this repo the
+  real files live in `marl/experiments/` or `marl/utils/`. Pointed each
+  adapter's `sys.path` entry at the real location instead of assuming
+  co-location. (Confirmed unreferenced by any live pipeline code — these
+  adapters are superseded by same-named, more capable versions already in
+  `marl/experiments/`/`marl/utils/` — but fixed rather than removed since
+  removal wasn't asked for.)
+
+Verified: every script in this sweep now reaches its own `--help` output
+(or, for scripts without argparse, runs past the import section) instead
+of crashing on import.
 
 ### 2.3 Running phases individually
 

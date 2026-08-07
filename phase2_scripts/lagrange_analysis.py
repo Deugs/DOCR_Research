@@ -8,9 +8,12 @@ import argparse
 import sys
 import os
 
-_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+# The real exp_fig*.py this adapter wraps lives in marl/utils/, not alongside this file (see README_PHASE2_ADAPTERS.md —
+# this package was never actually merged into that layout).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_TARGET_DIR = os.path.join(_REPO_ROOT, "marl", "utils")
+if _TARGET_DIR not in sys.path:
+    sys.path.insert(0, _TARGET_DIR)
 
 from exp_fig10_lagrange_evolution import main as fig10_main
 
