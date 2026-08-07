@@ -238,6 +238,31 @@ GA-SQP/HWOA/HHO/JAYA/EEO with real Wilcoxon/Mann-Whitney + Cliff's delta
 testing) are genuine — they train/evaluate real models when their Core cache
 is present.
 
+### 2.2.2 Training efficiency (2026-08-07)
+
+Three changes reduce how long real training actually takes, none of which
+change results:
+
+- `marl/marl_agents.py`'s ES actor/critic updates now batch their forward
+  passes across a whole rollout in one vectorized call instead of looping
+  per-timestep — ~25x faster actor updates, ~5x faster critic updates,
+  verified bit-identical to the old per-timestep loop.
+- `MAPPOMARLTrainer.train()` accepts `early_stop_patience` (default `None`,
+  opt-in) to stop once the objective hasn't improved in that many
+  consecutive rollouts, instead of always running the full fixed
+  `total_steps` budget. Gated on reaching the final curriculum stage when
+  curriculum learning is enabled.
+- `baselines/experiments/unified_exp_fig05.py --n_workers N` parallelizes
+  the (method, PV level, seed) job grid across N processes — each job is
+  independently seeded and self-contained, so results are bit-identical
+  regardless of N (verified). Each worker is pinned to 1 BLAS thread via
+  `threadpoolctl`; without this, N worker processes each trying to use all
+  available cores for NumPy/BLAS oversubscribes the machine and makes
+  `--n_workers 4` *slower* than sequential, not faster — measured directly
+  during development (1m4s sequential vs 1m11s naively-parallel, vs 18s
+  once thread-pinned). Default is `--n_workers 1` (sequential); pass a
+  worker count matching available cores to use this.
+
 ### 2.3 Running phases individually
 
 If a phase fails (e.g. power outage mid-run), resume from that phase:
