@@ -173,6 +173,53 @@ echo $!   # save PID
 | 8 | Statistical aggregation + ablation/hparam (Figs 11, 31–33, 55–57, 39, 40, 42) | Figures 11, 31–33, 39, 40, 42, 55–57 |
 | 9 | Final compilation report | `results/reports/final_report.json` |
 
+### 2.2.1 Data provenance warning — synthetic vs. real figures
+
+**As of 2026-08-07, the following figures are generated from hand-typed literal
+data arrays in `evaluation/experiments/*.py`, not from a trained model or a
+real experiment run** (see `experiments/GAP_ANALYSIS.md` for how this was
+found). Each affected script now prints a `[WARNING] SYNTHETIC DATA` line and
+watermarks its own output — do not cite these as experimental evidence until
+they are replaced with a real data pipeline:
+
+| Figure | Script | Status |
+|--------|--------|--------|
+| 13 (comm stress) | `evaluation/experiments/communication_stress.py` | synthetic |
+| 14 (N-1 contingency) | `evaluation/experiments/n1_contingency.py` | synthetic |
+| 15 (scalability) | `evaluation/experiments/scalability_sweep.py` | synthetic |
+| 18 (inference latency) | `deployment/benchmark_latency.py` | synthetic (lognormal noise, no model loaded) |
+| 20 (Byzantine resilience) | `evaluation/experiments/byzantine_resilience.py` | synthetic |
+| 22 (bandwidth tradeoff) | `evaluation/experiments/bandwidth_tradeoff.py` | synthetic |
+| 23 (unseen faults) | `environment/experiments/unseen_faults.py` | synthetic |
+| 24 (sensor robustness) | `environment/experiments/sensor_degradation.py` | synthetic |
+| 25 (zero-shot transfer) | `evaluation/experiments/zero_shot_transfer.py` | synthetic |
+| 29 (EWC continual learning) | `marl/experiments/ewc_visualization.py` | synthetic (also had a duplicate `--system` argparse registration that crashed every invocation — fixed) |
+| 36 (action space geometry) | `environment/experiments/action_space_geometry.py` | synthetic |
+| 41 (sample efficiency) | `marl/utils/sample_efficiency.py` | synthetic |
+| 42 (warm start) | `marl/experiments/warm_start.py` | synthetic (same duplicate-argparse crash as Fig 29 — fixed) |
+| 43 (coordination diagram) | `network/utils/coordination_diagram.py` | synthetic |
+| 44 (fault contribution) | `network/utils/fault_contribution.py` | synthetic |
+| 45 (daily PV profile) | `data/experiments/daily_adaptive_response.py` | synthetic |
+| 46 (relay curves) | `network/utils/relay_curves.py` | synthetic |
+| 47 (sympathetic tripping) | `network/utils/sympathetic_trip_cases.py` | synthetic |
+| 48 (SHAP) | `evaluation/experiments/shap_analysis.py` | synthetic |
+| 49 (decision boundary) | `evaluation/experiments/decision_boundary.py` | synthetic |
+| 50 (critical pairs) | `network/utils/critical_pairs.py` | synthetic |
+| 53 (model compression) | `evaluation/experiments/model_compression.py` | synthetic |
+| 54 (adversarial robustness) | `environment/experiments/adversarial_robustness.py` | synthetic |
+| 58 (seasonal generalization) | `evaluation/experiments/seasonal_generalization.py` | synthetic |
+
+That is 23 of the ~58 thesis figures. All 23 share the same "CLI Adapter"
+docstring pattern and were almost certainly generated in one batch; each now
+imports `evaluation.experiments._synthetic_label.mark_synthetic` and
+watermarks its own output.
+
+Figures produced by `evaluation/utils/exp_fig06_cti_violation_rate.py` and the
+repaired `baselines/experiments/unified_exp_fig05.py` (Fig 5, now including
+GA-SQP/HWOA/HHO/JAYA/EEO with real Wilcoxon/Mann-Whitney + Cliff's delta
+testing) are genuine — they train/evaluate real models. Everything else not
+listed above was not audited as part of this pass; verify before citing.
+
 ### 2.3 Running phases individually
 
 If a phase fails (e.g. power outage mid-run), resume from that phase:

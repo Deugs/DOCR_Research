@@ -141,7 +141,7 @@ def evaluate_traditional(net, env, n_eval: int, seed: int) -> Dict:
         ep_of = []
         
         # Use fixed settings throughout
-        env.set_relay_settings(fixed_TDS, fixed_PSM)
+        env.set_state(fixed_TDS, fixed_PSM)
         
         while not done:
             obs, _, done, info = env.step(np.zeros((env.n_agents, env.ACT_DIM)))
@@ -173,7 +173,7 @@ def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
     results = {method: {pv: [] for pv in PV_LEVELS} for method in METHODS}
     
     for method in METHODS:
-        logger.info("\\n=== Method: %s ===", method)
+        logger.info("\n=== Method: %s ===", method)
         for pv in PV_LEVELS:
             logger.info("  PV level: %.0f%%", pv * 100)
             seed_results = []
@@ -247,14 +247,15 @@ def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
     logger.info("Saved: %s", out_path / "fig05_pv_sweep.png")
     
     # Summary table
-    print("\\n" + "=" * 80)
+    print("\n" + "=" * 80)
     print("PV SWEEP EVALUATION SUMMARY")
     print("=" * 80)
-    print(f"{'Method':>20} {'0%':>10} {'25%':>10} {'50%':>10} {'75%':>10} {'100%':>10}")
+    header = f"{'Method':>20}" + "".join(f"{f'{int(p*100)}%':>10}" for p in PV_LEVELS)
+    print(header)
     print("-" * 80)
     for method in METHODS:
         vals = aggregated[method]["mean_OF"]
-        print(f"{method:>20} {vals[0]:>10.4f} {vals[1]:>10.4f} {vals[2]:>10.4f} {vals[3]:>10.4f} {vals[4]:>10.4f}")
+        print(f"{method:>20}" + "".join(f"{v:>10.4f}" for v in vals))
     print("=" * 80)
 
 

@@ -411,7 +411,7 @@ class SinglePPOTrainer:
 
             # Decode action for environment step
             TMS, PS = self.actor.decode_action(action_norm, self.env.ps_min, self.env.ps_max)
-            self.env.set_relay_settings(TMS, PS)
+            self.env.set_state(TMS, PS)
 
             next_obs, reward, done, info = self.env.step(action_norm)
 

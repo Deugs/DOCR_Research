@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor lock files
+~$*.docx
+~$*.doc
+~$*.xlsx
+.DS_Store
+
+# USS v2.0 experiment outputs (per CLAUDE.md: never committed)
+results/uss/
+
+# Archival packages superseded by extracted directories
+*.zip

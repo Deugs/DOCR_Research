@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""CLI Adapter: ewc_visualization.py — Fig 29"""
+"""CLI Adapter: ewc_visualization.py — Fig 29
+
+WARNING: SYNTHETIC DATA. This script plots hand-typed literal number arrays,
+not output from a trained model or a real experiment run. See
+experiments/GAP_ANALYSIS.md. Do not cite this figure as experimental evidence
+until it is replaced with a real data pipeline."""
 import argparse, sys, os, numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from evaluation.experiments._synthetic_label import mark_synthetic
 
 def main():
     p = argparse.ArgumentParser(description="EWC Visualization Adapter (Fig 29)")
-    p.add_argument("--system", type=str, default="8bus")
     p.add_argument("--tasks", nargs="+", type=float, default=[0.0, 0.25, 0.5, 0.75, 1.0])
     p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     p.add_argument("--output", type=str, default="outputs/fig29_ewc_continual.pdf")
@@ -48,6 +53,7 @@ def main():
 
     fig.suptitle("Figure 29 — Elastic Weight Consolidation (EWC) for Continual Adaptation", fontsize=12)
     fig.tight_layout()
+    mark_synthetic(fig)
     fig.savefig(args.output, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"[Adapter] Saved: {args.output}")

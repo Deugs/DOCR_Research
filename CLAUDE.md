@@ -25,18 +25,29 @@ runs under `results/uss/` and all DOCR runs under `results/` (existing).
 
 ### Papers That Exist (inspect before writing any code for them)
 
-| File | Target Venue | Completion | Missing |
-|------|-------------|------------|---------|
-| `papers/paper_06_fairness_FAccT.md` | FAccT | ~90% | Tables 1–4, Figs 1–4 (need experiments) |
-| `papers/paper_10_nlp_interface_IUI.md` | IUI '26 | ~85% | Fig 1 (arch), Tables 2–5, Figs 2–4 (need NLP runs + user study) |
-| `papers/paper_12_full_system_INFORMS.md` | INFORMS Applied Analytics | ~50% | Full deployment section, KPI tables |
+**Correction (2026-08-07): all 12 papers already exist as drafts in `papers/`** —
+see `papers/INDEX.md` for the master table. The section below previously claimed
+papers 01–05, 07–09, 11 had not been written yet; that was stale. Every draft
+still has open `[PLACEHOLDER]` tags (counts below) that map 1:1 to a result file —
+treat placeholder count, not paper existence, as the completion signal.
 
-### Papers to Be Scaffolded (write paper first, then code)
+| File | Target Venue | Open Placeholders |
+|------|-------------|--------------------|
+| `papers/paper_01_hybrid_optimization_JoS.md` | Journal of Scheduling | 7 |
+| `papers/paper_02_weight_learning_AIED.md` | AIED | 7 |
+| `papers/paper_03_conflict_resolution_AAAI.md` | AAAI | 9 |
+| `papers/paper_04_multiobjective_EMO.md` | EMO | 9 |
+| `papers/paper_05_whatif_DSS.md` | Decision Support Systems | 16 |
+| `papers/paper_06_fairness_FAccT.md` | FAccT | Tables 1–4, Figs 1–4 (need experiments) |
+| `papers/paper_07_sustainability_JCP.md` | J. Cleaner Production | 8 |
+| `papers/paper_08_blockchain_TSC.md` | IEEE TSC | 7 |
+| `papers/paper_09_iot_IoTJ.md` | IEEE IoT Journal | 10 |
+| `papers/paper_10_nlp_interface_IUI.md` | IUI '26 | Fig 1 (arch), Tables 2–5, Figs 2–4 (need NLP runs + user study) |
+| `papers/paper_11_privacy_PoPETs.md` | PoPETs | 5 |
+| `papers/paper_12_full_system_INFORMS.md` | INFORMS Applied Analytics | ~50% — full deployment section, KPI tables |
 
-Papers 01–05, 07–09, 11 do not yet exist. Create each as a `.md` draft
-in `papers/` before writing any code that serves it. The draft method
-section is the implementation specification. Claude Code generates code
-from the method section — not the other way around.
+Before writing code for any track, re-run `grep -c '\[PLACEHOLDER\]' papers/paper_NN_*.md`
+to confirm current state — this table will drift again as placeholders get filled.
 
 ---
 
@@ -77,11 +88,11 @@ DOCR_Research/
 │   │   └── uss_syn_generator.py     ← SEED FILE — USS-SYN-3200 dataset
 │   ├── equity/                      ← paper_06
 │   ├── nlp_interface/               ← paper_10
-│   ├── sustainability/              ← paper_03
+│   ├── sustainability/              ← paper_07
 │   ├── multiobj/                    ← paper_04
-│   ├── blockchain_audit/            ← paper_07
-│   ├── iot_integration/             ← paper_08
-│   └── privacy/                     ← paper_09
+│   ├── blockchain_audit/            ← paper_08
+│   ├── iot_integration/             ← paper_09
+│   └── privacy/                     ← paper_11
 ├── uss/                             ← production USS v2.0 system (Phase 3+)
 │   ├── api/
 │   ├── db/
@@ -277,20 +288,26 @@ the code, and the paper text.
 
 ## Paper-Code Correspondence
 
-| Paper | Research Module | Key Implementation |
-|-------|-----------------|--------------------|
-| paper_01_OR | research/or_optimization/ | ITC2002Benchmarks |
-| paper_02_aiml | research/adaptive_weights/ | WeightLearner, ABTestFramework |
-| paper_03_sustainability | research/sustainability/ | CarbonCalculator |
-| paper_04_multiobj | research/multiobj/ | ParetoFrontierTracker |
-| paper_05_DSS | research/decision_support/ | WhatIfSimulator |
-| paper_06_fairness | research/equity/ | EquityAuditModule |
-| paper_07_blockchain | research/blockchain_audit/ | ChainAnchorer |
-| paper_08_IoT | research/iot_integration/ | OccupancyPredictor |
-| paper_09_privacy | research/privacy/ | DifferentialPrivacyScheduler |
-| paper_10_nlp | research/nlp_interface/ | BertIntentClassifier, SchedulingNER |
-| paper_11_applied | research/applied_study/ | StakeholderSurvey |
-| paper_12_system | uss/ | full production system |
+**Correction (2026-08-07):** this table previously mismatched paper numbers to
+topics from paper_07 onward (it labeled paper_07 as blockchain, paper_08 as IoT,
+paper_09 as privacy, paper_11 as an applied study). The actual filenames in
+`papers/` are authoritative — cross-check against `papers/INDEX.md` before
+generating code from a "paper_NN" reference.
+
+| Paper | Actual File | Research Module | Key Implementation |
+|-------|-------------|-----------------|--------------------|
+| paper_01 | paper_01_hybrid_optimization_JoS.md | research/or_optimization/ | ITC2002Benchmarks |
+| paper_02 | paper_02_weight_learning_AIED.md | research/adaptive_weights/ | WeightLearner, ABTestFramework |
+| paper_03 | paper_03_conflict_resolution_AAAI.md | research/conflict_resolution/ | ImpactAwareResolver |
+| paper_04 | paper_04_multiobjective_EMO.md | research/multiobj/ | ParetoFrontierTracker |
+| paper_05 | paper_05_whatif_DSS.md | research/decision_support/ | WhatIfSimulator |
+| paper_06 | paper_06_fairness_FAccT.md | research/equity/ | EquityAuditModule |
+| paper_07 | paper_07_sustainability_JCP.md | research/sustainability/ | CarbonCalculator |
+| paper_08 | paper_08_blockchain_TSC.md | research/blockchain_audit/ | ChainAnchorer |
+| paper_09 | paper_09_iot_IoTJ.md | research/iot_integration/ | OccupancyPredictor |
+| paper_10 | paper_10_nlp_interface_IUI.md | research/nlp_interface/ | BertIntentClassifier, SchedulingNER |
+| paper_11 | paper_11_privacy_PoPETs.md | research/privacy/ | DifferentialPrivacyScheduler |
+| paper_12 | paper_12_full_system_INFORMS.md | uss/ | full production system |
 
 ---
 
@@ -315,10 +332,10 @@ the code, and the paper text.
 | Engineer | Owns | Leads Papers |
 |----------|------|-------------|
 | Tech Lead | `solver/`, `data/constraints/`, architecture | paper_01, paper_04 |
-| Backend Eng | `uss/api/`, `uss/db/`, `research/blockchain_audit/`, `research/privacy/` | paper_07, paper_09 |
+| Backend Eng | `uss/api/`, `uss/db/`, `research/blockchain_audit/`, `research/privacy/` | paper_08, paper_11 |
 | Frontend Eng | `uss/dashboards/`, `research/nlp_interface/` | paper_10 |
-| AI/ML Eng | `uss/ml/`, `research/equity/`, `research/sustainability/` | paper_02, paper_03, paper_06 |
-| DevOps Eng | `uss/infra/`, `research/iot_integration/`, CI/CD | paper_08 |
+| AI/ML Eng | `uss/ml/`, `research/equity/`, `research/sustainability/` | paper_02, paper_07, paper_06 |
+| DevOps Eng | `uss/infra/`, `research/iot_integration/`, CI/CD | paper_09 |
 
 DOCR/MARL thesis work is the responsibility of the engineer who ran Phase 1.
 New team members do not modify DOCR code without reading EXPERIMENT_GUIDE.md.

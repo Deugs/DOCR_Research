@@ -34,6 +34,12 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections import defaultdict
+from scipy.stats import mannwhitneyu
+
+try:
+    from network.network_data import NETWORKS
+except ImportError:
+    NETWORKS = {}
 
 try:
     from evaluation.stat_analysis import (
@@ -64,8 +70,10 @@ class ValidationResult:
     """Result of validating a single novelty claim."""
     claim_id: str
     passed: bool
-    p_value: float
-    effect_size: float
+    # None (not a placeholder value like 0.05/1.0) whenever no real statistical
+    # test could be computed — e.g. a threshold-only claim, or too few samples.
+    p_value: Optional[float]
+    effect_size: Optional[float]
     effect_magnitude: str
     details: Dict
     recommendation: str
@@ -88,7 +96,7 @@ class ThesisValidator:
             hypothesis_h1="MAPPO-Comm achieves lower OF than at least one baseline with statistical significance (p < 0.05, Cliff's delta > 0.33).",
             metrics=["OF", "cti_satisfied"],
             pass_criteria={
-                "OF": (0.05, "<"),  # p < 0.05
+                "p_value": (0.05, "<"),
                 "cliffs_delta": (0.33, ">"),
             },
             required_methods=["GA-SQP", "Single-PPO", "IPPO", "MAPPO", "MAPPO-Comm"],
@@ -252,27 +260,39 @@ class ThesisValidator:
         if missing_systems:
             metrics["missing_systems"] = missing_systems
 
-        # Check pass criteria
+        # Check pass criteria. A criterion whose metric was never computed
+        # (e.g. too few seeds for a significance test) is a FAILURE to
+        # validate, not a metric to skip — skipping it let claims pass
+        # vacuously whenever the underlying data was simply absent.
         passed = True
+        unevaluated_criteria = []
         for metric, (threshold, operator) in claim.pass_criteria.items():
-            if metric in metrics:
-                value = metrics[metric]
-                if operator == "<":
-                    passed &= (value < threshold)
-                elif operator == ">":
-                    passed &= (value > threshold)
-                elif operator == "<=":
-                    passed &= (value <= threshold)
-                elif operator == ">=":
-                    passed &= (value >= threshold)
+            if metric not in metrics:
+                unevaluated_criteria.append(metric)
+                passed = False
+                continue
+            value = metrics[metric]
+            if operator == "<":
+                passed &= (value < threshold)
+            elif operator == ">":
+                passed &= (value > threshold)
+            elif operator == "<=":
+                passed &= (value <= threshold)
+            elif operator == ">=":
+                passed &= (value >= threshold)
+        if unevaluated_criteria:
+            metrics["unevaluated_criteria"] = unevaluated_criteria
 
-        # Statistical test (if applicable)
-        p_value = 0.05 if passed else 1.0
-        effect_size = 0.5 if passed else 0.0
-        effect_magnitude = "large" if passed else "negligible"
+        # Use the real test computed in _compute_claim_metrics (if this claim
+        # has one) instead of a hardcoded pass/fail-dependent constant. Claims
+        # that are purely threshold-based (e.g. C2's CTI violation rate) have
+        # no p-value/effect-size to report — None here, not an invented one.
+        p_value = metrics.get("p_value")
+        effect_size = metrics.get("cliffs_delta")
+        effect_magnitude = metrics.get("cliffs_delta_magnitude", "not_applicable")
 
         recommendation = (
-            "Claim validated ✓" if passed 
+            "Claim validated ✓" if passed
             else "Claim NOT validated. Collect more data or adjust methods."
         )
 
@@ -312,13 +332,63 @@ class ThesisValidator:
                     metrics[f"{method}_OF_mean"] = float(np.mean(ofs))
                     metrics[f"{method}_OF_std"] = float(np.std(ofs))
 
+            # Real significance test: the claim's own method (last in
+            # required_methods, e.g. "MAPPO-Comm") vs. every baseline listed
+            # before it. Previously validate_claim() hardcoded p_value=0.05/
+            # effect_size=0.5 whenever the threshold check passed, without
+            # ever calling a test — this computes an actual Mann-Whitney U
+            # (small, possibly-unpaired seed counts across methods) and
+            # Cliff's delta per baseline, and reports the worst case across
+            # all baselines (claim only holds if it beats *every* baseline).
+            primary = claim.required_methods[-1]
+            primary_of = [v for v in
+                          (r.get("best_of", r.get("OF")) for r in by_method.get(primary, []))
+                          if v is not None]
+            comparisons = {}
+            for method in claim.required_methods[:-1]:
+                other_of = [v for v in
+                            (r.get("best_of", r.get("OF")) for r in by_method.get(method, []))
+                            if v is not None]
+                if len(primary_of) < 2 or len(other_of) < 2:
+                    continue  # not enough samples for a real test — do not fabricate one
+                try:
+                    _, p = mannwhitneyu(primary_of, other_of, alternative="two-sided")
+                except ValueError:
+                    continue  # identical distributions etc. — scipy refuses the test
+                delta, magnitude = cliffs_delta(other_of, primary_of)
+                comparisons[method] = {
+                    "p_value": float(p),
+                    "cliffs_delta": float(delta),
+                    "magnitude": magnitude,
+                }
+            if comparisons:
+                worst = min(comparisons.values(), key=lambda c: abs(c["cliffs_delta"]))
+                metrics["of_comparisons"] = comparisons
+                metrics["p_value"] = max(c["p_value"] for c in comparisons.values())
+                metrics["cliffs_delta"] = worst["cliffs_delta"]
+                metrics["cliffs_delta_magnitude"] = worst["magnitude"]
+            else:
+                metrics["insufficient_samples_for_significance_test"] = True
+
         # CTI violation rate
         if "cti_violation_rate" in claim.metrics:
             for method in claim.required_methods:
-                viols = [r.get("cti_violations", 0) for r in by_method.get(method, [])]
-                total_pairs = len(viols) * 20  # Approximate
+                method_results = by_method.get(method, [])
+                # Use each run's own n_pairs (looked up from its recorded system)
+                # rather than a fixed guess — n_pairs differs across the 3/8/14/
+                # 30/39/57/118-bus systems this claim spans.
+                total_pairs = 0
+                total_viols = 0
+                for r in method_results:
+                    system = r.get("system")
+                    n_pairs = NETWORKS[system]().n_pairs if system in NETWORKS else r.get("n_pairs")
+                    if n_pairs:
+                        total_pairs += n_pairs
+                        total_viols += r.get("cti_violations", 0)
                 if total_pairs > 0:
-                    metrics[f"{method}_cti_violation_rate"] = sum(viols) / total_pairs
+                    metrics[f"{method}_cti_violation_rate"] = total_viols / total_pairs
+                else:
+                    metrics[f"{method}_cti_violation_rate_unavailable"] = True
 
         # CTI satisfaction rate
         if "cti_satisfied" in claim.metrics:
@@ -352,9 +422,9 @@ class ThesisValidator:
 
     def validate_all_claims(self) -> List[ValidationResult]:
         """Validate all 5 novelty claims."""
-        print(f"\n{":"*70}")
+        print(f"\n{'-'*70}")
         print(f"  PHASE 8: THESIS NOVELTY CLAIM VALIDATION")
-        print(f"{":"*70}")
+        print(f"{'-'*70}")
 
         # Only load from file if results not already set
         if not self.results:
@@ -394,8 +464,10 @@ class ThesisValidator:
                 f"  Title: {claim.title}",
                 f"  H0: {claim.hypothesis_h0}",
                 f"  H1: {claim.hypothesis_h1}",
-                f"  p-value: {result.p_value:.4f}",
-                f"  Effect size: {result.effect_size:.4f} ({result.effect_magnitude})",
+                f"  p-value: {result.p_value:.4f}" if result.p_value is not None
+                    else "  p-value: N/A (no significance test computed for this claim)",
+                f"  Effect size: {result.effect_size:.4f} ({result.effect_magnitude})" if result.effect_size is not None
+                    else f"  Effect size: N/A ({result.effect_magnitude})",
                 f"  Recommendation: {result.recommendation}",
                 "",
             ])
@@ -419,10 +491,11 @@ class ThesisValidator:
         for result in self.validation_results:
             claim = next(c for c in self.CLAIMS if c.id == result.claim_id)
             status = "Valid" if result.passed else "Invalid"
+            p_str = f"{result.p_value:.4f}" if result.p_value is not None else "N/A"
             lines.append(
                 f"{claim.id} & {claim.title[:40]}... & "
                 f"{'Yes' if result.passed else 'No'} & "
-                f"{result.p_value:.4f} & "
+                f"{p_str} & "
                 f"{result.effect_magnitude} & "
                 f"{status} \\\\",
             )

@@ -61,7 +61,7 @@ def compute_classical_solution(net, env) -> Tuple[np.ndarray, np.ndarray]:
         for psm in psm_candidates:
             TDS_test = np.full(n_relays, tds)
             PSM_test = np.full(n_relays, psm)
-            env.set_relay_settings(TDS_test, PSM_test)
+            env.set_state(TDS_test, PSM_test)
 
             # Quick evaluation
             c = check_constraints(net, TDS_test, PSM_test)

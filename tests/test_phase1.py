@@ -136,7 +136,7 @@ def test_distribution_network():
     TMS = np.full(net.n_relays, 0.5)
     PS = (net.ps_bounds()[0] + net.ps_bounds()[1]) / 2
     dist.set_relay_settings(TMS, PS)
-    result = dist.evaluate_current_settings()
+    result = dist.evaluate_relay_settings(TMS, PS)
     assert "OF" in result
     assert "constraints" in result
     print(f"  DistributionNetwork: OF={result['OF']:.4f}, CTI_ok={result['constraints']['cti_satisfied']}")

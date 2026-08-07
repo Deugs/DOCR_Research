@@ -14,6 +14,20 @@ Configuration (precedence: CLI > config file > preset > env vars > defaults):
   • --system NAME       Override system (3bus, 8bus, 14bus, ...)
   • --fast              Enable fast mode (reduced iterations)
   • All CLI args from docl_config.py supported
+
+DATA PROVENANCE WARNING (2026-08-07): many fig_NN_* functions below follow the
+pattern `data = load_cache(name); if data is None: data = {<hardcoded literals>}`
+— i.e. they silently fall back to fabricated numbers when the expected
+core_cache entry is missing, with no indication in the saved figure. This was
+confirmed and fixed for fig_18_inference_latency and fig_53_model_compression
+(the two Phase 6 figures — see tests/test_phase6.py), both of which currently
+DO fall back, since no "core_I_deployment" cache entry exists in
+results/core_cache/. The same pattern likely affects other fig_NN_* functions
+in this file (e.g. fig_54_adversarial's "core_G_robustness" fallback) — these
+have not been individually audited or fixed as part of this pass. Before
+citing any figure from this module, grep its function for `if data is None`
+and check whether results/core_cache/cache_index.json actually contains the
+cache name it requests.
 """
 
 import argparse
@@ -992,11 +1006,14 @@ def fig_18_inference_latency():
     """Fig 18: Inference latency distribution — from Core I."""
     logger.info("\\n[Fig 18] Inference Latency Distribution")
     data = load_cache("core_I_deployment")
-    if data is None:
+    is_synthetic = data is None
+    if is_synthetic:
+        logger.warning("Fig 18: 'core_I_deployment' cache not found — using synthetic "
+                        "lognormal latencies, NOT a real measurement.")
         rng = np.random.default_rng(42)
         latencies = rng.lognormal(-3, 0.5, 1000) * 1000
         data = {"latency": {"latencies_ms": latencies, "mean_ms": np.mean(latencies), "p50_ms": np.percentile(latencies, 50), "p99_ms": np.percentile(latencies, 99)}}
-    
+
     lat = data.get("latency", {})
     latencies = lat.get("latencies_ms", np.random.lognormal(-3, 0.5, 1000) * 1000)
     
@@ -1023,7 +1040,10 @@ def fig_18_inference_latency():
     ax.set_ylabel("CDF", fontsize=11)
     ax.set_title("Cumulative Distribution", fontsize=12)
     ax.grid(True, alpha=0.3)
-    
+
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_I_deployment cache missing")
     save_fig(fig, get_fig_path(18, "figs_11_20"))
 
 
@@ -2139,10 +2159,13 @@ def fig_53_model_compression():
     """Fig 53: Model compression impact — from Core I."""
     logger.info("\\n[Fig 53] Model Compression & Quantization Impact")
     data = load_cache("core_I_deployment")
-    if data is None:
+    is_synthetic = data is None
+    if is_synthetic:
+        logger.warning("Fig 53: 'core_I_deployment' cache not found — using hardcoded "
+                        "placeholder compression numbers, NOT a real measurement.")
         data = {"compression": {"original": {"size_mb": 45, "performance": 0.85}, "int8": {"size_mb": 12, "performance": 0.84},
                               "pruning": {"size_mb": 22, "performance": 0.83}, "distillation": {"size_mb": 18, "performance": 0.82}}}
-    
+
     comp = data.get("compression", {})
     methods = list(comp.keys())
     sizes = [comp[m]["size_mb"] for m in methods]
@@ -2169,6 +2192,9 @@ def fig_53_model_compression():
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
     ax1.grid(True, alpha=0.3, axis="y")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_I_deployment cache missing")
     save_fig(fig, get_fig_path(53, "figs_51_58"))
 
 

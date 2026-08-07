@@ -173,7 +173,7 @@ def evaluate_method(method: str, system: str, seed: int, n_eval_episodes: int = 
     else:
         # Metaheuristic: optimize once, evaluate fixed settings
         TDS_opt, PSM_opt = run_metaheuristic(method, net, env.n_agents, seed)
-        env.set_relay_settings(TDS_opt, PSM_opt)
+        env.set_state(TDS_opt, PSM_opt)
 
         returns = []
         cti_violations = []
