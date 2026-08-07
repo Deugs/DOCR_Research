@@ -60,9 +60,20 @@ class MLP:
         self.b3 = np.zeros(out_dim)
 
     def forward(self, x):
-        h1 = relu(self.W1 @ x + self.b1)
-        h2 = relu(self.W2 @ h1 + self.b2)
-        return self.W3 @ h2 + self.b3
+        """x: (in_dim,) for a single input, or (T, in_dim) for a batch —
+        the batched path is a plain matmul, not a Python loop over rows, so
+        callers doing repeated single-row forward passes in a loop (e.g. ES
+        perturbation evaluation over a rollout) should batch the whole
+        rollout into one call instead."""
+        x = np.asarray(x)
+        if x.ndim == 1:
+            h1 = relu(self.W1 @ x + self.b1)
+            h2 = relu(self.W2 @ h1 + self.b2)
+            return self.W3 @ h2 + self.b3
+        else:
+            h1 = relu(x @ self.W1.T + self.b1)
+            h2 = relu(h1 @ self.W2.T + self.b2)
+            return h2 @ self.W3.T + self.b3
 
     def get_params(self):
         return np.concatenate([
@@ -99,11 +110,10 @@ class SharedGaussianActor:
         self.log_std = np.full(act_dim, -1.0)
 
     def get_mean(self, obs):
-        """Get mean action for single or batch observations."""
-        if obs.ndim == 1:
-            return tanh(self.net.forward(obs))
-        else:
-            return tanh(np.array([self.net.forward(o) for o in obs]))
+        """Get mean action for single (obs_dim,) or batch (T, obs_dim)
+        observations — self.net.forward already handles both shapes, so no
+        Python-level loop over rows is needed here."""
+        return tanh(self.net.forward(obs))
 
     def sample(self, obs, rng) -> Tuple[np.ndarray, float]:
         """Sample action and compute log probability."""
@@ -115,13 +125,22 @@ class SharedGaussianActor:
             -0.5 * (noise**2 + 2 * self.log_std + np.log(2 * np.pi))))
         return action, log_prob
 
-    def log_prob(self, obs, action) -> float:
-        """Compute log probability of action."""
+    def log_prob(self, obs, action):
+        """Compute log probability of action(s).
+
+        obs/action of shape (obs_dim,)/(act_dim,) -> returns a scalar float.
+        obs/action of shape (T, obs_dim)/(T, act_dim) -> returns a (T,) array
+        — one vectorized call replacing what used to require a Python loop
+        of T individual log_prob() calls at every ES perturbation evaluation.
+        """
+        obs = np.asarray(obs)
         mean = self.get_mean(obs)
         std = np.exp(np.clip(self.log_std, -3, 0))
         z = (action - mean) / (std + 1e-8)
-        return float(np.sum(
-            -0.5 * (z**2 + 2 * self.log_std + np.log(2 * np.pi))))
+        terms = -0.5 * (z**2 + 2 * self.log_std + np.log(2 * np.pi))
+        if obs.ndim == 1:
+            return float(np.sum(terms))
+        return np.sum(terms, axis=-1)
 
     def get_all_params(self):
         return np.concatenate([self.net.get_params(), self.log_std])
@@ -181,6 +200,28 @@ class MAPPOCentralCritic:
             ])
 
         return float(self.net.forward(global_state)[0])
+
+    def value_batch(self, TMS, PS, pv_level, topology_flag, neighbor_stats, fault_type_idx=0) -> np.ndarray:
+        """Batched form of value() for T timesteps at once: TMS/PS shape
+        (T, n_relays), pv_level/topology_flag shape (T,), neighbor_stats
+        shape (T, 6). Returns (T,) predictions via one vectorized MLP.forward
+        call instead of a Python loop of T individual value() calls (used by
+        the ES critic update, which re-evaluates the whole rollout batch at
+        every perturbation)."""
+        T = TMS.shape[0]
+        global_state = np.concatenate([TMS, PS], axis=1)
+
+        fault_onehot = np.zeros((T, 4))
+        if 0 <= fault_type_idx < 4:
+            fault_onehot[:, fault_type_idx] = 1.0
+
+        extra = np.stack([np.asarray(pv_level), np.asarray(topology_flag)], axis=1)
+        if self.use_global_state and neighbor_stats is not None:
+            global_state = np.concatenate([global_state, extra, fault_onehot, neighbor_stats], axis=1)
+        else:
+            global_state = np.concatenate([global_state, extra, fault_onehot], axis=1)
+
+        return self.net.forward(global_state).ravel()
 
     def get_params(self):
         return self.net.get_params()
@@ -411,6 +452,19 @@ class MAPPOMARLTrainer:
         mean_slack = float(np.mean(obs[:, 3]))  # cti_slack_norm
         return np.array([mean_tms, mean_ps, std_tms, std_ps, max_viol, mean_slack])
 
+    def _get_neighbor_stats_batch(self, obs_batch):
+        """Batched form of _get_neighbor_stats: obs_batch shape
+        (T, n_agents, obs_dim) -> (T, 6), same formulas reduced over the
+        agent axis (axis=1) instead of a Python loop calling
+        _get_neighbor_stats(obs_batch[t]) once per timestep."""
+        mean_tms = obs_batch[:, :, 0].mean(axis=1)
+        mean_ps = obs_batch[:, :, 1].mean(axis=1)
+        std_tms = obs_batch[:, :, 0].std(axis=1)
+        std_ps = obs_batch[:, :, 1].std(axis=1)
+        max_viol = obs_batch[:, :, 4].max(axis=1)
+        mean_slack = obs_batch[:, :, 3].mean(axis=1)
+        return np.stack([mean_tms, mean_ps, std_tms, std_ps, max_viol, mean_slack], axis=1)
+
     def _update_actor_es(self, agent_idx, obs_batch, act_batch, adv_batch, old_lp, n_pert=10, sigma=0.02):
         """OpenAI-ES surrogate policy gradient with PPO-clip."""
         theta = self.actor.get_all_params()
@@ -420,10 +474,7 @@ class MAPPOMARLTrainer:
             eps = self.rng.normal(0, sigma, len(theta))
             for sign in (+1, -1):
                 self.actor.set_all_params(theta + sign * eps)
-                new_lp = np.array([
-                    self.actor.log_prob(obs_batch[t], act_batch[t])
-                    for t in range(len(obs_batch))
-                ])
+                new_lp = self.actor.log_prob(obs_batch, act_batch)
                 ratio = np.exp(np.clip(new_lp - old_lp, -5, 5))
                 clip_r = np.clip(ratio, 1 - self.clip_eps, 1 + self.clip_eps)
                 surr = float(np.mean(
@@ -443,6 +494,15 @@ class MAPPOMARLTrainer:
         noises, losses = [], []
 
         T = len(obs_batch)
+        # These depend only on obs_batch/the buffer (fixed for this update
+        # call), not on the perturbed critic params — compute once instead
+        # of recomputing on every one of the 2*n_pert perturbation passes.
+        neighbor_stats_batch = self._get_neighbor_stats_batch(obs_batch)
+        tms_batch = self.buffer.tms[:T]
+        ps_batch = self.buffer.ps[:T]
+        pv_batch = self.buffer.pv_levels[:T]
+        topo_batch = self.buffer.top_flags[:T]
+
         for _ in range(n_pert):
             eps = self.rng.normal(0, sigma, len(theta))
             for sign in (+1, -1):
@@ -450,16 +510,11 @@ class MAPPOMARLTrainer:
                 # Use the historical per-timestep relay/PV/topology state stored in
                 # the buffer (not self.env's *current* state) — ret_batch[t] was
                 # computed from the state at timestep t, not the state after rollout.
-                pred = np.array([
-                    self.critic.value(
-                        self.buffer.tms[t], self.buffer.ps[t],
-                        pv_level=self.buffer.pv_levels[t],
-                        topology_flag=self.buffer.top_flags[t],
-                        fault_type_idx=0,
-                        neighbor_stats=self._get_neighbor_stats(obs_batch[t])
-                    ) for t in range(T)
-                ])
-                loss = -float(np.mean([(ret_batch[t] - pred[t])**2 for t in range(len(ret_batch))]))
+                pred = self.critic.value_batch(
+                    tms_batch, ps_batch, pv_batch, topo_batch,
+                    neighbor_stats_batch, fault_type_idx=0,
+                )
+                loss = -float(np.mean((ret_batch - pred[:, None]) ** 2))
                 noises.append(sign * eps)
                 losses.append(loss)
 
