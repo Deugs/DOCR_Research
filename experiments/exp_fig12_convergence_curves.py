@@ -151,7 +151,7 @@ def evaluate_traditional(env, net, n_episodes: int, seed: int) -> np.ndarray:
     
     for ep in range(n_episodes):
         obs = env.reset(seed=seed + ep)
-        env.set_relay_settings(fixed_TDS, fixed_PSM)
+        env.set_state(fixed_TDS, fixed_PSM)
         done = False
         ep_return = 0.0
         

@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""CLI Adapter: warm_start.py — Fig 42"""
+"""CLI Adapter: warm_start.py — Fig 42
+
+WARNING: SYNTHETIC DATA. This script plots hand-typed literal number arrays,
+not output from a trained model or a real experiment run. See
+experiments/GAP_ANALYSIS.md. Do not cite this figure as experimental evidence
+until it is replaced with a real data pipeline."""
 import argparse, sys, os, numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from evaluation.experiments._synthetic_label import mark_synthetic
 
 def main():
     p = argparse.ArgumentParser(description="Warm Start Adapter (Fig 42)")
-    p.add_argument("--system", type=str, default="8bus")
     p.add_argument("--pv", type=float, default=1.0)
     p.add_argument("--n_runs", type=int, default=10)
     p.add_argument("--episodes", type=int, default=5000)
@@ -42,6 +47,7 @@ def main():
                color="#2563eb", fontweight="bold")
 
     fig.tight_layout()
+    mark_synthetic(fig)
     fig.savefig(args.output, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"[Adapter] Saved: {args.output}")

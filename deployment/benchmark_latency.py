@@ -3,6 +3,13 @@
 
 Benchmarks inference latency and generates publication-ready figures
 showing latency distribution and cumulative distribution function (CDF).
+
+WARNING: SYNTHETIC DATA. `main()` currently draws latencies from
+rng.lognormal(...) — it never loads or calls a real trained model, despite
+accepting a --hardware flag that makes the output look like a measurement
+taken on real hardware. Do not cite this figure as an experimental result
+until it's wired to InferenceEngine.benchmark() with a real (non-fallback)
+loaded model.
 """
 
 from __future__ import annotations
@@ -122,6 +129,9 @@ def generate_latency_figure(
         fontsize=12,
     )
     fig.tight_layout()
+
+    from evaluation.experiments._synthetic_label import mark_synthetic
+    mark_synthetic(fig, note=f"lognormal noise, not measured on {hardware}")
 
     # Ensure output directory exists
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)

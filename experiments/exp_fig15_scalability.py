@@ -31,8 +31,16 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from network.network_data import get_8bus, get_30bus
-# Note: get_14bus, get_57bus, get_118bus may need to be implemented
+from network.network_data import get_8bus, get_14bus, get_30bus, get_39bus, get_57bus, get_118bus
+# get_14bus/get_57bus/get_118bus now exist in network.network_data — the
+# comment claiming they "may need to be implemented" was stale.
+#
+# See also marl/experiments/exp_fig15_scalability.py, a separate, fuller
+# implementation of this same figure that additionally compares against
+# GA-SQP/HWOA/HHO/JAYA/EEO baselines (via the external `mealpy` package,
+# not installed by default — it raises RuntimeError rather than silently
+# faking results if missing). That version and this one are NOT kept in
+# sync; treat them as two independent implementations, not duplicates.
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -42,10 +50,11 @@ def get_system(name: str):
     """Get network data by name."""
     systems = {
         "IEEE-8": get_8bus,
-        # "IEEE-14": get_14bus,  # Uncomment when available
+        "IEEE-14": get_14bus,
         "IEEE-30": get_30bus,
-        # "IEEE-57": get_57bus,  # Uncomment when available
-        # "IEEE-118": get_118bus,  # Uncomment when available
+        "IEEE-39": get_39bus,
+        "IEEE-57": get_57bus,
+        "IEEE-118": get_118bus,
     }
     return systems.get(name, get_8bus)()
 

@@ -24,8 +24,15 @@ def _patched_init(self, *args, **kwargs):
     _orig_init(self, *args, **kwargs)
 _ma.MAPPOMARLTrainer.__init__ = _patched_init
 
-# Import the actual experiment implementation
-from marl.experiments.exp_fig12_convergence_curves import main as fig12_main
+# Import the actual experiment implementation.
+# NOTE: marl.experiments.exp_fig12_convergence_curves is misnamed — its
+# content is actually an old draft of the Figure 39 ablation study (see the
+# warning at the top of that file). Despite its docstring above claiming to
+# wrap "Figure 12", this module used to import that mismatched file and would
+# have silently produced ablation-study output under the Figure 12 filename.
+# experiments/exp_fig12_convergence_curves.py is the real Figure 12 impl and
+# has a compatible main(n_runs, n_episodes, seed_base, output_dir, system) signature.
+from experiments.exp_fig12_convergence_curves import main as fig12_main
 
 
 def main():

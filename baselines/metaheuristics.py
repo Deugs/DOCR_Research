@@ -1,4 +1,3 @@
-import scipy
 """
 metaheuristics.py
 -----------------
@@ -21,6 +20,7 @@ References:
 """
 
 import numpy as np
+import scipy.special
 from scipy.optimize import minimize, Bounds
 from typing import Dict, List, Tuple, Optional, Callable
 import time
@@ -627,6 +627,18 @@ METAHEURISTICS = {
     "EEO": run_eeo,
 }
 
+# Each runner names its population-size kwarg differently; run_metaheuristic
+# used to pass all four names to every runner regardless of method, which
+# raised TypeError: run_hwoa() got an unexpected keyword argument 'n_hawks'
+# (never caught because nothing called run_metaheuristic/run_all_metaheuristics
+# until the Fig 5 pipeline was wired up to use them).
+_POP_SIZE_KWARG = {
+    "HWOA": "n_whales",
+    "HHO": "n_hawks",
+    "JAYA": "n_pop",
+    "EEO": "n_particles",
+}
+
 
 def run_metaheuristic(
     method: str,
@@ -643,14 +655,11 @@ def run_metaheuristic(
     """Run a single metaheuristic by name."""
     if method not in METAHEURISTICS:
         raise ValueError(f"Unknown method: {method}. Available: {list(METAHEURISTICS.keys())}")
-    
+
     runner = METAHEURISTICS[method]
     return runner(
-        net, 
-        n_whales=pop_size if method == "HWOA" else None,
-        n_hawks=pop_size if method == "HHO" else None,
-        n_pop=pop_size if method == "JAYA" else None,
-        n_particles=pop_size if method == "EEO" else None,
+        net,
+        **{_POP_SIZE_KWARG[method]: pop_size},
         max_iter=max_iter,
         seed=seed,
         verbose=verbose,

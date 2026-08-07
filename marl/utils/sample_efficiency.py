@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""CLI Adapter: sample_efficiency.py — Fig 41"""
+"""CLI Adapter: sample_efficiency.py — Fig 41
+
+WARNING: SYNTHETIC DATA. This script plots hand-typed literal number arrays,
+not output from a trained model or a real experiment run. See
+experiments/GAP_ANALYSIS.md. Do not cite this figure as experimental evidence
+until it is replaced with a real data pipeline."""
 import argparse, sys, os, numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from evaluation.experiments._synthetic_label import mark_synthetic
 
 def main():
     p = argparse.ArgumentParser(description="Sample Efficiency Adapter (Fig 41)")
@@ -38,6 +44,7 @@ def main():
     ax.set_ylim(0, 1)
 
     fig.tight_layout()
+    mark_synthetic(fig)
     fig.savefig(args.output, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"[Adapter] Saved: {args.output}")

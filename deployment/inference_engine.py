@@ -430,6 +430,13 @@ class InferenceEngine:
             "=" * 60,
             "INFERENCE LATENCY REPORT",
             "=" * 60,
+        ]
+        if stats["backend"] == "synthetic-fallback":
+            lines.append("  *** WARNING: SYNTHETIC FALLBACK MODEL — no real weights were")
+            lines.append("  *** loaded (ONNX/npz unavailable). Numbers below time a random")
+            lines.append("  *** untrained model, not the actual DOCR-MARL policy.")
+        lines += [
+            f"  Backend:            {stats['backend']}",
             f"  Target latency:     {stats['target_ms']:.1f} ms",
             f"  Mean latency:       {stats['mean_ms']:.2f} ms",
             f"  Std deviation:      {stats['std_ms']:.2f} ms",

@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""CLI Adapter: critical_pairs.py — Fig 50"""
+"""CLI Adapter: critical_pairs.py — Fig 50
+
+WARNING: SYNTHETIC DATA. This script plots hand-typed literal number arrays,
+not output from a trained model or a real experiment run. See
+experiments/GAP_ANALYSIS.md. Do not cite this figure as experimental evidence
+until it is replaced with a real data pipeline."""
 import argparse, sys, os, numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from evaluation.experiments._synthetic_label import mark_synthetic
 
 def main():
     p = argparse.ArgumentParser(description="Critical Pairs Adapter (Fig 50)")
@@ -43,6 +49,7 @@ def main():
 
     fig.suptitle("Figure 50 — Critical P/B Pair Identification & Priority Ranking", fontsize=12)
     fig.tight_layout()
+    mark_synthetic(fig)
     fig.savefig(args.output, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"[Adapter] Saved: {args.output}")

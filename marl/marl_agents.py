@@ -200,7 +200,8 @@ class MAPPOBuffer:
             log_probs, values, communication info, done flags
     """
 
-    def __init__(self, n_agents, obs_dim, act_dim, capacity, use_comm=False, msg_dim=8):
+    def __init__(self, n_agents, obs_dim, act_dim, capacity, use_comm=False, msg_dim=8,
+                 raw_obs_dim=None):
         self.obs = np.zeros((capacity, n_agents, obs_dim))
         self.actions = np.zeros((capacity, n_agents, act_dim))
         self.rewards = np.zeros((capacity, n_agents))
@@ -209,19 +210,29 @@ class MAPPOBuffer:
         self.dones = np.zeros(capacity, dtype=bool)
         self.pv_levels = np.zeros(capacity)
         self.top_flags = np.zeros(capacity)
+        # Per-timestep global relay state, needed to recompute the critic's
+        # prediction during the update step against the *historical* state
+        # that produced ret_batch[t] rather than the environment's current state.
+        self.tms = np.zeros((capacity, n_agents))
+        self.ps = np.zeros((capacity, n_agents))
 
         # Communication tracking
         self.use_comm = use_comm
         if use_comm:
             self.messages = np.zeros((capacity, n_agents, msg_dim))
             self.attention = np.zeros((capacity, n_agents, n_agents))
+            # Pre-communication observations, needed to train the GNN comm
+            # module itself (obs -> forward() -> enhanced_obs); self.obs above
+            # already holds the *enhanced* observations when use_comm is on.
+            self.raw_obs = np.zeros((capacity, n_agents, raw_obs_dim or obs_dim))
 
         self.ptr = self.size = 0
         self.capacity = capacity
         self.n_agents = n_agents
 
     def add(self, obs, actions, rewards, log_probs, value, done,
-            pv_level=0.0, topology_flag=0.0, messages=None, attention=None):
+            pv_level=0.0, topology_flag=0.0, messages=None, attention=None,
+            tms=None, ps=None, raw_obs=None):
         i = self.ptr % self.capacity
         self.obs[i] = obs
         self.actions[i] = actions
@@ -230,7 +241,13 @@ class MAPPOBuffer:
         self.values[i] = value
         self.dones[i] = done
         self.pv_levels[i] = pv_level
+        if tms is not None:
+            self.tms[i] = tms
+        if ps is not None:
+            self.ps[i] = ps
         self.top_flags[i] = topology_flag
+        if self.use_comm and raw_obs is not None:
+            self.raw_obs[i] = raw_obs
 
         if self.use_comm and messages is not None:
             self.messages[i] = messages
@@ -323,9 +340,10 @@ class MAPPOMARLTrainer:
 
         # Communication module (must be created before actor to know enhanced_dim)
         self.comm_graph = None
+        self.gnn_trainer = None
         if use_comm:
             try:
-                from marl.comm_graph import CommGraph, build_relay_adjacency
+                from marl.comm_graph import CommGraph, build_relay_adjacency, GNNCommTrainer
                 adj = build_relay_adjacency(env.net)
                 self.comm_graph = CommGraph(
                     n_agents=self.n_agents,
@@ -334,6 +352,10 @@ class MAPPOMARLTrainer:
                     adjacency=adj,
                     seed=seed + 100,
                 )
+                # Without this, the GNN encoder/attention/decoder weights never
+                # move from their random initialization — "learned communication"
+                # would otherwise just be a fixed random projection.
+                self.gnn_trainer = GNNCommTrainer(self.comm_graph, seed=seed + 200)
             except ImportError:
                 print("  Warning: comm_graph not available, running without communication")
                 self.use_comm = False
@@ -359,6 +381,7 @@ class MAPPOMARLTrainer:
             self.n_agents, buffer_obs_dim, env.ACT_DIM, rollout_len,
             use_comm=use_comm,
             msg_dim=8 if use_comm else 0,
+            raw_obs_dim=env.OBS_DIM,
         )
 
         # Statistics
@@ -419,19 +442,22 @@ class MAPPOMARLTrainer:
         theta = self.critic.get_params()
         noises, losses = [], []
 
+        T = len(obs_batch)
         for _ in range(n_pert):
             eps = self.rng.normal(0, sigma, len(theta))
             for sign in (+1, -1):
                 self.critic.set_params(theta + sign * eps)
-                # We need global state for each timestep - simplified: use mean return
+                # Use the historical per-timestep relay/PV/topology state stored in
+                # the buffer (not self.env's *current* state) — ret_batch[t] was
+                # computed from the state at timestep t, not the state after rollout.
                 pred = np.array([
                     self.critic.value(
-                        self.env.TMS, self.env.PS,
-                        pv_level=getattr(self.env, 'current_pv_level', 0.0),
-                        topology_flag=0.0,
+                        self.buffer.tms[t], self.buffer.ps[t],
+                        pv_level=self.buffer.pv_levels[t],
+                        topology_flag=self.buffer.top_flags[t],
                         fault_type_idx=0,
                         neighbor_stats=self._get_neighbor_stats(obs_batch[t])
-                    ) for t in range(len(obs_batch))
+                    ) for t in range(T)
                 ])
                 loss = -float(np.mean([(ret_batch[t] - pred[t])**2 for t in range(len(ret_batch))]))
                 noises.append(sign * eps)
@@ -487,6 +513,8 @@ class MAPPOMARLTrainer:
                 pv_level=pv_level, topology_flag=topology_flag,
                 messages=messages,
                 attention=comm_info.get("attention") if comm_info else None,
+                tms=TMS, ps=PS,
+                raw_obs=obs if self.use_comm else None,
             )
 
             # Track communication stats
@@ -582,6 +610,12 @@ class MAPPOMARLTrainer:
                     self.buffer.obs[:T],
                     rets[:T],
                 )
+
+            # Update GNN communication weights (encoder/attention/decoder).
+            # Without this call the module's params never move from their
+            # random initialization regardless of how long training runs.
+            if self.use_comm and self.gnn_trainer is not None:
+                self.gnn_trainer.update(self.buffer.raw_obs[:T], advs[:T])
 
             # Evaluate
             from network.relay_physics import objective_function as OF_fn

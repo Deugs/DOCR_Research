@@ -1280,7 +1280,7 @@ class GradientBasedMAPPOMARLTrainer:
                     gs = np.concatenate([gs, [pv, topo], fo])
                 h1 = np.maximum(0, self.W1 @ gs + self.b1)
                 h2 = np.maximum(0, self.W2 @ h1 + self.b2)
-                return float(self.W3 @ h2 + self.b3)
+                return float((self.W3 @ h2 + self.b3).item())
 
             def get_params(self):
                 return np.concatenate([self.W1.ravel(), self.b1,
