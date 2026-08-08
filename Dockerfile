@@ -46,13 +46,16 @@ ENV PATH="/opt/venv/bin:$PATH" \
 
 WORKDIR /app
 
-# Copies app code plus the small pre-trained results/core_cache baked in
-# by .dockerignore (everything else under results/ and outputs/ is
-# excluded — see that file). A second copy of core_cache is stashed at
-# /opt/seed-cache so docker/entrypoint.sh can still seed a fresh volume
-# even after something else gets bind-mounted over /app/results.
+# Copies app code plus results/core_cache if present at build time (it's
+# not excluded by .dockerignore — everything else under results/ and
+# outputs/ is). A second copy is stashed at /opt/seed-cache so
+# docker/entrypoint.sh can still seed a fresh volume even after something
+# else gets bind-mounted over /app/results. `mkdir -p` on the source
+# first means this is a harmless no-op when core_cache is empty/absent
+# (e.g. right after a `git rm -r results/core_cache` reset) rather than
+# a build failure.
 COPY --chown=docr:docr . .
-RUN mkdir -p /opt/seed-cache \
+RUN mkdir -p /app/results/core_cache /opt/seed-cache \
     && cp -r /app/results/core_cache/. /opt/seed-cache/ \
     && chown -R docr:docr /opt/seed-cache \
     && chmod +x docker/entrypoint.sh

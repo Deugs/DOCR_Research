@@ -223,11 +223,12 @@ i.e. they silently fall back to fabricated numbers whenever the named
 `results/core_cache/` entry is missing. As of 2026-08-07 every one of these
 41 functions now sets `is_synthetic = data is None`, logs a warning naming
 the missing cache, and watermarks the figure when the fallback actually
-fires. Only 3 of the 11 core caches they reference currently exist
-(`core_A_mappo_safe_ewc_8bus_100pv`, `core_B_curriculum`, `core_C_baselines`
-— see `results/core_cache/cache_index.json`), so most `run_post_processing.py`
-figures generated from a fresh checkout are still synthetic today — they are
-just honestly labeled as such now instead of silently passed off as real.
+fires. **Update (2026-08-08): `results/core_cache/` was cleared** (previously
+3 of the 11 core caches existed — `core_A_mappo_safe_ewc_8bus_100pv`,
+`core_B_curriculum`, `core_C_baselines`) and is now empty, so *every*
+`run_post_processing.py` figure generated from the current checkout is
+synthetic until Cores A–K are (re-)run. They are still honestly labeled as
+such rather than silently passed off as real.
 See the module docstring at the top of `run_post_processing.py` for the full
 list of missing caches, and `tests/test_phase6.py` / `tests/test_phase7.py`
 for regression coverage locking this behavior in.
@@ -681,15 +682,20 @@ count, not the host's, if you've capped the container with `--cpus`/
 `deploy.resources.limits` — set N accordingly, or leave it unset and let
 each script default to sequential.
 
-**First run seeds the cache automatically.** `results/core_cache/`
-already ships inside the image with the real, already-trained Core A/B/C
-results (§2.2.1) — small (~700KB) but expensive to regenerate. Bind-mounting
-an empty host `results/` directory over `/app/results` would normally
-shadow that baked-in cache and silently force a full retrain. `docker/
-entrypoint.sh` prevents this: on container start, if the mounted
-`results/core_cache/` is empty, it's populated from the image's copy
-before your command runs. Once your host's `results/` directory has real
-content, this is a no-op on every subsequent run.
+**First run seeds the cache automatically, if there's anything to seed.**
+`results/core_cache/` is where Core A–K results get cached (§2.2 Phase 2)
+so later phases and figure generation don't retrain from scratch. It was
+cleared on 2026-08-08 (see §2.2.1) and ships empty today — but the
+mechanism stays in place for whenever it's populated again: bind-mounting
+an empty host `results/` directory over `/app/results` would otherwise
+shadow whatever was baked into the image at build time and silently force
+a full retrain. `docker/entrypoint.sh` prevents that: on container start,
+if the mounted `results/core_cache/` is empty, it's populated from
+whatever the image had baked in (nothing, right now) before your command
+runs. The first time you actually run Core training against a mounted
+volume, its output persists there and every subsequent container start
+sees it — this is a no-op once your host's `results/` directory has real
+content.
 
 ### 11.3 On a remote server / cloud VM
 
@@ -715,12 +721,15 @@ filesystem disappears with the job.
 
 ### 11.4 What's excluded from the image
 
-`.dockerignore` keeps the build context small by excluding `.git/`,
-`papers/` (the unrelated USS v2.0 paper-drafts programme — see
-`CLAUDE.md`), and all *generated* figure/report output under `results/`
-and `outputs/` — everything there is regenerated at runtime into the
-mounted volumes. `results/core_cache/` is the deliberate exception (see
-§11.2 above).
+`.dockerignore` keeps the build context small by excluding `.git/` and
+all *generated* figure/report output under `results/` and `outputs/` —
+everything there is regenerated at runtime into the mounted volumes.
+`results/core_cache/` is the deliberate exception (see §11.2 above). The
+`.dockerignore` entry excluding `papers/` (the unrelated USS v2.0
+paper-drafts programme — see `CLAUDE.md`) is now moot: that directory and
+its contents were deleted from the repo on 2026-08-08, so there's nothing
+left for it to exclude. Left in place in case Programme 2 content ever
+returns to this path.
 
 ### 11.5 Verifying this in your own environment
 
