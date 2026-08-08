@@ -1,0 +1,34 @@
+# Convenience wrapper around `docker build`/`docker run` for local or
+# remote-server use. See "Running in Docker / on the cloud" in
+# EXPERIMENT_GUIDE.md for cloud-specific notes (AWS/GCP/Azure batch jobs
+# don't use this file directly — they run the image built here).
+#
+# Usage:
+#   docker compose build
+#   docker compose run --rm docr python3 run_thesis_experiments.py --all --preset thesis_sweep_fast
+#   docker compose run --rm docr python3 -m pytest tests/ -q
+#   docker compose run --rm docr python3 marl/experiments/exp_fig39_ablation.py --n_seeds 10 --n_workers 4
+services:
+  docr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: docr-marl:latest
+    # Every experiment script uses matplotlib's Agg backend and writes
+    # figures/caches to disk — no ports or GUI needed.
+    volumes:
+      - ./results:/app/results
+      - ./outputs:/app/outputs
+    # Parallelizable scripts (see EXPERIMENT_GUIDE.md §2.2.2) take an
+    # explicit --n_workers N CLI flag, e.g.:
+    #   docker compose run --rm docr python3 marl/experiments/exp_fig39_ablation.py --n_workers 4
+    # Default is sequential (--n_workers 1) — pick N to match the host's
+    # core count, not this file.
+    #
+    # CPU-only workload (see Dockerfile) — no GPU reservation needed.
+    # Uncomment to cap resource usage on a shared/remote host:
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "4"
+    #       memory: 8g

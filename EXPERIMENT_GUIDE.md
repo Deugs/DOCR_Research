@@ -633,3 +633,102 @@ Before submitting results, verify:
 - [ ] PV sweep is exactly 0 %, 20 %, 40 %, 60 % (not 0–100 %)
 - [ ] `exp_fig39_ablation.py`'s EWC ablation was run with curriculum=True
       to verify catastrophic-forgetting prevention claim
+
+---
+
+## 11. Running in Docker / on the cloud (2026-08-08)
+
+The codebase is CPU-only (hand-rolled NumPy/SciPy MLPs trained via
+evolution strategies — no PyTorch/TensorFlow, no GPU dependency), so any
+machine that can run Docker can run these experiments. `Dockerfile`,
+`docker-compose.yml`, `.dockerignore`, and `docker/entrypoint.sh` at the
+repo root package the whole pipeline.
+
+### 11.1 Build
+
+```bash
+docker build -t docr-marl .
+# or: docker compose build
+```
+
+Multi-stage build: a `builder` stage with `build-essential`/`gfortran`
+installs `requirements.txt` into a venv; the final `runtime` stage is a
+plain `python:3.11-slim` with just that venv and the app code copied in
+— no compilers in the shipped image. Runs as a non-root user (`docr`).
+
+### 11.2 Run
+
+Every experiment script writes to `results/` and/or `outputs/` — mount
+both as volumes so output survives past the container's life instead of
+being lost when it's removed:
+
+```bash
+docker run --rm \
+    -v "$(pwd)/results:/app/results" \
+    -v "$(pwd)/outputs:/app/outputs" \
+    docr-marl python3 run_thesis_experiments.py --all --preset thesis_sweep_fast
+
+# Equivalently:
+docker compose run --rm docr python3 run_thesis_experiments.py --all --preset thesis_sweep_fast
+
+# Any of the individual scripts throughout this guide work the same way, e.g.:
+docker compose run --rm docr python3 marl/experiments/exp_fig39_ablation.py --n_seeds 10 --n_workers 4
+docker compose run --rm docr python3 -m pytest tests/ -q
+```
+
+`--n_workers N` (see §2.2.2) should match the *container's* visible CPU
+count, not the host's, if you've capped the container with `--cpus`/
+`deploy.resources.limits` — set N accordingly, or leave it unset and let
+each script default to sequential.
+
+**First run seeds the cache automatically.** `results/core_cache/`
+already ships inside the image with the real, already-trained Core A/B/C
+results (§2.2.1) — small (~700KB) but expensive to regenerate. Bind-mounting
+an empty host `results/` directory over `/app/results` would normally
+shadow that baked-in cache and silently force a full retrain. `docker/
+entrypoint.sh` prevents this: on container start, if the mounted
+`results/core_cache/` is empty, it's populated from the image's copy
+before your command runs. Once your host's `results/` directory has real
+content, this is a no-op on every subsequent run.
+
+### 11.3 On a remote server / cloud VM
+
+Nothing here is cloud-specific — this is a plain CPU container, so the
+same `docker build`/`docker run` commands work unchanged over SSH on any
+VM (AWS EC2, GCP Compute Engine, Azure VM, a bare-metal box, etc.):
+
+```bash
+# copy the repo to the remote host, then:
+ssh user@remote-host 'cd DOCR_Research && docker compose build'
+ssh user@remote-host 'cd DOCR_Research && docker compose run --rm -d docr \
+    python3 run_thesis_experiments.py --all --preset thesis_sweep'
+```
+
+For managed batch/serverless runners (AWS ECS/Fargate or Batch, GCP Cloud
+Run Jobs, Azure Container Instances), push the built image to that
+provider's registry and point the job at it with a command override —
+no GPU instance type is needed anywhere in this pipeline. Whichever
+runner you use, mount or sync a persistent volume to `/app/results` (an
+EBS volume, GCS/S3 fuse mount, etc.) so the Core cache and figures
+survive past a single job's lifetime — a fresh, unmounted container
+filesystem disappears with the job.
+
+### 11.4 What's excluded from the image
+
+`.dockerignore` keeps the build context small by excluding `.git/`,
+`papers/` (the unrelated USS v2.0 paper-drafts programme — see
+`CLAUDE.md`), and all *generated* figure/report output under `results/`
+and `outputs/` — everything there is regenerated at runtime into the
+mounted volumes. `results/core_cache/` is the deliberate exception (see
+§11.2 above).
+
+### 11.5 Verifying this in your own environment
+
+This Dockerfile was authored and its pieces individually verified
+(a from-scratch `pip install -r requirements.txt` into a clean venv, the
+full `pytest tests/` suite passing against it, the entrypoint's seeding
+logic exercised standalone, and `docker compose config` validating the
+compose file) in a sandbox whose network policy blocks pulls from Docker
+Hub's CDN, so the actual `docker build` could not be executed end-to-end
+here. Run `docker build -t docr-marl .` once in your own environment
+before relying on it for a real cloud run.

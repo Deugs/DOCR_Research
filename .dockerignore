@@ -1,0 +1,31 @@
+# Version control / editor
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.DS_Store
+
+# Not needed to run experiments — the USS v2.0 paper drafts are a
+# separate research programme (see CLAUDE.md) with no code dependency
+# on this container.
+papers/
+
+# Generated output — regenerated at runtime into a mounted volume
+# (see docker/entrypoint.sh and DOCKER section of EXPERIMENT_GUIDE.md).
+# results/core_cache is the one exception: it's small, valuable
+# (already-trained Core A/B/C results), and deliberately kept below so
+# it ships baked into the image and gets seeded into fresh volumes.
+results/figures/
+results/logs/
+results/reports/
+results/exp_1/
+outputs/
+
+# Compression archives superseded by extracted directories (per .gitignore)
+*.zip
+
+# Local scratch
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
