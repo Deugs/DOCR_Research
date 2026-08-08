@@ -866,8 +866,9 @@ def run_phase2(progress: ExperimentProgress):
         pv_flag = f" --pv {config.system.pv_penetration}"
         runs_flag = f" --n-runs {config.training.n_runs}"
         episodes_flag = f" --episodes {config.training.n_episodes}"
+        workers_flag = f" --n-workers {config.experiment.n_workers}" if config.experiment.n_workers > 1 else ""
 
-        cmd = f"python run_core_training.py --all{fast_flag}{system_flag}{pv_flag}{runs_flag}{episodes_flag}"
+        cmd = f"python run_core_training.py --all{fast_flag}{system_flag}{pv_flag}{runs_flag}{episodes_flag}{workers_flag}"
 
         run_subprocess(
             cmd,
@@ -1315,6 +1316,7 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument("--system", "-s", type=str, help="System name")
         parser.add_argument("--n-runs", type=int, help="Number of runs")
         parser.add_argument("--episodes", "-e", type=int, help="Episodes per run")
+        parser.add_argument("--n-workers", type=int, help="Parallel worker processes for Core training (Cores A-D)")
         return parser
 
 

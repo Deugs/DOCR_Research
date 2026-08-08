@@ -10,3 +10,13 @@ pytest>=7.4  # tests/ — also used to smoke-test the container image (see Docke
 
 # Optional — analytical fallback is used automatically if absent (see network/pandapower_network.py)
 pandapower>=2.13
+
+# Optional — enables the GPU-accelerated ES perturbation-population update in
+# marl/marl_agents.py (see its module-level comment) when a CUDA device is
+# present; the NumPy CPU path (already the faster of the two on CPU — see
+# EXPERIMENT_GUIDE.md §2.2.2) is used automatically if this is absent or no
+# GPU is detected. The default PyPI wheel bundles CUDA runtime libraries and
+# works on CPU-only machines too (just without acceleration) — swap to
+# --index-url https://download.pytorch.org/whl/cpu for a smaller CPU-only
+# install if you know you'll never have a GPU.
+torch>=2.0
