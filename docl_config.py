@@ -134,7 +134,7 @@ class ExperimentConfig:
     fast_mode: bool = False             # Reduced iterations for testing
     use_synthetic: bool = False            # Enable synthetic fallback on failure
     parallel: bool = False                # Unused placeholder — see n_workers below for the real implementation
-    n_workers: int = 1                  # Worker processes for each Core's independent per-run training (Cores A-D)
+    n_workers: int = 1                  # Worker processes for each Core's independent per-run training (Cores A-F)
     seed: int = 42                       # Global random seed (also in TrainingConfig.seed for training)
     
     # Cores to run (A-K)
@@ -416,7 +416,7 @@ Examples:
     train_group.add_argument("--episodes", "-e", type=int, help="Episodes per run")
     train_group.add_argument("--n-workers", type=int,
                               help="Parallel worker processes for each Core's independent per-run "
-                                   "training (Cores A-D). Default: 1 (sequential). Results are "
+                                   "training (Cores A-F). Default: 1 (sequential). Results are "
                                    "identical regardless of n_workers.")
     train_group.add_argument("--hidden-actor", type=int, help="Actor hidden layer size")
     train_group.add_argument("--hidden-critic", type=int, help="Critic hidden layer size")

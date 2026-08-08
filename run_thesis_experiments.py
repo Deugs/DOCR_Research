@@ -1316,7 +1316,7 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument("--system", "-s", type=str, help="System name")
         parser.add_argument("--n-runs", type=int, help="Number of runs")
         parser.add_argument("--episodes", "-e", type=int, help="Episodes per run")
-        parser.add_argument("--n-workers", type=int, help="Parallel worker processes for Core training (Cores A-D)")
+        parser.add_argument("--n-workers", type=int, help="Parallel worker processes for Core training (Cores A-F)")
         return parser
 
 
