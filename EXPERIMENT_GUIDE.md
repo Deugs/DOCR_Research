@@ -395,26 +395,35 @@ with open('results/benchmark_pv060_merged.pkl','wb') as fh:
 
 ### 2.2.4 Parallelized Core training, and an optional GPU backend (2026-08-08)
 
-**Core A–D parallelization.** These are the four Cores that dominate Phase 2's
-wall-clock cost (see the from-scratch time estimate below) — each runs
-`n_runs` (or `n_runs × methods`/`n_runs × configs`) independent trainings
-with no shared state between them, so they parallelize the same way the
-standalone scripts in §2.2.2 do:
+**Core A–F parallelization.** These are the six Cores that do real,
+independent per-item training with no shared state — A/B/C/D each run
+`n_runs` (or `n_runs × methods`/`n_runs × configs`) trainings, E runs an
+80-config hyperparameter grid × `n_seeds`, F runs one training per network
+size — so they all parallelize the same way the standalone scripts in
+§2.2.2 do:
 
 ```bash
 python run_core_training.py --all --n-workers 8       # match your machine's core count
 python run_thesis_experiments.py --all --n-workers 8  # threads the same flag into Phase 2
 ```
 
-Verified bit-identical output between `--n-workers 1` and `--n-workers 4` on
-real (non-synthetic) Core A training, with a genuine 3.8x wall-clock
-speedup on 4 workers (49.6s → 13.1s at small scale). As with every other
-`--n-workers` flag in this repo: BLAS threads are pinned to 1 per worker via
-`threadpoolctl` to avoid oversubscription, results are pre-allocated by
-run/method/config index rather than appended in completion order, and the
-`hash()`-based seed offsets Cores C and D used internally (non-deterministic
-across processes — see §2.2.2's `zlib.crc32` note) were fixed the same way.
-Default is `--n-workers 1` (sequential, matching prior behavior exactly).
+Verified bit-identical output between `--n-workers 1` and `--n-workers 4`
+on real (non-synthetic) training for all of A, E, and F: Core A 3.8x
+speedup (49.6s → 13.1s), Core E 4.18x (74.0s → 17.7s, small grid), Core F
+3.76x (dispatch/aggregation verified against a fast stub — its own
+per-system training cost, hardcoded at 30,000 steps per system, is the
+same code path already verified via Core A). As with every other
+`--n-workers` flag in this repo: BLAS threads are pinned to 1 per worker
+via `threadpoolctl` to avoid oversubscription, results are pre-allocated
+by run/method/config/system index rather than appended in completion
+order, and the `hash()`-based seed offsets Cores C and D used internally
+(non-deterministic across processes — see §2.2.2's `zlib.crc32` note) were
+fixed the same way. Default is `--n-workers 1` (sequential, matching prior
+behavior exactly).
+
+**Cores G-K are not parallelized.** Each just makes a handful (1-5) of
+sequential calls into `core_eval_bridge.py` for specific figures — much
+smaller in scope than A-F, so left as-is.
 
 From-scratch time estimate for Phase 2 at full scale (`thesis_sweep`
 preset), measured directly on one CPU core rather than trusting this
@@ -424,10 +433,11 @@ EXPERIMENT_GUIDE's previously-stated "1-3 hours" for the fast preset (that
 undercounts too — measured fast-preset cost for Cores A-D alone is closer
 to 7-8 hours single-core): **Cores A-D full-scale is roughly 40 days
 single-core sequential**, dominated by Core C's baseline comparison (4
-trainable methods × 50 runs × 5000 episodes). `--n-workers N` divides this
-close to linearly (per the measured 3.8x-on-4-workers figure above) — on a
-16-32 core cloud VM (see §11), this becomes on the order of days rather
-than weeks.
+trainable methods × 50 runs × 5000 episodes); Core E adds a further chunk
+(80 configs × `n_seeds`) and Core F adds ~30,000 steps per network size.
+`--n-workers N` divides this close to linearly (per the measured
+3.7x-4.2x-on-4-workers figures above) — on a 16-32 core cloud VM (see
+§11), this becomes on the order of days rather than weeks.
 
 **Optional GPU backend.** `marl/marl_agents.py`'s ES actor/critic update
 (`_update_actor_es`/`_update_critic_es` — the same hot path vectorized in

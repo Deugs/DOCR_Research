@@ -1,0 +1,78 @@
+{
+  "b49eaa6997a39bb7": {
+    "name": "core_A_mappo_safe_ewc_8bus_100pv",
+    "created": "2026-08-08T07:42:49.197573",
+    "config_keys": [
+      "name",
+      "method",
+      "system",
+      "pv",
+      "n_runs",
+      "n_episodes",
+      "seed"
+    ],
+    "size_mb": 0.1252450942993164
+  },
+  "3469a5d021a4848f": {
+    "name": "core_B_curriculum",
+    "created": "2026-08-08T09:36:07.887540",
+    "config_keys": [
+      "name",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed"
+    ],
+    "size_mb": 0.0059032440185546875
+  },
+  "8ef557e9e5d0fd8f": {
+    "name": "core_C_baselines",
+    "created": "2026-08-08T10:30:43.085959",
+    "config_keys": [
+      "name",
+      "methods",
+      "n_runs",
+      "n_episodes",
+      "seed"
+    ],
+    "size_mb": 0.02017688751220703
+  },
+  "01956cace7236f39": {
+    "name": "core_B_curriculum",
+    "created": "2026-08-08T17:04:34.438093",
+    "config_keys": [
+      "name",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed"
+    ],
+    "size_mb": 0.0012664794921875
+  },
+  "3366d47c93ca9f00": {
+    "name": "core_D_ablation",
+    "created": "2026-08-08T18:08:50.547944",
+    "config_keys": [
+      "name",
+      "configs",
+      "n_runs",
+      "n_episodes",
+      "seed"
+    ],
+    "size_mb": 0.0004291534423828125
+  },
+  "1cc9342c3c300784": {
+    "name": "core_E_hparam",
+    "created": "2026-08-08T18:15:27.797042",
+    "config_keys": [
+      "name",
+      "lambda_ewc",
+      "alpha_lambda",
+      "hidden_dim",
+      "n_seeds",
+      "n_steps",
+      "seed"
+    ],
+    "size_mb": 0.0073394775390625
+  }
+}
