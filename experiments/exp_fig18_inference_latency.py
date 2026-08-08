@@ -27,7 +27,7 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
@@ -250,7 +250,7 @@ def main(train_steps: int = 8000, n_calls: int = N_CALLS,
     # Panel 3: Phase breakdown boxplot
     ax3 = fig.add_subplot(gs[0, 2])
     phase_data = [phase_arr[label] for label in PHASE_LABELS]
-    bp = ax3.boxplot(phase_data, labels=[l[:8] for l in PHASE_LABELS],
+    bp = ax3.boxplot(phase_data, tick_labels=[l[:8] for l in PHASE_LABELS],
                      patch_artist=True, showmeans=True, meanline=True,
                      showfliers=False)  # Hide outliers for clarity
     colors = ["#2563eb", "#39d353", "#f7c948", "#ff6b35", "#a371f7"]

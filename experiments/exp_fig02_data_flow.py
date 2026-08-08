@@ -25,7 +25,7 @@ from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass, asdict
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib

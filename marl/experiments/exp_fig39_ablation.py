@@ -24,9 +24,16 @@ import os
 import sys
 import argparse
 import logging
+import multiprocessing as mp
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+import threadpoolctl
+
+# Repo root: this file lives at marl/experiments/, so 2 levels of dirname
+# lands at marl/, not the repo root — `from network...`/`from marl...`
+# below need 3 levels. Previously only worked when something else (e.g.
+# marl/experiments/batch_runs.py) had already fixed up sys.path first.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
@@ -120,10 +127,17 @@ def run_config(name, use_comm, use_safe, use_ewc, use_curriculum, seed=42):
         steps = 0
         while not done and steps < 50:
             actions = np.zeros((env.n_agents, env.ACT_DIM))
+            # use_comm policies were trained on comm-enhanced observations
+            # (obs_dim + msg_dim), not raw env obs — mirrors _sample_action
+            # below to avoid the matmul dimension mismatch it documents.
+            if use_comm and base_trainer.comm_graph is not None:
+                policy_obs, _, _ = base_trainer.comm_graph.forward(obs, rng_fisher)
+            else:
+                policy_obs = obs
             for i in range(env.n_agents):
-                a, lp = base_trainer.actor.sample(obs[i], rng_fisher)
+                a, lp = base_trainer.actor.sample(policy_obs[i], rng_fisher)
                 actions[i] = a
-                sample_obs.append(obs[i].copy())
+                sample_obs.append(policy_obs[i].copy())
                 sample_act.append(a.copy())
             obs, _, done, _ = env.step(actions)
             steps += 1
@@ -273,25 +287,55 @@ def compute_marginal_gains(results):
     return gains
 
 
-def main(n_seeds=10, output_dir="outputs"):
+def _pool_worker_init():
+    threadpoolctl.threadpool_limits(1)
+
+
+def _run_job(args):
+    name, comm, safe, ewc, curr, seed = args
+    res = run_config(name, comm, safe, ewc, curr, seed=seed)
+    return name, seed, res
+
+
+def main(n_seeds=10, output_dir="outputs", n_workers=1):
+    # Applied unconditionally — see baselines/experiments/unified_exp_fig05.py
+    # for why: unpinned BLAS threads oversubscribe the machine under
+    # multiprocessing and can make n_workers>1 slower than sequential, and
+    # this also makes single-process results reproducible regardless of the
+    # machine's ambient BLAS thread configuration.
+    threadpoolctl.threadpool_limits(1)
+
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("Figure 39 (v2) — Systematic Ablation Study")
     logger.info("  Configurations: %d", len(CONFIGS))
     logger.info("  Seeds: %d", n_seeds)
-    
-    all_results = {name: [] for name, _, _, _, _ in CONFIGS}
-    
-    for seed in range(n_seeds):
-        logger.info("\\nSeed %d/%d", seed + 1, n_seeds)
-        for name, comm, safe, ewc, curr in CONFIGS:
-            logger.info("  Running: %s", name)
-            res = run_config(name, comm, safe, ewc, curr, seed=seed)
-            all_results[name].append(res)
-            logger.info("    OF=%.4f±%.4f  CTI=%.2f±%.2f", 
-                       res["mean_OF"], res["std_OF"], 
-                       res["mean_CTI"], res["std_CTI"])
+
+    jobs = [
+        (name, comm, safe, ewc, curr, seed)
+        for name, comm, safe, ewc, curr in CONFIGS for seed in range(n_seeds)
+    ]
+    logger.info("Dispatching %d jobs across %d worker(s)", len(jobs), n_workers)
+
+    # Pre-allocated by seed index rather than appended in completion order —
+    # this file's aggregation (mean/std/sem over seeds) is order-independent,
+    # but indexing costs nothing and avoids relying on that staying true if
+    # a future edit adds a paired cross-config comparison.
+    all_results = {name: [None] * n_seeds for name, _, _, _, _ in CONFIGS}
+
+    if n_workers > 1:
+        with mp.Pool(n_workers, initializer=_pool_worker_init) as pool:
+            for name, seed, res in pool.imap_unordered(_run_job, jobs):
+                all_results[name][seed] = res
+                logger.info("  [done] %s seed=%d  OF=%.4f±%.4f  CTI=%.2f±%.2f",
+                            name, seed, res["mean_OF"], res["std_OF"], res["mean_CTI"], res["std_CTI"])
+    else:
+        for job in jobs:
+            name, seed, res = _run_job(job)
+            all_results[name][seed] = res
+            logger.info("  [done] %s seed=%d  OF=%.4f±%.4f  CTI=%.2f±%.2f",
+                        name, seed, res["mean_OF"], res["std_OF"], res["mean_CTI"], res["std_CTI"])
     
     # Aggregate across seeds
     aggregated = []
@@ -404,5 +448,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Figure 39 v2 — Ablation Study")
     p.add_argument("--n_seeds", type=int, default=10)
     p.add_argument("--output_dir", type=str, default="outputs")
+    p.add_argument("--n_workers", type=int, default=1,
+                   help="Parallel worker processes for the (config, seed) job grid. "
+                        "1 = sequential. Results are identical regardless of n_workers.")
     args = p.parse_args()
-    main(args.n_seeds, args.output_dir)
+    main(args.n_seeds, args.output_dir, args.n_workers)

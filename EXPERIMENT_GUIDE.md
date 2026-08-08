@@ -223,11 +223,12 @@ i.e. they silently fall back to fabricated numbers whenever the named
 `results/core_cache/` entry is missing. As of 2026-08-07 every one of these
 41 functions now sets `is_synthetic = data is None`, logs a warning naming
 the missing cache, and watermarks the figure when the fallback actually
-fires. Only 3 of the 11 core caches they reference currently exist
-(`core_A_mappo_safe_ewc_8bus_100pv`, `core_B_curriculum`, `core_C_baselines`
-— see `results/core_cache/cache_index.json`), so most `run_post_processing.py`
-figures generated from a fresh checkout are still synthetic today — they are
-just honestly labeled as such now instead of silently passed off as real.
+fires. **Update (2026-08-08): `results/core_cache/` was cleared** (previously
+3 of the 11 core caches existed — `core_A_mappo_safe_ewc_8bus_100pv`,
+`core_B_curriculum`, `core_C_baselines`) and is now empty, so *every*
+`run_post_processing.py` figure generated from the current checkout is
+synthetic until Cores A–K are (re-)run. They are still honestly labeled as
+such rather than silently passed off as real.
 See the module docstring at the top of `run_post_processing.py` for the full
 list of missing caches, and `tests/test_phase6.py` / `tests/test_phase7.py`
 for regression coverage locking this behavior in.
@@ -237,6 +238,112 @@ repaired `baselines/experiments/unified_exp_fig05.py` (Fig 5, now including
 GA-SQP/HWOA/HHO/JAYA/EEO with real Wilcoxon/Mann-Whitney + Cliff's delta
 testing) are genuine — they train/evaluate real models when their Core cache
 is present.
+
+### 2.2.2 Training efficiency (2026-08-07)
+
+Three changes reduce how long real training actually takes, none of which
+change results:
+
+- `marl/marl_agents.py`'s ES actor/critic updates now batch their forward
+  passes across a whole rollout in one vectorized call instead of looping
+  per-timestep — ~25x faster actor updates, ~5x faster critic updates,
+  verified bit-identical to the old per-timestep loop.
+- `MAPPOMARLTrainer.train()` accepts `early_stop_patience` (default `None`,
+  opt-in) to stop once the objective hasn't improved in that many
+  consecutive rollouts, instead of always running the full fixed
+  `total_steps` budget. Gated on reaching the final curriculum stage when
+  curriculum learning is enabled.
+- The same batching approach was applied to `marl/single_agent_ppo.py`
+  (14.7x on `log_prob`) and `marl/comm_graph_gradient.py`'s critic (4.1x),
+  both verified bit-identical to their per-timestep originals.
+  **Not** applied to `marl/comm_graph.py`'s GNN attention layer — measured
+  *slower* when batched (0.5x–0.9x at n=14–46 agents). The O(n²) pairwise
+  tensor construction (`repeat`+`concatenate`) allocates a large temporary
+  array per call; batching over the rollout multiplies that allocation by
+  the rollout length, which costs more than the Python loop it removes.
+  Benchmark before assuming a vectorization helps — it does for plain
+  matmul-based layers, not for this attention mechanism.
+- `--n_workers N` parallelizes independent (method/config, seed) job grids
+  across N processes in `baselines/experiments/unified_exp_fig05.py`,
+  `baselines/experiments/exp_fig05_pv_sweep_evaluation.py`,
+  `experiments/exp_fig12_convergence_curves.py`,
+  `marl/experiments/exp_fig15_scalability.py`,
+  `marl/experiments/exp_fig16_ewc_effectiveness.py`,
+  `marl/experiments/exp_fig39_ablation.py`, and
+  `marl/experiments/exp_fig40_hparam_grid.py` — each job is independently
+  seeded and self-contained, so results are bit-identical regardless of N
+  (verified). Each worker is pinned to 1 BLAS thread via `threadpoolctl`;
+  without this, N worker processes each trying to use all available cores
+  for NumPy/BLAS oversubscribes the machine and makes `--n_workers 4`
+  *slower* than sequential, not faster — measured directly during
+  development (1m4s sequential vs 1m11s naively-parallel, vs 18s once
+  thread-pinned, on `unified_exp_fig05.py`). Default is `--n_workers 1`
+  (sequential); pass a worker count matching available cores to use this.
+  Results are pre-allocated by seed/config index (never appended in
+  completion order) so paired statistical tests across methods stay
+  correctly aligned regardless of which worker finishes first, and seed
+  offsets use `zlib.crc32` instead of `hash()` (Python randomizes `hash()`
+  per process by default, which silently breaks reproducibility across
+  worker processes).
+- While instrumenting the above scripts for parallelization, three
+  pre-existing correctness bugs were found and fixed (unrelated to
+  parallelization itself, but each blocked the script from completing a
+  run at all):
+  - `marl/experiments/exp_fig39_ablation.py`'s Fisher-information estimator
+    (`_estimate_fisher_for_task`) sampled actions from raw environment
+    observations even when `use_comm=True`, crashing with a matmul
+    dimension mismatch the moment EWC ran on a comm-enabled config (2 of 5
+    ablation arms). Fixed to apply the same comm-graph enhancement already
+    used correctly elsewhere in the file.
+  - `marl/experiments/exp_fig16_ewc_effectiveness.py` and
+    `marl/experiments/exp_fig40_hparam_grid.py` each called `main()` with
+    more positional arguments than the function accepted (an undefined
+    `system` in the latter's case) — both scripts raised immediately on
+    invocation. Fixed by adding the missing `system`/`n_workers` parameters
+    and threading `system` through to the network-loading calls that had
+    been silently ignoring it.
+  - `baselines/experiments/exp_fig05_pv_sweep_evaluation.py` only added its
+    own directory to `sys.path`, not the repo root, so running it directly
+    (`python3 baselines/experiments/exp_fig05_pv_sweep_evaluation.py`)
+    failed with `ModuleNotFoundError: No module named 'network'`. Fixed to
+    match the repo-root-relative pattern used elsewhere.
+
+### 2.2.3 Standalone-invocation bugs fixed repo-wide (2026-08-07)
+
+A full sweep (`python3 <script> --help` from repo root, for every script
+with a `sys.path.insert`/`__main__` block) found and fixed every remaining
+instance of the `sys.path` bug noted above, plus a few unrelated crash
+bugs turned up by the same sweep:
+
+- ~25 files across `experiments/`, `mains/`, `marl/` (top level),
+  `marl/utils/`, and `evaluation/utils/` only added their own directory to
+  `sys.path`, not the repo root, so `from network...`/`from marl...`
+  failed immediately with `ModuleNotFoundError` whenever run directly
+  (they worked only when something else had already fixed up `sys.path`
+  first, e.g. via `run_thesis_experiments.py`'s direct-call path). Fixed
+  to the same repo-root-relative pattern used elsewhere.
+- `marl/experiments/attention_evolution.py` and
+  `marl/experiments/curriculum_trainer.py` each registered `--system`
+  twice with `argparse`, which raises `ArgumentError` unconditionally —
+  neither script could run at all, regardless of arguments.
+- `mains/main1.py` imported `MARLTrainer`, a class that no longer exists
+  in `marl/marl_agents.py` (renamed to `MAPPOMARLTrainer` — every other
+  `mains/main*.py` already used the new name). Fixed the import and the
+  two call sites.
+- `phase2_scripts/*.py` (5 of 7 files) assumed the `exp_fig*.py` file they
+  wrap lives alongside them — true only if this legacy adapter package
+  (see `README_PHASE2_ADAPTERS.md`) had been copied over the repo root as
+  its own instructions describe, which never happened. In this repo the
+  real files live in `marl/experiments/` or `marl/utils/`. Pointed each
+  adapter's `sys.path` entry at the real location instead of assuming
+  co-location. (Confirmed unreferenced by any live pipeline code — these
+  adapters are superseded by same-named, more capable versions already in
+  `marl/experiments/`/`marl/utils/` — but fixed rather than removed since
+  removal wasn't asked for.)
+
+Verified: every script in this sweep now reaches its own `--help` output
+(or, for scripts without argparse, runs past the import section) instead
+of crashing on import.
 
 ### 2.3 Running phases individually
 
@@ -527,3 +634,110 @@ Before submitting results, verify:
 - [ ] PV sweep is exactly 0 %, 20 %, 40 %, 60 % (not 0–100 %)
 - [ ] `exp_fig39_ablation.py`'s EWC ablation was run with curriculum=True
       to verify catastrophic-forgetting prevention claim
+
+---
+
+## 11. Running in Docker / on the cloud (2026-08-08)
+
+The codebase is CPU-only (hand-rolled NumPy/SciPy MLPs trained via
+evolution strategies — no PyTorch/TensorFlow, no GPU dependency), so any
+machine that can run Docker can run these experiments. `Dockerfile`,
+`docker-compose.yml`, `.dockerignore`, and `docker/entrypoint.sh` at the
+repo root package the whole pipeline.
+
+### 11.1 Build
+
+```bash
+docker build -t docr-marl .
+# or: docker compose build
+```
+
+Multi-stage build: a `builder` stage with `build-essential`/`gfortran`
+installs `requirements.txt` into a venv; the final `runtime` stage is a
+plain `python:3.11-slim` with just that venv and the app code copied in
+— no compilers in the shipped image. Runs as a non-root user (`docr`).
+
+### 11.2 Run
+
+Every experiment script writes to `results/` and/or `outputs/` — mount
+both as volumes so output survives past the container's life instead of
+being lost when it's removed:
+
+```bash
+docker run --rm \
+    -v "$(pwd)/results:/app/results" \
+    -v "$(pwd)/outputs:/app/outputs" \
+    docr-marl python3 run_thesis_experiments.py --all --preset thesis_sweep_fast
+
+# Equivalently:
+docker compose run --rm docr python3 run_thesis_experiments.py --all --preset thesis_sweep_fast
+
+# Any of the individual scripts throughout this guide work the same way, e.g.:
+docker compose run --rm docr python3 marl/experiments/exp_fig39_ablation.py --n_seeds 10 --n_workers 4
+docker compose run --rm docr python3 -m pytest tests/ -q
+```
+
+`--n_workers N` (see §2.2.2) should match the *container's* visible CPU
+count, not the host's, if you've capped the container with `--cpus`/
+`deploy.resources.limits` — set N accordingly, or leave it unset and let
+each script default to sequential.
+
+**First run seeds the cache automatically, if there's anything to seed.**
+`results/core_cache/` is where Core A–K results get cached (§2.2 Phase 2)
+so later phases and figure generation don't retrain from scratch. It was
+cleared on 2026-08-08 (see §2.2.1) and ships empty today — but the
+mechanism stays in place for whenever it's populated again: bind-mounting
+an empty host `results/` directory over `/app/results` would otherwise
+shadow whatever was baked into the image at build time and silently force
+a full retrain. `docker/entrypoint.sh` prevents that: on container start,
+if the mounted `results/core_cache/` is empty, it's populated from
+whatever the image had baked in (nothing, right now) before your command
+runs. The first time you actually run Core training against a mounted
+volume, its output persists there and every subsequent container start
+sees it — this is a no-op once your host's `results/` directory has real
+content.
+
+### 11.3 On a remote server / cloud VM
+
+Nothing here is cloud-specific — this is a plain CPU container, so the
+same `docker build`/`docker run` commands work unchanged over SSH on any
+VM (AWS EC2, GCP Compute Engine, Azure VM, a bare-metal box, etc.):
+
+```bash
+# copy the repo to the remote host, then:
+ssh user@remote-host 'cd DOCR_Research && docker compose build'
+ssh user@remote-host 'cd DOCR_Research && docker compose run --rm -d docr \
+    python3 run_thesis_experiments.py --all --preset thesis_sweep'
+```
+
+For managed batch/serverless runners (AWS ECS/Fargate or Batch, GCP Cloud
+Run Jobs, Azure Container Instances), push the built image to that
+provider's registry and point the job at it with a command override —
+no GPU instance type is needed anywhere in this pipeline. Whichever
+runner you use, mount or sync a persistent volume to `/app/results` (an
+EBS volume, GCS/S3 fuse mount, etc.) so the Core cache and figures
+survive past a single job's lifetime — a fresh, unmounted container
+filesystem disappears with the job.
+
+### 11.4 What's excluded from the image
+
+`.dockerignore` keeps the build context small by excluding `.git/` and
+all *generated* figure/report output under `results/` and `outputs/` —
+everything there is regenerated at runtime into the mounted volumes.
+`results/core_cache/` is the deliberate exception (see §11.2 above). The
+`.dockerignore` entry excluding `papers/` (the unrelated USS v2.0
+paper-drafts programme — see `CLAUDE.md`) is now moot: that directory and
+its contents were deleted from the repo on 2026-08-08, so there's nothing
+left for it to exclude. Left in place in case Programme 2 content ever
+returns to this path.
+
+### 11.5 Verifying this in your own environment
+
+This Dockerfile was authored and its pieces individually verified
+(a from-scratch `pip install -r requirements.txt` into a clean venv, the
+full `pytest tests/` suite passing against it, the entrypoint's seeding
+logic exercised standalone, and `docker compose config` validating the
+compose file) in a sandbox whose network policy blocks pulls from Docker
+Hub's CDN, so the actual `docker build` could not be executed end-to-end
+here. Run `docker build -t docr-marl .` once in your own environment
+before relying on it for a real cloud run.

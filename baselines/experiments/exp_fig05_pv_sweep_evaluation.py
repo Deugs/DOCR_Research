@@ -21,15 +21,17 @@ import os
 import sys
 import logging
 import argparse
+import multiprocessing as mp
 from pathlib import Path
 from typing import Dict, List
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import threadpoolctl
 
 from network.network_data import NETWORKS
 from marl.marl_env import DynamicDOCREnv
@@ -159,30 +161,57 @@ def evaluate_traditional(net, env, n_eval: int, seed: int) -> Dict:
     }
 
 
+def _pool_worker_init():
+    threadpoolctl.threadpool_limits(1)
+
+
+def _run_job(args):
+    method, pv, seed, train_steps, n_eval, system = args
+    res = train_and_evaluate_method(method, pv, seed, train_steps, n_eval, system=system)
+    return method, pv, seed, res
+
+
 def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
-         output_dir: str = "outputs", system: str = "8bus"):
+         output_dir: str = "outputs", system: str = "8bus", n_workers: int = 1):
+    # Applied unconditionally — see unified_exp_fig05.py for why: unpinned
+    # BLAS threads oversubscribe the machine under multiprocessing and can
+    # make n_workers>1 slower than sequential, and this also makes
+    # single-process results reproducible regardless of the machine's
+    # ambient BLAS thread configuration.
+    threadpoolctl.threadpool_limits(1)
+
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("Figure 5 — PV Penetration Sweep Evaluation")
     logger.info("  System: %s", system)
     logger.info("  Methods: %s", METHODS)
     logger.info("  PV levels: %s", PV_LEVELS)
     logger.info("  Seeds: %d", n_seeds)
-    
-    results = {method: {pv: [] for pv in PV_LEVELS} for method in METHODS}
-    
-    for method in METHODS:
-        logger.info("\n=== Method: %s ===", method)
-        for pv in PV_LEVELS:
-            logger.info("  PV level: %.0f%%", pv * 100)
-            seed_results = []
-            for seed in range(n_seeds):
-                res = train_and_evaluate_method(method, pv, seed, train_steps, n_eval, system=system)
-                seed_results.append(res)
-                logger.info("    Seed %d: OF=%.4f±%.4f CTI=%.1f",
-                           seed, res["mean_OF"], res["std_OF"], res["cti_viols"])
-            results[method][pv] = seed_results
+
+    jobs = [
+        (method, pv, seed, train_steps, n_eval, system)
+        for method in METHODS for pv in PV_LEVELS for seed in range(n_seeds)
+    ]
+    logger.info("Dispatching %d jobs across %d worker(s)", len(jobs), n_workers)
+
+    # Pre-allocated by seed index rather than appended in completion order —
+    # this file's aggregation (mean/std over seeds) is order-independent,
+    # but indexing costs nothing and avoids relying on that staying true.
+    results = {method: {pv: [None] * n_seeds for pv in PV_LEVELS} for method in METHODS}
+
+    if n_workers > 1:
+        with mp.Pool(n_workers, initializer=_pool_worker_init) as pool:
+            for method, pv, seed, res in pool.imap_unordered(_run_job, jobs):
+                results[method][pv][seed] = res
+                logger.info("  [done] %s PV=%.0f%% seed=%d: OF=%.4f±%.4f CTI=%.1f",
+                            method, pv * 100, seed, res["mean_OF"], res["std_OF"], res["cti_viols"])
+    else:
+        for job in jobs:
+            method, pv, seed, res = _run_job(job)
+            results[method][pv][seed] = res
+            logger.info("  [done] %s PV=%.0f%% seed=%d: OF=%.4f±%.4f CTI=%.1f",
+                        method, pv * 100, seed, res["mean_OF"], res["std_OF"], res["cti_viols"])
     
     # Aggregate
     aggregated = {}
@@ -267,5 +296,7 @@ if __name__ == "__main__":
     p.add_argument("--output_dir", type=str, default="outputs")
     p.add_argument("--system", type=str, default="8bus",
                    help="Test system: 8bus, 14bus, 39bus, etc.")
+    p.add_argument("--n_workers", type=int, default=1,
+                   help="Parallel worker processes (default: 1 = sequential)")
     args = p.parse_args()
-    main(args.n_seeds, args.train_steps, args.n_eval, args.output_dir, args.system)
+    main(args.n_seeds, args.train_steps, args.n_eval, args.output_dir, args.system, args.n_workers)

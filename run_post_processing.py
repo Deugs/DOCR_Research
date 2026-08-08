@@ -856,7 +856,7 @@ def fig_12_convergence_bands():
         final_returns.append(np.random.normal(final_mean, final_std, 50))
         labels.append(method)
     
-    bp = ax.boxplot(final_returns, labels=labels, patch_artist=True)
+    bp = ax.boxplot(final_returns, tick_labels=labels, patch_artist=True)
     for patch, label in zip(bp["boxes"], labels):
         patch.set_facecolor(colors.get(label, "#333"))
         patch.set_alpha(0.7)

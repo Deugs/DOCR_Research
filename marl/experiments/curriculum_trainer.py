@@ -48,7 +48,7 @@ def _find_exp_file(filename):
 def main():
     # Parse args that run_thesis_experiments.py passes
     p = argparse.ArgumentParser(description="Adapter for curriculum_trainer.py")
-    p.add_argument("--system", type=str, default="8bus")
+    p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     p.add_argument("--pv", type=float, default=1.0)
     p.add_argument("--method", type=str, default="MAPPO-Safe")
     p.add_argument("--episodes", type=int, default=5000)
@@ -57,7 +57,6 @@ def main():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", type=str, default="outputs/fig_stub.pdf")
     p.add_argument("--tasks", nargs="+", type=float, default=None)
-    p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     p.add_argument("--log", type=str, default="")
     args = p.parse_args()
 
