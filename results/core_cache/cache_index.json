@@ -1,0 +1,16 @@
+{
+  "b49eaa6997a39bb7": {
+    "name": "core_A_mappo_safe_ewc_8bus_100pv",
+    "created": "2026-08-08T07:42:49.197573",
+    "config_keys": [
+      "name",
+      "method",
+      "system",
+      "pv",
+      "n_runs",
+      "n_episodes",
+      "seed"
+    ],
+    "size_mb": 0.1252450942993164
+  }
+}
