@@ -133,7 +133,8 @@ class ExperimentConfig:
     # Execution
     fast_mode: bool = False             # Reduced iterations for testing
     use_synthetic: bool = False            # Enable synthetic fallback on failure
-    parallel: bool = False                # Enable parallel execution (future)
+    parallel: bool = False                # Unused placeholder — see n_workers below for the real implementation
+    n_workers: int = 1                  # Worker processes for each Core's independent per-run training (Cores A-D)
     seed: int = 42                       # Global random seed (also in TrainingConfig.seed for training)
     
     # Cores to run (A-K)
@@ -413,6 +414,10 @@ Examples:
     train_group = parser.add_argument_group("Training Configuration")
     train_group.add_argument("--n-runs", type=int, help="Number of independent runs")
     train_group.add_argument("--episodes", "-e", type=int, help="Episodes per run")
+    train_group.add_argument("--n-workers", type=int,
+                              help="Parallel worker processes for each Core's independent per-run "
+                                   "training (Cores A-D). Default: 1 (sequential). Results are "
+                                   "identical regardless of n_workers.")
     train_group.add_argument("--hidden-actor", type=int, help="Actor hidden layer size")
     train_group.add_argument("--hidden-critic", type=int, help="Critic hidden layer size")
     train_group.add_argument("--lr-actor", type=float, help="Actor learning rate")
@@ -538,6 +543,7 @@ def config_from_args(args: argparse.Namespace) -> DOCRConfig:
         'alpha_lambda': ('training', 'alpha_lambda'),
         'seed': ('training', 'seed'),
         'fast': ('experiment', 'fast_mode'),
+        'n_workers': ('experiment', 'n_workers'),
         'no_synthetic': ('experiment', 'use_synthetic', lambda x: not x),
         'cores': ('experiment', 'cores'),
         'output_dir': ('experiment', 'output_dir'),

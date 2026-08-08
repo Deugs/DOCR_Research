@@ -393,6 +393,80 @@ with open('results/benchmark_pv060_merged.pkl','wb') as fh:
 "
 ```
 
+### 2.2.4 Parallelized Core training, and an optional GPU backend (2026-08-08)
+
+**Core A–D parallelization.** These are the four Cores that dominate Phase 2's
+wall-clock cost (see the from-scratch time estimate below) — each runs
+`n_runs` (or `n_runs × methods`/`n_runs × configs`) independent trainings
+with no shared state between them, so they parallelize the same way the
+standalone scripts in §2.2.2 do:
+
+```bash
+python run_core_training.py --all --n-workers 8       # match your machine's core count
+python run_thesis_experiments.py --all --n-workers 8  # threads the same flag into Phase 2
+```
+
+Verified bit-identical output between `--n-workers 1` and `--n-workers 4` on
+real (non-synthetic) Core A training, with a genuine 3.8x wall-clock
+speedup on 4 workers (49.6s → 13.1s at small scale). As with every other
+`--n-workers` flag in this repo: BLAS threads are pinned to 1 per worker via
+`threadpoolctl` to avoid oversubscription, results are pre-allocated by
+run/method/config index rather than appended in completion order, and the
+`hash()`-based seed offsets Cores C and D used internally (non-deterministic
+across processes — see §2.2.2's `zlib.crc32` note) were fixed the same way.
+Default is `--n-workers 1` (sequential, matching prior behavior exactly).
+
+From-scratch time estimate for Phase 2 at full scale (`thesis_sweep`
+preset), measured directly on one CPU core rather than trusting this
+codebase's own stale "~8-10 GPU-days" comment (there's no GPU dependency
+anywhere in the *default* code path to make that unit meaningful) or
+EXPERIMENT_GUIDE's previously-stated "1-3 hours" for the fast preset (that
+undercounts too — measured fast-preset cost for Cores A-D alone is closer
+to 7-8 hours single-core): **Cores A-D full-scale is roughly 40 days
+single-core sequential**, dominated by Core C's baseline comparison (4
+trainable methods × 50 runs × 5000 episodes). `--n-workers N` divides this
+close to linearly (per the measured 3.8x-on-4-workers figure above) — on a
+16-32 core cloud VM (see §11), this becomes on the order of days rather
+than weeks.
+
+**Optional GPU backend.** `marl/marl_agents.py`'s ES actor/critic update
+(`_update_actor_es`/`_update_critic_es` — the same hot path vectorized in
+§2.2.2) has a second, GPU-only implementation that additionally batches
+across the 2×n_pert perturbation *population*, not just across the T-step
+rollout, via `torch.einsum`. It activates automatically — nothing to
+configure — when both `torch` is importable and `torch.cuda.is_available()`
+is true; otherwise (including "torch is installed but no GPU," the common
+case) every existing code path is exactly what it was before.
+
+This is *not* also used as the CPU implementation, on purpose: benchmarked
+directly, the same batched-population reformulation measured **slower**
+than the existing per-perturbation loop on CPU (0.51x–0.68x — building the
+`(T, 2×n_pert, hidden)` intermediate tensors costs more than the loop's
+small per-perturbation BLAS calls save). This is the same category of
+result as `marl/comm_graph.py`'s negative vectorization finding in
+§2.2.2 — a batching strategy that looks like a strict improvement on paper
+can lose on CPU once you account for allocation cost, so it isn't assumed
+to help without measuring it.
+
+Numerical correctness of both the batched-population reformulation and its
+GPU/torch port were verified by comparing against the original
+per-perturbation-loop implementation with identical starting parameters and
+identical RNG state (`copy.deepcopy`'d bit-generator state, restored before
+each variant runs) — actor and critic gradients matched to ~1e-16 (float64
+machine epsilon), for both `use_comm=True` and `use_comm=False`. **What
+could not be verified: actual speedup on real GPU hardware.** No GPU was
+available in the environment this was written in, so the "GPU-only, not
+CPU" backend-selection choice is an informed bet — GPUs are generally
+better suited than CPU/BLAS to many-small-matmul batched workloads like
+this one (kernel-launch overhead amortizes across the batch instead of
+being paid per perturbation) — not a benchmarked result. If you have access
+to a CUDA machine, `python -m pytest tests/ -q` after installing torch with
+CUDA support is a reasonable place to start re-verifying this, followed by
+timing `MAPPOMARLTrainer.train()` before/after forcing `torch.cuda.is_available()`
+to confirm it actually helps at your problem sizes before trusting it for a
+real run — the same "benchmark, don't assume" standard this finding itself
+was held to.
+
 ---
 
 ## 3. Results structure
@@ -639,9 +713,11 @@ Before submitting results, verify:
 
 ## 11. Running in Docker / on the cloud (2026-08-08)
 
-The codebase is CPU-only (hand-rolled NumPy/SciPy MLPs trained via
-evolution strategies — no PyTorch/TensorFlow, no GPU dependency), so any
-machine that can run Docker can run these experiments. `Dockerfile`,
+The codebase runs entirely on CPU by default (hand-rolled NumPy/SciPy MLPs
+trained via evolution strategies) — no PyTorch/TensorFlow required — so any
+machine that can run Docker can run these experiments. As of 2026-08-08
+there's also an optional, auto-detected GPU backend (§2.2.4); the default
+image build below deliberately does not include it (see §11.1a). `Dockerfile`,
 `docker-compose.yml`, `.dockerignore`, and `docker/entrypoint.sh` at the
 repo root package the whole pipeline.
 
@@ -656,6 +732,31 @@ Multi-stage build: a `builder` stage with `build-essential`/`gfortran`
 installs `requirements.txt` into a venv; the final `runtime` stage is a
 plain `python:3.11-slim` with just that venv and the app code copied in
 — no compilers in the shipped image. Runs as a non-root user (`docr`).
+
+### 11.1a GPU build (optional)
+
+The default build above skips `torch` even though it's listed in
+`requirements.txt` — its CUDA-bundled wheel is large, and per §2.2.4 the
+plain CPU path already benchmarks faster on this workload's problem sizes,
+so most deployments gain nothing from paying that download cost. If you're
+deploying to a machine that actually has a GPU and want
+`marl/marl_agents.py`'s GPU backend to activate:
+
+```bash
+docker build --build-arg INSTALL_TORCH=true -t docr-marl-gpu .
+docker run --gpus all --rm \
+    -v "$(pwd)/results:/app/results" -v "$(pwd)/outputs:/app/outputs" \
+    docr-marl-gpu python3 run_thesis_experiments.py --all --preset thesis_sweep_fast
+```
+
+`--gpus all` requires the NVIDIA Container Toolkit installed on the host
+(most GPU cloud VM images — AWS Deep Learning AMIs, GCP's GPU-optimized
+images, etc. — already have it). Without `--gpus all` at `docker run` time,
+a GPU-build image still runs correctly — `torch.cuda.is_available()` just
+comes back `False` inside the container and everything uses the CPU path,
+same as the default build. As documented in §2.2.4, actual GPU speedup for
+this workload was not benchmarked (no GPU was available while writing this)
+— treat this as untested until you've measured it on your own hardware.
 
 ### 11.2 Run
 

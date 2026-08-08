@@ -41,6 +41,32 @@ from network.relay_physics import (
     TMS_MIN, TMS_MAX, CTI, TOP_MIN, TOP_MAX,
 )
 
+# Optional GPU backend for the ES perturbation-population update
+# (_update_actor_es_gpu/_update_critic_es_gpu below). torch is not a hard
+# dependency — everything works exactly as before if it's absent or no CUDA
+# device is present. See those methods' docstrings for why this is GPU-only
+# rather than also replacing the CPU path: the same batched-population
+# reformulation measured *slower* than the plain per-perturbation loop on
+# CPU (large (T, 2*n_pert, hidden) intermediate tensors cost more to build
+# than the loop's small per-perturbation BLAS calls save), so it would be a
+# regression there. It was not possible to benchmark real CUDA hardware
+# while writing this — no GPU was available in that environment — so this
+# is an informed, disclosed bet that the same batching wins on GPU (where
+# kernel-launch overhead, not allocation, dominates for many small ops),
+# not a verified result. Numerical correctness was verified by forcing this
+# code path onto CPU-mode torch tensors and comparing against the NumPy
+# per-perturbation loop (bit-identical to within ~1e-16, float64 vs float64).
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+    _GPU_AVAILABLE = torch.cuda.is_available()
+    _GPU_DEVICE = torch.device("cuda") if _GPU_AVAILABLE else None
+except ImportError:
+    torch = None
+    _TORCH_AVAILABLE = False
+    _GPU_AVAILABLE = False
+    _GPU_DEVICE = None
+
 
 def relu(x): return np.maximum(0, x)
 def tanh(x): return np.tanh(x)
@@ -324,6 +350,56 @@ class MAPPOBuffer:
         self.ptr = self.size = 0
 
 
+def _mlp_forward_population_torch(x, param_batch, in_dim, hidden, out_dim):
+    """torch.einsum equivalent of a 2-hidden-layer MLP.forward, batched
+    across a population of P differently-parameterized copies — the GPU
+    counterpart of the (removed, CPU-regression) NumPy population forward.
+    x: (T, in_dim) torch tensor. param_batch: (P, n_params) torch tensor,
+    same flat layout as MLP.get_params()/set_params(). Returns (T, P, out_dim)."""
+    P = param_batch.shape[0]
+    sizes = [in_dim * hidden, hidden, hidden * hidden, hidden, out_dim * hidden, out_dim]
+    W1, b1, W2, b2, W3, b3 = torch.split(param_batch, sizes, dim=1)
+    W1 = W1.reshape(P, hidden, in_dim)
+    W2 = W2.reshape(P, hidden, hidden)
+    W3 = W3.reshape(P, out_dim, hidden)
+
+    h1 = torch.relu(torch.einsum('tj,phj->tph', x, W1) + b1[None, :, :])
+    h2 = torch.relu(torch.einsum('tph,pkh->tpk', h1, W2) + b2[None, :, :])
+    return torch.einsum('tpk,pok->tpo', h2, W3) + b3[None, :, :]
+
+
+def _actor_log_prob_population_torch(obs, action, theta_batch, obs_dim, hidden, act_dim):
+    """torch counterpart of SharedGaussianActor.log_prob, batched across a
+    population of P perturbed parameter vectors (same flat layout as
+    get_all_params()/set_all_params(): net params then log_std).
+    obs: (T, obs_dim), action: (T, act_dim), theta_batch: (P, n_params)
+    torch tensors. Returns (T, P)."""
+    n_net = obs_dim * hidden + hidden + hidden * hidden + hidden + act_dim * hidden + act_dim
+    net_batch = theta_batch[:, :n_net]
+    log_std_batch = theta_batch[:, n_net:]  # (P, act_dim)
+    mean = torch.tanh(_mlp_forward_population_torch(obs, net_batch, obs_dim, hidden, act_dim))  # (T, P, act_dim)
+    std = torch.exp(torch.clamp(log_std_batch, -3, 0))  # (P, act_dim)
+    z = (action[:, None, :] - mean) / (std[None, :, :] + 1e-8)
+    terms = -0.5 * (z ** 2 + 2 * log_std_batch[None, :, :] + float(np.log(2 * np.pi)))
+    return terms.sum(dim=-1)  # (T, P)
+
+
+def _critic_global_state(TMS, PS, pv_level, topology_flag, neighbor_stats, use_global_state, fault_type_idx=0):
+    """Builds the same [TMS||PS||pv||topology||fault_onehot||neighbor_stats]
+    global-state matrix as MAPPOCentralCritic.value_batch, as a standalone
+    NumPy function so the GPU critic update can convert it to a torch
+    tensor once rather than duplicating this concatenation inline."""
+    T = TMS.shape[0]
+    global_state = np.concatenate([TMS, PS], axis=1)
+    fault_onehot = np.zeros((T, 4))
+    if 0 <= fault_type_idx < 4:
+        fault_onehot[:, fault_type_idx] = 1.0
+    extra = np.stack([np.asarray(pv_level), np.asarray(topology_flag)], axis=1)
+    if use_global_state and neighbor_stats is not None:
+        return np.concatenate([global_state, extra, fault_onehot, neighbor_stats], axis=1)
+    return np.concatenate([global_state, extra, fault_onehot], axis=1)
+
+
 class MAPPOMARLTrainer:
     """
     MAPPO Trainer with optional GNN Communication.
@@ -467,6 +543,8 @@ class MAPPOMARLTrainer:
 
     def _update_actor_es(self, agent_idx, obs_batch, act_batch, adv_batch, old_lp, n_pert=10, sigma=0.02):
         """OpenAI-ES surrogate policy gradient with PPO-clip."""
+        if _GPU_AVAILABLE:
+            return self._update_actor_es_gpu(agent_idx, obs_batch, act_batch, adv_batch, old_lp, n_pert, sigma)
         theta = self.actor.get_all_params()
         noises, rewards = [], []
 
@@ -490,6 +568,8 @@ class MAPPOMARLTrainer:
 
     def _update_critic_es(self, obs_batch, ret_batch, n_pert=10, sigma=0.02):
         """Update centralized critic with ES."""
+        if _GPU_AVAILABLE:
+            return self._update_critic_es_gpu(obs_batch, ret_batch, n_pert, sigma)
         theta = self.critic.get_params()
         noises, losses = [], []
 
@@ -523,6 +603,74 @@ class MAPPOMARLTrainer:
         grad = sum(l * n for l, n in zip(l_norm, noises))
         grad /= (2 * n_pert * sigma)
         self.critic.set_params(theta + self.lr_critic * grad)
+
+    def _update_actor_es_gpu(self, agent_idx, obs_batch, act_batch, adv_batch, old_lp, n_pert=10, sigma=0.02):
+        """GPU path for _update_actor_es: same OpenAI-ES/PPO-clip math, but
+        all 2*n_pert perturbations are evaluated as one batched population
+        instead of a Python loop, via torch.einsum on _GPU_DEVICE. Only
+        called when _GPU_AVAILABLE (see module-level backend-selection
+        comment above for why this isn't also used on CPU)."""
+        theta = self.actor.get_all_params()
+        n_params = len(theta)
+        base_eps = self.rng.normal(0, sigma, (n_pert, n_params))
+        noise = np.stack([base_eps, -base_eps], axis=1).reshape(2 * n_pert, n_params)
+
+        dev = _GPU_DEVICE
+        theta_t = torch.as_tensor(theta, dtype=torch.float64, device=dev)
+        noise_t = torch.as_tensor(noise, dtype=torch.float64, device=dev)
+        theta_batch = theta_t.unsqueeze(0) + noise_t  # (2*n_pert, n_params)
+
+        obs_t = torch.as_tensor(np.asarray(obs_batch), dtype=torch.float64, device=dev)
+        act_t = torch.as_tensor(np.asarray(act_batch), dtype=torch.float64, device=dev)
+        old_lp_t = torch.as_tensor(np.asarray(old_lp), dtype=torch.float64, device=dev)
+        adv_t = torch.as_tensor(np.asarray(adv_batch), dtype=torch.float64, device=dev)
+
+        hidden, obs_dim = self.actor.net.W1.shape
+        act_dim = self.actor.net.W3.shape[0]
+        new_lp = _actor_log_prob_population_torch(obs_t, act_t, theta_batch, obs_dim, hidden, act_dim)  # (T, 2*n_pert)
+
+        ratio = torch.exp(torch.clamp(new_lp - old_lp_t[:, None], -5, 5))
+        clip_r = torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps)
+        adv_col = adv_t[:, None]
+        rewards = torch.minimum(ratio * adv_col, clip_r * adv_col).mean(dim=0)  # (2*n_pert,)
+
+        r_norm = (rewards - rewards.mean()) / (rewards.std(unbiased=False) + 1e-8)
+        grad = (r_norm @ noise_t) / (2 * n_pert * sigma)
+        self.actor.set_all_params(theta + self.lr_actor * grad.cpu().numpy())
+
+    def _update_critic_es_gpu(self, obs_batch, ret_batch, n_pert=10, sigma=0.02):
+        """GPU path for _update_critic_es — see _update_actor_es_gpu."""
+        theta = self.critic.get_params()
+        n_params = len(theta)
+
+        T = len(obs_batch)
+        neighbor_stats_batch = self._get_neighbor_stats_batch(obs_batch)
+        tms_batch = self.buffer.tms[:T]
+        ps_batch = self.buffer.ps[:T]
+        pv_batch = self.buffer.pv_levels[:T]
+        topo_batch = self.buffer.top_flags[:T]
+
+        dev = _GPU_DEVICE
+        base_eps = self.rng.normal(0, sigma, (n_pert, n_params))
+        noise = np.stack([base_eps, -base_eps], axis=1).reshape(2 * n_pert, n_params)
+        theta_t = torch.as_tensor(theta, dtype=torch.float64, device=dev)
+        noise_t = torch.as_tensor(noise, dtype=torch.float64, device=dev)
+        theta_batch = theta_t.unsqueeze(0) + noise_t
+
+        global_state = _critic_global_state(tms_batch, ps_batch, pv_batch, topo_batch,
+                                             neighbor_stats_batch, self.critic.use_global_state,
+                                             fault_type_idx=0)
+        gs_t = torch.as_tensor(global_state, dtype=torch.float64, device=dev)
+        hidden, in_dim = self.critic.net.W1.shape
+        pred = _mlp_forward_population_torch(gs_t, theta_batch, in_dim, hidden, 1)[:, :, 0]  # (T, 2*n_pert)
+
+        ret_t = torch.as_tensor(np.asarray(ret_batch), dtype=torch.float64, device=dev)
+        diff = ret_t[:, :, None] - pred[:, None, :]  # (T, n_agents, 2*n_pert)
+        losses = -(diff ** 2).mean(dim=(0, 1))  # (2*n_pert,)
+
+        l_norm = (losses - losses.mean()) / (losses.std(unbiased=False) + 1e-8)
+        grad = (l_norm @ noise_t) / (2 * n_pert * sigma)
+        self.critic.set_params(theta + self.lr_critic * grad.cpu().numpy())
 
     def _collect_rollout(self, obs):
         """Collect one rollout with optional communication."""

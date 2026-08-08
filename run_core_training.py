@@ -15,8 +15,11 @@ import sys
 import json
 import time
 import hashlib
+import zlib
 import pickle
+import multiprocessing as mp
 import numpy as np
+import threadpoolctl
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Any, Callable
@@ -256,14 +259,15 @@ CONFIG: Optional[DOCRConfig] = None
 
 def apply_config(config: DOCRConfig):
     """Apply DOCRConfig to global runtime parameters."""
-    global FAST_MODE, USE_SYNTHETIC, SEED
+    global FAST_MODE, USE_SYNTHETIC, SEED, N_WORKERS_DEFAULT
     global N_RUNS_DEFAULT, N_RUNS_FAST, N_RUNS_BASELINE, N_RUNS_BASELINE_FAST
     global N_RUNS_HPARAM, N_RUNS_HPARAM_FAST
     global EPISODES_DEFAULT, EPISODES_FAST, EPISODES_HPARAM, EPISODES_HPARAM_FAST
-    
+
     FAST_MODE = config.experiment.fast_mode
     USE_SYNTHETIC = config.experiment.use_synthetic
     SEED = config.training.seed
+    N_WORKERS_DEFAULT = config.experiment.n_workers
     
     # Training parameters
     N_RUNS_DEFAULT = config.training.n_runs
@@ -447,6 +451,45 @@ class UnifiedTrainingLogger:
         logger.info(f"[Logger] Saved unified log: {path}")
 
 # ═════════════════════════════════════════════════════════════════
+# Core-training parallelization (--n_workers)
+# ═════════════════════════════════════════════════════════════════
+# Same pattern used throughout marl/experiments/ and baselines/experiments/
+# (see EXPERIMENT_GUIDE.md §2.2.2): each Core's per-run loop is independent
+# across (run_idx) or (method/config, run_idx), so it maps cleanly onto a
+# worker pool. threadpoolctl pins each worker to 1 BLAS thread — without
+# this, N worker processes each defaulting to all-core BLAS oversubscribes
+# the machine and can make --n_workers slower than sequential.
+N_WORKERS_DEFAULT = 1
+
+
+def _core_pool_worker_init():
+    threadpoolctl.threadpool_limits(1)
+
+
+def _run_pool(jobs, worker_fn, n_workers):
+    """Run `worker_fn` over `jobs` either sequentially or via a Pool,
+    yielding (job, result) pairs as they complete. Sequential path calls
+    worker_fn directly (no process overhead) when n_workers <= 1."""
+    if n_workers > 1:
+        with mp.Pool(n_workers, initializer=_core_pool_worker_init) as pool:
+            for job, result in pool.imap_unordered(worker_fn, jobs):
+                yield job, result
+    else:
+        for job in jobs:
+            yield worker_fn(job)
+
+
+def _method_seed_offset(name: str, modulus: int = 10000) -> int:
+    # zlib.crc32 instead of hash(): Python's hash() is randomized per
+    # process by default (PEP 456) — under multiprocessing, each worker
+    # process would derive a *different* offset for the same method/config
+    # name, silently breaking the seed scheme and reproducibility even in
+    # the sequential case (hash() is unstable across separate invocations
+    # of the same process too, e.g. between a cached run and a re-run).
+    return zlib.crc32(name.encode()) % modulus
+
+
+# ═════════════════════════════════════════════════════════════════
 # HELPER: Try experimental, fallback to synthetic (RESPECTS USE_SYNTHETIC FLAG)
 # ═════════════════════════════════════════════════════════════════
 def _try_experimental(fn, fallback_fn, *args, **kwargs):
@@ -548,12 +591,21 @@ def _train_and_collect(trainer, env, n_steps, rng, desc="train"):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN A — MAPPO-Safe-EWC 8-Bus 60% PV (max of active sweep)
 # ═════════════════════════════════════════════════════════════════
-def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None, 
-               progress: ExperimentProgress = None):
+def _core_A_job(args):
+    run_idx, run_seed, n_episodes = args
+    # BUGFIX: Pass n_agents=14, n_pairs=20 to match 8-bus network dimensions
+    result = _try_experimental(_run_core_A_experimental, _generate_synthetic_core_A,
+                               n_episodes, run_seed, n_agents=14, n_pairs=20)
+    return run_idx, result
+
+
+def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None,
+               progress: ExperimentProgress = None, n_workers: int = None):
     # Use config values if not explicitly provided
     n_runs = n_runs if n_runs is not None else (N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT)
     n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
         "name": "core_A_mappo_safe_ewc_8bus_100pv", 
@@ -580,20 +632,20 @@ def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None,
     logger.info("  Feeds: Figs 9,10,12,21,37,38,41,48-50,55-57")
     logger.info("=" * 70)
     
-    all_runs_data = []
+    # Pre-allocated by run_idx rather than appended in completion order —
+    # required for reproducible aggregation regardless of which worker
+    # (when n_workers > 1) finishes first.
+    all_runs_data = [None] * n_runs
+    jobs = [(run_idx, seed + run_idx, n_episodes) for run_idx in range(n_runs)]
     with ProgressTracker(total=n_runs, desc="[Core A] Training runs", unit="run") as pbar:
-        for run_idx in range(n_runs):
-            run_seed = seed + run_idx
-            # BUGFIX: Pass n_agents=14, n_pairs=20 to match 8-bus network dimensions
-            result = _try_experimental(_run_core_A_experimental, _generate_synthetic_core_A, 
-                                       n_episodes, run_seed, n_agents=14, n_pairs=20)
-            all_runs_data.append(result)
+        for run_idx, result in _run_pool(jobs, _core_A_job, n_workers):
+            all_runs_data[run_idx] = result
             pbar.update(1)
-            pbar.set_postfix(seed=run_seed, 
+            pbar.set_postfix(seed=seed + run_idx,
                            return_val=f"{result['global_returns'][-1]:.3f}" if len(result.get('global_returns', [])) > 0 else "N/A")
             if progress:
-                progress.update_step(run_name, run_idx + 1)
-                
+                progress.update_step(run_name, pbar.current)
+
     aggregated = _aggregate_runs(all_runs_data)
     aggregated["config"] = config
     aggregated["checkpoint_path"] = str(CHECKPOINT_DIR / "core_A_best.pt")
@@ -752,8 +804,13 @@ def _aggregate_runs(runs_data: List[Dict]) -> Dict:
     for ep, mats in all_snapshots.items():
         aggregated[f"attention_snap_{ep}_mean"] = np.mean(mats, axis=0)
         
-    entropies = np.stack([r["attention_entropies"] for r in runs_data if len(r["attention_entropies"]) > 0])
-    if len(entropies) > 0:
+    # np.stack([]) raises ValueError before this could ever check "is there
+    # any data" — build the list first so a run with no recorded attention
+    # entropies (e.g. very short/fast-mode training) degrades to "skip"
+    # instead of crashing the whole aggregation.
+    entropy_arrays = [r["attention_entropies"] for r in runs_data if len(r["attention_entropies"]) > 0]
+    if entropy_arrays:
+        entropies = np.stack(entropy_arrays)
         aggregated["attention_entropy_mean"] = entropies.mean(axis=0)
         aggregated["attention_entropy_std"] = entropies.std(axis=0)
         
@@ -763,11 +820,22 @@ def _aggregate_runs(runs_data: List[Dict]) -> Dict:
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN B — Curriculum 0% -> 100% PV
 # ═════════════════════════════════════════════════════════════════
+def _core_B_job(args):
+    run_idx, run_seed, episodes_per_task, tasks = args
+    result_ewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
+                                  True, run_seed, episodes_per_task)
+    result_noewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
+                                    False, run_seed + 10000, episodes_per_task)
+    eval_results = _evaluate_across_pv("checkpoint", tasks)
+    return run_idx, (result_ewc, result_noewc, eval_results)
+
+
 def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = None,
-               progress: ExperimentProgress = None):
+               progress: ExperimentProgress = None, n_workers: int = None):
     n_runs = n_runs if n_runs is not None else (N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE)
     episodes_per_task = episodes_per_task if episodes_per_task is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT) // 10
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
         "name": "core_B_curriculum", 
@@ -793,29 +861,27 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
     logger.info("=" * 70)
     
     TASKS = config["tasks"]
-    all_results = {"with_ewc": [], "without_ewc": [], "task_evaluations": []}
-    
+    # Pre-allocated by run_idx rather than appended in completion order —
+    # required for reproducible aggregation regardless of which worker
+    # finishes first.
+    with_ewc = [None] * n_runs
+    without_ewc = [None] * n_runs
+    task_evaluations = [None] * n_runs
+    jobs = [(run_idx, seed + run_idx, episodes_per_task, TASKS) for run_idx in range(n_runs)]
+
     with ProgressTracker(total=n_runs, desc="[Core B] Curriculum runs", unit="run") as pbar:
-        for run_idx in range(n_runs):
-            run_seed = seed + run_idx
-            logger.info(f"\n[Core B] Run {run_idx + 1}/{n_runs} (seed={run_seed})")
-            
-            result_ewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum, 
-                                          True, run_seed, episodes_per_task)
-            result_noewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
-                                            False, run_seed + 10000, episodes_per_task)
-            eval_results = _evaluate_across_pv("checkpoint", TASKS)
-            
-            all_results["with_ewc"].append(result_ewc)
-            all_results["without_ewc"].append(result_noewc)
-            all_results["task_evaluations"].append(eval_results)
-            
+        for run_idx, (result_ewc, result_noewc, eval_results) in _run_pool(jobs, _core_B_job, n_workers):
+            with_ewc[run_idx] = result_ewc
+            without_ewc[run_idx] = result_noewc
+            task_evaluations[run_idx] = eval_results
+
             pbar.update(1)
-            pbar.set_postfix(run=run_idx+1, 
+            pbar.set_postfix(run=run_idx + 1,
                            ewc_perf=f"{np.mean(result_ewc['task_performances'][-1]):.3f}")
             if progress:
-                progress.update_step(run_name, run_idx + 1)
-                
+                progress.update_step(run_name, pbar.current)
+
+    all_results = {"with_ewc": with_ewc, "without_ewc": without_ewc, "task_evaluations": task_evaluations}
     cache.put(config, all_results)
     logger.info("[Core B] Complete.")
     
@@ -965,11 +1031,19 @@ def _evaluate_across_pv(checkpoint, pv_levels):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN C — Baseline Comparison
 # ═════════════════════════════════════════════════════════════════
+def _core_C_job(args):
+    method, run_idx, run_seed, n_episodes = args
+    returns = _try_experimental(_run_baseline_single, _generate_synthetic_baseline,
+                               method, run_seed, n_episodes)
+    return (method, run_idx), returns
+
+
 def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
-               progress: ExperimentProgress = None):
+               progress: ExperimentProgress = None, n_workers: int = None):
     n_runs = n_runs if n_runs is not None else (N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT)
     n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
         "name": "core_C_baselines", 
@@ -995,23 +1069,23 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
     logger.info("  Feeds: Figs 11, 12, 31-33, 55-56")
     logger.info("=" * 70)
     
-    results = {method: [] for method in config["methods"]}
-    step_count = 0
-    
+    # Pre-allocated by (method, run_idx) rather than appended in completion
+    # order — required for reproducible aggregation regardless of which
+    # worker finishes first.
+    results = {method: [None] * n_runs for method in config["methods"]}
+    jobs = [
+        (method, run_idx, seed + run_idx + _method_seed_offset(method), n_episodes)
+        for method in config["methods"] for run_idx in range(n_runs)
+    ]
+
     with ProgressTracker(total=total_steps, desc="[Core C] Baseline runs", unit="run") as pbar:
-        for method in config["methods"]:
-            logger.info(f"\n[Core C] Method: {method}")
-            for run_idx in range(n_runs):
-                run_seed = seed + run_idx + hash(method) % 10000
-                returns = _try_experimental(_run_baseline_single, _generate_synthetic_baseline, 
-                                           method, run_seed, n_episodes)
-                results[method].append(returns)
-                step_count += 1
-                pbar.update(1)
-                pbar.set_postfix(method=method[:10], run=run_idx+1)
-                if progress:
-                    progress.update_step(run_name, step_count)
-                    
+        for (method, run_idx), returns in _run_pool(jobs, _core_C_job, n_workers):
+            results[method][run_idx] = returns
+            pbar.update(1)
+            pbar.set_postfix(method=method[:10], run=run_idx + 1)
+            if progress:
+                progress.update_step(run_name, pbar.current)
+
     for method in results:
         results[method] = np.array(results[method])
         
@@ -1082,7 +1156,11 @@ def _evaluate_traditional(env, net, n_episodes: int, seed: int):
     return np.array(returns)
 
 
-def _generate_synthetic_baseline(method: str, n_episodes: int, seed: int, n_agents: int = 14):
+def _generate_synthetic_baseline(method: str, seed: int, n_episodes: int, n_agents: int = 14):
+    # Parameter order matches _run_baseline_single(method, seed, n_episodes)
+    # — _try_experimental() forwards the same positional args to whichever
+    # of the two runs, so a mismatched order here silently swapped seed and
+    # n_episodes whenever the synthetic fallback actually fired.
     rng = np.random.default_rng(seed)
     profiles = {
         "MAPPO-Safe-EWC": (-3.0, 7.8, 800), 
@@ -1106,11 +1184,19 @@ def _generate_synthetic_baseline(method: str, n_episodes: int, seed: int, n_agen
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN D — Ablation Study
 # ═════════════════════════════════════════════════════════════════
+def _core_D_job(args):
+    cfg_name, run_idx, run_seed, n_episodes = args
+    of_val, cti_val = _try_experimental(_run_ablation_single, _generate_synthetic_ablation,
+                                        cfg_name, run_seed, n_episodes)
+    return (cfg_name, run_idx), {"OF": of_val, "CTI": cti_val}
+
+
 def run_core_D(n_runs: int = None, n_episodes: int = None, seed: int = None,
-               progress: ExperimentProgress = None):
+               progress: ExperimentProgress = None, n_workers: int = None):
     n_runs = n_runs if n_runs is not None else (N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE)
     n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
         "name": "core_D_ablation", 
@@ -1136,23 +1222,23 @@ def run_core_D(n_runs: int = None, n_episodes: int = None, seed: int = None,
     logger.info("  Feeds: Fig 39")
     logger.info("=" * 70)
     
-    results = {name: [] for name in config["configs"]}
-    step_count = 0
-    
+    # Pre-allocated by (cfg_name, run_idx) rather than appended in
+    # completion order — required for reproducible aggregation regardless
+    # of which worker finishes first.
+    results = {name: [None] * n_runs for name in config["configs"]}
+    jobs = [
+        (cfg_name, run_idx, seed + run_idx + _method_seed_offset(cfg_name, 1000), n_episodes)
+        for cfg_name in config["configs"] for run_idx in range(n_runs)
+    ]
+
     with ProgressTracker(total=total_steps, desc="[Core D] Ablation runs", unit="run") as pbar:
-        for cfg_name in config["configs"]:
-            logger.info(f"\n[Core D] Config: {cfg_name}")
-            for run_idx in range(n_runs):
-                run_seed = seed + run_idx + hash(cfg_name) % 1000
-                of_val, cti_val = _try_experimental(_run_ablation_single, _generate_synthetic_ablation,
-                                                    cfg_name, run_seed, n_episodes)
-                results[cfg_name].append({"OF": of_val, "CTI": cti_val})
-                step_count += 1
-                pbar.update(1)
-                pbar.set_postfix(config=cfg_name[:15], run=run_idx+1, OF=f"{of_val:.3f}")
-                if progress:
-                    progress.update_step(run_name, step_count)
-                    
+        for (cfg_name, run_idx), res in _run_pool(jobs, _core_D_job, n_workers):
+            results[cfg_name][run_idx] = res
+            pbar.update(1)
+            pbar.set_postfix(config=cfg_name[:15], run=run_idx + 1, OF=f"{res['OF']:.3f}")
+            if progress:
+                progress.update_step(run_name, pbar.current)
+
     cache.put(config, results)
     logger.info("[Core D] Complete.")
     
@@ -1217,7 +1303,12 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
     return float(np.mean(of_values)), float(np.mean(cti_values))
 
 
-def _generate_synthetic_ablation(config_name: str, seed: int):
+def _generate_synthetic_ablation(config_name: str, seed: int, n_episodes: int = None):
+    # n_episodes accepted-and-ignored: _try_experimental() forwards the same
+    # 3 positional args (config_name, seed, n_episodes) to this fallback
+    # that it passes to _run_ablation_single, which does use all three —
+    # this previously only took 2 params and crashed with a TypeError the
+    # moment the synthetic fallback actually fired.
     rng = np.random.default_rng(seed)
     base_of = 5.0
     improvements = {
@@ -1904,7 +1995,8 @@ def _generate_synthetic_core_K(seed: int):
 # ═════════════════════════════════════════════════════════════════
 # MAIN ORCHESTRATOR
 # ═════════════════════════════════════════════════════════════════
-def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRConfig = None):
+def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRConfig = None,
+                   n_workers: int = None):
     """Run all core training runs with optional config override."""
     global FAST_MODE, USE_SYNTHETIC, CONFIG
     
@@ -1918,6 +2010,8 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
             FAST_MODE = fast
         if use_synthetic is not None:
             USE_SYNTHETIC = use_synthetic
+
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     n_runs = N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT
     n_runs_baseline = N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE
@@ -1942,10 +2036,10 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
     t0 = time.time()
     
     # Run all cores with progress tracking
-    core_A = run_core_A(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress)
-    core_B = run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_episodes // 10, seed=SEED, progress=progress)
-    core_C = run_core_C(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress)
-    core_D = run_core_D(n_runs=n_runs_baseline, n_episodes=n_episodes, seed=SEED, progress=progress)
+    core_A = run_core_A(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
+    core_B = run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_episodes // 10, seed=SEED, progress=progress, n_workers=n_workers)
+    core_C = run_core_C(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
+    core_D = run_core_D(n_runs=n_runs_baseline, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
     core_E = run_core_E(n_seeds=n_runs_hparam, n_steps=n_episodes_hparam, seed=SEED, progress=progress)
     core_F = run_core_F(seed=SEED, progress=progress)
     core_G = run_core_G(seed=SEED, progress=progress)
@@ -2096,7 +2190,7 @@ def main():
     fast = FAST_MODE
 
     if args.all:
-        run_all_cores(fast=fast, use_synthetic=use_synthetic, config=config)
+        run_all_cores(fast=fast, use_synthetic=use_synthetic, config=config, n_workers=args.n_workers)
     else:
         n_runs = N_RUNS_FAST if fast else N_RUNS_DEFAULT
         n_runs_baseline = N_RUNS_BASELINE_FAST if fast else N_RUNS_BASELINE
@@ -2109,10 +2203,10 @@ def main():
 
         logger.info(f"[CONFIG] Synthetic fallback: {'ENABLED' if use_synthetic else 'DISABLED'}")
 
-        if args.core_A: run_core_A(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress)
-        if args.core_B: run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_eps // 10, seed=SEED, progress=progress)
-        if args.core_C: run_core_C(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress)
-        if args.core_D: run_core_D(n_runs=n_runs_baseline, n_episodes=n_eps, seed=SEED, progress=progress)
+        if args.core_A: run_core_A(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_B: run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_eps // 10, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_C: run_core_C(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_D: run_core_D(n_runs=n_runs_baseline, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_E: run_core_E(n_seeds=n_runs_hparam, n_steps=n_eps_hparam, seed=SEED, progress=progress)
         if args.core_F: run_core_F(seed=SEED, progress=progress)
         if args.core_G: run_core_G(seed=SEED, progress=progress)
