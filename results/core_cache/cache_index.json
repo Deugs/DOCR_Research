@@ -60,5 +60,19 @@
       "seed"
     ],
     "size_mb": 0.0004291534423828125
+  },
+  "1cc9342c3c300784": {
+    "name": "core_E_hparam",
+    "created": "2026-08-08T18:15:27.797042",
+    "config_keys": [
+      "name",
+      "lambda_ewc",
+      "alpha_lambda",
+      "hidden_dim",
+      "n_seeds",
+      "n_steps",
+      "seed"
+    ],
+    "size_mb": 0.0073394775390625
   }
 }
