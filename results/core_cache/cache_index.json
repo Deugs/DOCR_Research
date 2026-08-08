@@ -36,5 +36,17 @@
       "seed"
     ],
     "size_mb": 0.02017688751220703
+  },
+  "01956cace7236f39": {
+    "name": "core_B_curriculum",
+    "created": "2026-08-08T17:04:34.438093",
+    "config_keys": [
+      "name",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed"
+    ],
+    "size_mb": 0.0012664794921875
   }
 }
