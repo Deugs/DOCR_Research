@@ -405,7 +405,7 @@ Examples:
     sys_group.add_argument("--fault-type", type=str,
                            choices=[ft.value for ft in FaultType],
                            help="Fault type for protection study")
-    sys_group.add_argument("--use-pandapower", action="store_true",
+    sys_group.add_argument("--use-pandapower", action="store_true", default=None,
                            help="Enable pandapower dynamic simulation")
     sys_group.add_argument("--curriculum-stage", type=int, choices=range(6),
                            help="Curriculum stage (0-5)")
@@ -428,10 +428,21 @@ Examples:
     
     # Feature toggles
     feat_group = parser.add_argument_group("Feature Toggles")
-    feat_group.add_argument("--use-comm", action="store_true", help="Enable GNN communication")
-    feat_group.add_argument("--no-safety", action="store_true", help="Disable safety layer")
-    feat_group.add_argument("--no-ewc", action="store_true", help="Disable EWC")
-    feat_group.add_argument("--curriculum", action="store_true", help="Enable curriculum learning")
+    # default=None (not the implicit False) on every store_true flag below
+    # that feeds into config_from_args()'s cli_mappings loop: that loop
+    # applies a CLI value whenever it "is not None", to distinguish "user
+    # didn't mention this flag" from "user explicitly set it". store_true's
+    # ordinary default of False doesn't satisfy that — it made every one of
+    # these flags unconditionally overwrite whatever a --preset/--config set,
+    # every single invocation, whether or not the flag was actually passed
+    # (e.g. --preset thesis_sweep_fast's fast_mode=True was silently
+    # clobbered back to False by the mere presence of --fast's untouched
+    # default, and --no-synthetic's invert-lambda forced use_synthetic=True
+    # on every run that didn't explicitly pass --no-synthetic).
+    feat_group.add_argument("--use-comm", action="store_true", default=None, help="Enable GNN communication")
+    feat_group.add_argument("--no-safety", action="store_true", default=None, help="Disable safety layer")
+    feat_group.add_argument("--no-ewc", action="store_true", default=None, help="Disable EWC")
+    feat_group.add_argument("--curriculum", action="store_true", default=None, help="Enable curriculum learning")
     
     # EWC parameters
     ewc_group = parser.add_argument_group("EWC Parameters")
@@ -440,8 +451,8 @@ Examples:
     
     # Experiment control
     exp_group = parser.add_argument_group("Experiment Control")
-    exp_group.add_argument("--fast", action="store_true", help="Fast mode (reduced iterations)")
-    exp_group.add_argument("--no-synthetic", action="store_true", help="Disable synthetic fallback")
+    exp_group.add_argument("--fast", action="store_true", default=None, help="Fast mode (reduced iterations)")
+    exp_group.add_argument("--no-synthetic", action="store_true", default=None, help="Disable synthetic fallback")
     exp_group.add_argument("--cores", type=str, nargs="+", 
                            help="Specific cores to run (A-K)")
     exp_group.add_argument("--seed", type=int, help="Global random seed")
@@ -456,7 +467,7 @@ Examples:
     
     # Cache
     cache_group = parser.add_argument_group("Cache")
-    cache_group.add_argument("--clear-cache", action="store_true", help="Clear cache before running")
+    cache_group.add_argument("--clear-cache", action="store_true", default=None, help="Clear cache before running")
     cache_group.add_argument("--cache-dir", type=str, help="Cache directory")
     
     return parser
