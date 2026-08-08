@@ -1326,11 +1326,22 @@ def _generate_synthetic_ablation(config_name: str, seed: int, n_episodes: int = 
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN E — Hyperparameter Grid
 # ═════════════════════════════════════════════════════════════════
+def _core_E_job(args):
+    seed_idx, idx, lamb, alpha, hid, run_seed, n_steps = args
+    of_val, cti_val = _try_experimental(_run_hparam_single, _generate_synthetic_hparam,
+                                        lamb, alpha, hid, run_seed, n_steps)
+    return (seed_idx, idx), {
+        "lambda_ewc": lamb, "alpha_lambda": alpha, "hidden_dim": hid,
+        "seed": seed_idx, "OF": of_val, "CTI": cti_val,
+    }
+
+
 def run_core_E(n_seeds: int = None, n_steps: int = None, seed: int = None,
-               progress: ExperimentProgress = None):
+               progress: ExperimentProgress = None, n_workers: int = None):
     n_seeds = n_seeds if n_seeds is not None else (N_RUNS_HPARAM_FAST if FAST_MODE else N_RUNS_HPARAM)
     n_steps = n_steps if n_steps is not None else (EPISODES_HPARAM_FAST if FAST_MODE else EPISODES_HPARAM)
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
         "name": "core_E_hparam", 
@@ -1361,28 +1372,25 @@ def run_core_E(n_seeds: int = None, n_steps: int = None, seed: int = None,
     logger.info("  Feeds: Fig 40")
     logger.info("=" * 70)
     
-    results = []
-    step_count = 0
-    
+    # Pre-allocated by (seed_idx, grid_idx) rather than appended in
+    # completion order — preserves the exact seed-major, grid-minor
+    # ordering of the original nested loop regardless of which worker
+    # finishes first.
+    results_grid = [[None] * len(grid) for _ in range(n_seeds)]
+    jobs = [
+        (seed_idx, idx, lamb, alpha, hid, seed + seed_idx, n_steps)
+        for seed_idx in range(n_seeds) for idx, (lamb, alpha, hid) in enumerate(grid)
+    ]
+
     with ProgressTracker(total=total_steps, desc="[Core E] Grid search", unit="config") as pbar:
-        for seed_idx in range(n_seeds):
-            logger.info(f"\n[Core E] Seed {seed_idx + 1}/{n_seeds}")
-            for idx, (lamb, alpha, hid) in enumerate(grid):
-                if idx % 20 == 0:
-                    logger.info(f"  [{idx}/{len(grid)}] lambda={lamb:.0e}, alpha={alpha:.0e}, h={hid}")
-                    
-                of_val, cti_val = _try_experimental(_run_hparam_single, _generate_synthetic_hparam,
-                                                    lamb, alpha, hid, seed + seed_idx, n_steps)
-                results.append({
-                    "lambda_ewc": lamb, "alpha_lambda": alpha, "hidden_dim": hid, 
-                    "seed": seed_idx, "OF": of_val, "CTI": cti_val
-                })
-                step_count += 1
-                pbar.update(1)
-                pbar.set_postfix(seed=seed_idx+1, grid=f"{idx+1}/{len(grid)}", OF=f"{of_val:.3f}")
-                if progress:
-                    progress.update_step(run_name, step_count)
-                    
+        for (seed_idx, idx), res in _run_pool(jobs, _core_E_job, n_workers):
+            results_grid[seed_idx][idx] = res
+            pbar.update(1)
+            pbar.set_postfix(seed=seed_idx + 1, grid=f"{idx + 1}/{len(grid)}", OF=f"{res['OF']:.3f}")
+            if progress:
+                progress.update_step(run_name, pbar.current)
+
+    results = [r for row in results_grid for r in row]
     cache.put(config, results)
     logger.info("[Core E] Complete.")
     
@@ -1435,10 +1443,18 @@ def _generate_synthetic_hparam(lambda_ewc, alpha_lambda, hidden_dim, seed, n_ste
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN F — Scalability Analysis
 # ═════════════════════════════════════════════════════════════════
+def _core_F_job(args):
+    sys_name, seed = args
+    result = _try_experimental(_run_scalability_single, _generate_synthetic_scalability,
+                              sys_name, seed)
+    return sys_name, result
+
+
 def run_core_F(systems: List[str] = None, seed: int = None,
-               progress: ExperimentProgress = None):
+               progress: ExperimentProgress = None, n_workers: int = None):
     """Scalability analysis across all supported network sizes."""
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     if systems is None:
         # Full suite: all 7 network sizes; Fast mode: subset
@@ -1463,19 +1479,21 @@ def run_core_F(systems: List[str] = None, seed: int = None,
     logger.info("  Feeds: Fig 15")
     logger.info("=" * 70)
     
+    # Pre-allocated (dict keyed by sys_name — insertion order doesn't
+    # matter here since nothing downstream indexes this positionally) so
+    # this is safe regardless of which worker finishes first.
     results = {}
+    jobs = [(sys_name, seed) for sys_name in systems]
+
     with ProgressTracker(total=len(systems), desc="[Core F] Systems", unit="sys") as pbar:
-        for sys_name in systems:
-            logger.info(f"\n[Core F] System: {sys_name}")
-            result = _try_experimental(_run_scalability_single, _generate_synthetic_scalability, 
-                                      sys_name, seed)
+        for sys_name, result in _run_pool(jobs, _core_F_job, n_workers):
             results[sys_name] = result
             pbar.update(1)
-            pbar.set_postfix(system=sys_name, relays=result.get("n_relays", "?"), 
+            pbar.set_postfix(system=sys_name, relays=result.get("n_relays", "?"),
                             time_val=f"{result.get('train_time', 0):.1f}s")
             if progress:
                 progress.update_step(run_name, len(results))
-                
+
     cache.put(config, results)
     logger.info("[Core F] Complete.")
     
@@ -2040,8 +2058,8 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
     core_B = run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_episodes // 10, seed=SEED, progress=progress, n_workers=n_workers)
     core_C = run_core_C(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
     core_D = run_core_D(n_runs=n_runs_baseline, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
-    core_E = run_core_E(n_seeds=n_runs_hparam, n_steps=n_episodes_hparam, seed=SEED, progress=progress)
-    core_F = run_core_F(seed=SEED, progress=progress)
+    core_E = run_core_E(n_seeds=n_runs_hparam, n_steps=n_episodes_hparam, seed=SEED, progress=progress, n_workers=n_workers)
+    core_F = run_core_F(seed=SEED, progress=progress, n_workers=n_workers)
     core_G = run_core_G(seed=SEED, progress=progress)
     core_H = run_core_H(seed=SEED, progress=progress)
     core_I = run_core_I(seed=SEED, progress=progress)
@@ -2207,8 +2225,8 @@ def main():
         if args.core_B: run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_eps // 10, seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_C: run_core_C(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_D: run_core_D(n_runs=n_runs_baseline, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
-        if args.core_E: run_core_E(n_seeds=n_runs_hparam, n_steps=n_eps_hparam, seed=SEED, progress=progress)
-        if args.core_F: run_core_F(seed=SEED, progress=progress)
+        if args.core_E: run_core_E(n_seeds=n_runs_hparam, n_steps=n_eps_hparam, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_F: run_core_F(seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_G: run_core_G(seed=SEED, progress=progress)
         if args.core_H: run_core_H(seed=SEED, progress=progress)
         if args.core_I: run_core_I(seed=SEED, progress=progress)
