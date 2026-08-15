@@ -221,8 +221,12 @@ class CoreEvalBridge:
             done = False
             while not done:
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
+                if trainer.use_comm and trainer.comm_graph is not None:
+                    policy_obs, _, _ = trainer.comm_graph.forward(obs, rng)
+                else:
+                    policy_obs = obs
                 for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
+                    a, _ = trainer.actor.sample(policy_obs[i], rng)
                     actions[i] = a
                 obs, reward, done, info = env.step(actions)
 
