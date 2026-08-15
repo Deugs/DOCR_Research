@@ -1438,7 +1438,7 @@ def _run_hparam_single(lambda_ewc, alpha_lambda, hidden_dim, seed, n_steps):
 def _generate_synthetic_hparam(lambda_ewc, alpha_lambda, hidden_dim, seed, n_steps):
     rng = np.random.default_rng(seed)
     of_val = 2.0 + np.exp(-lambda_ewc / 1e5) + alpha_lambda * 100 + 1.0 / hidden_dim
-    return of_val + rng.normal(0, 0.1), rng.randint(0, 3)
+    return of_val + rng.normal(0, 0.1), rng.integers(0, 3)
 
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN F — Scalability Analysis
@@ -1562,7 +1562,8 @@ def _generate_synthetic_scalability(sys_name: str, seed: int, net=None):
     if net is None:
         net = load_network(sys_name)
     n_relays = net.n_relays
-    train_time = n_relays * 15 + np.random.rand() * 5
+    rng = np.random.default_rng(seed)
+    train_time = n_relays * 15 + rng.random() * 5
     return {
         "n_relays": n_relays, 
         "train_time": train_time, 
@@ -1745,7 +1746,7 @@ def _generate_synthetic_core_H(seed: int):
     """Synthetic fallback for Core H."""
     rng = np.random.default_rng(seed)
     return {
-        "unseen_faults": {ft: max(0, 0.85 - rng.rand() * 0.2) for ft in ["bolted", "high-impedance", "evolving", "simultaneous"]},
+        "unseen_faults": {ft: max(0, 0.85 - rng.random() * 0.2) for ft in ["bolted", "high-impedance", "evolving", "simultaneous"]},
         "zero_shot": {
             "warm_start": {"performance": 0.75, "convergence_ep": 500},
             "cold_start": {"performance": 0.20, "convergence_ep": 2000},

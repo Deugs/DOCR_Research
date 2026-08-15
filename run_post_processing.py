@@ -520,10 +520,14 @@ def fig_05_objective_vs_pv():
     is_synthetic = data is None
     if data is None:
         logger.warning("Fig 05: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        pv_levels = [0.0, 0.25, 0.5, 0.75, 1.0]
+        pv_levels = [0.0, 0.20, 0.40, 0.60]
         data = {"task_evaluations": [{pv: {"objective": 1.0 + pv * 1.5 + np.random.rand() * 0.3} for pv in pv_levels} for _ in range(10)]}
-    
-    pv_levels = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+    # Core B's active sweep trains on [0.0, 0.20, 0.40, 0.60] PV (see
+    # run_core_training.py's TASKS) — was [0, .25, .5, .75, 1.0] before
+    # the sweep was rescoped to 0-60% PV, which no longer matches the
+    # real task_evaluations keys and raised a KeyError on real data.
+    pv_levels = [0.0, 0.20, 0.40, 0.60]
     agg = {pv: [] for pv in pv_levels}
     for eval_run in data.get("task_evaluations", []):
         for pv, vals in eval_run.items():
@@ -559,10 +563,10 @@ def fig_06_cti_vs_pv():
     is_synthetic = data is None
     if data is None:
         logger.warning("Fig 06: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        pv_levels = [0.0, 0.25, 0.5, 0.75, 1.0]
+        pv_levels = [0.0, 0.20, 0.40, 0.60]
         data = {"task_evaluations": [{pv: {"cti_rate": max(0, 0.5 - pv * 0.4 + np.random.rand() * 0.1)} for pv in pv_levels} for _ in range(10)]}
-    
-    pv_levels = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+    pv_levels = [0.0, 0.20, 0.40, 0.60]
     agg = {pv: [] for pv in pv_levels}
     for eval_run in data.get("task_evaluations", []):
         for pv, vals in eval_run.items():
@@ -597,23 +601,25 @@ def fig_07_curriculum():
     is_synthetic = data is None
     if data is None:
         logger.warning("Fig 07: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"with_ewc": [{"task_performances": np.array([[0.8,0,0,0,0],[0.78,0.82,0,0,0],[0.75,0.80,0.85,0,0],[0.73,0.78,0.83,0.87,0],[0.72,0.77,0.82,0.86,0.88]])}]}
-    
+        data = {"with_ewc": [{"task_performances": np.array([[0.8,0,0,0],[0.78,0.82,0,0],[0.75,0.80,0.85,0],[0.73,0.78,0.83,0.87]])}]}
+
     ewc_mats = [r["task_performances"] for r in data.get("with_ewc", [])]
-    avg_mat = np.mean(ewc_mats, axis=0) if ewc_mats else np.eye(5) * 0.8
-    
+    avg_mat = np.mean(ewc_mats, axis=0) if ewc_mats else np.eye(4) * 0.8
+    n_tasks = avg_mat.shape[0]
+
     fig, ax = plt.subplots(figsize=(10, 7))
     im = ax.imshow(avg_mat, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
-    tasks = ["0%", "25%", "50%", "75%", "100%"]
-    ax.set_xticks(range(5))
-    ax.set_yticks(range(5))
+    # Core B's active sweep is 4 stages: 0/20/40/60% PV (see run_core_training.py's TASKS)
+    tasks = ["0%", "20%", "40%", "60%"][:n_tasks]
+    ax.set_xticks(range(n_tasks))
+    ax.set_yticks(range(n_tasks))
     ax.set_xticklabels([f"Eval {t}" for t in tasks], fontsize=10)
     ax.set_yticklabels([f"Train {t}" for t in tasks], fontsize=10)
     ax.set_xlabel("Evaluation Task (PV Level)", fontsize=12)
     ax.set_ylabel("Training Task (PV Level)", fontsize=12)
     ax.set_title("Figure 7 — Curriculum Learning Progression (MAPPO-Safe-EWC)", fontsize=13)
-    for i in range(5):
-        for j in range(5):
+    for i in range(n_tasks):
+        for j in range(n_tasks):
             if avg_mat[i, j] > 0:
                 ax.text(j, i, f"{avg_mat[i, j]:.2f}", ha="center", va="center", fontsize=10, 
                        color="white" if avg_mat[i, j] < 0.5 else "black")
@@ -1007,13 +1013,14 @@ def fig_16_ewc_effectiveness():
     is_synthetic = data is None
     if data is None:
         logger.warning("Fig 16: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"with_ewc": [{"task_performances": np.array([[0.85,0,0,0,0],[0.83,0.84,0,0,0],[0.82,0.83,0.84,0,0],[0.81,0.82,0.83,0.84,0],[0.80,0.81,0.82,0.83,0.84]])}],
-                "without_ewc": [{"task_performances": np.array([[0.85,0,0,0,0],[0.70,0.84,0,0,0],[0.55,0.68,0.83,0,0],[0.45,0.52,0.65,0.82,0],[0.35,0.42,0.50,0.60,0.80]])}]}
-    
+        data = {"with_ewc": [{"task_performances": np.array([[0.85,0,0,0],[0.83,0.84,0,0],[0.82,0.83,0.84,0],[0.81,0.82,0.83,0.84]])}],
+                "without_ewc": [{"task_performances": np.array([[0.85,0,0,0],[0.70,0.84,0,0],[0.55,0.68,0.83,0],[0.45,0.52,0.65,0.82]])}]}
+
     ewc_mats = [r["task_performances"] for r in data.get("with_ewc", [])]
     noewc_mats = [r["task_performances"] for r in data.get("without_ewc", [])]
-    ewc_avg = np.mean(ewc_mats, axis=0) if ewc_mats else np.eye(5) * 0.8
-    noewc_avg = np.mean(noewc_mats, axis=0) if noewc_mats else np.eye(5) * 0.5
+    ewc_avg = np.mean(ewc_mats, axis=0) if ewc_mats else np.eye(4) * 0.8
+    noewc_avg = np.mean(noewc_mats, axis=0) if noewc_mats else np.eye(4) * 0.5
+    n_tasks = ewc_avg.shape[0]
     
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     fig.suptitle("Figure 16 — EWC Effectiveness: Performance Drop After Task Transition", fontsize=13)
@@ -1033,11 +1040,11 @@ def fig_16_ewc_effectiveness():
     plt.colorbar(im, ax=ax, shrink=0.7)
     
     ax = axes[2]
-    x = np.arange(5)
+    x = np.arange(n_tasks)
     ax.plot(x, np.diag(ewc_avg), "o-", color="#2563eb", lw=2, markersize=8, label="With EWC")
     ax.plot(x, np.diag(noewc_avg), "s-", color="#ff6b35", lw=2, markersize=8, label="Without EWC")
     ax.set_xticks(x)
-    ax.set_xticklabels([f"T{i}" for i in range(5)], fontsize=10)
+    ax.set_xticklabels([f"T{i}" for i in range(n_tasks)], fontsize=10)
     ax.set_xlabel("Task", fontsize=11)
     ax.set_ylabel("Performance", fontsize=11)
     ax.set_title("Current Task Performance (Forgetting)", fontsize=12)
@@ -1738,14 +1745,45 @@ def fig_38_attention_evolution():
                 f"attention_snap_5000": np.random.dirichlet(np.ones(n_agents) * 4, n_agents),
                 "attention_entropy_mean": 1.5 * np.exp(-np.arange(5000) / 1000) + 0.5}
     
+    # Real aggregation (run_core_training.py's _aggregate_core_A_results)
+    # stores keys as "attention_snap_{ep}_mean" (averaged across runs);
+    # only the hardcoded synthetic fallback above uses the bare
+    # "attention_snap_{ep}" form. Accept both so real data isn't
+    # silently filtered down to an empty dict.
     snapshots = {}
     for key in data:
-        if key.startswith("attention_snap_") and not key.endswith("_mean"):
-            ep = int(key.split("_")[-1])
-            snapshots[ep] = data[key]
-    
+        if not key.startswith("attention_snap_"):
+            continue
+        ep_str = key[len("attention_snap_"):]
+        if ep_str.endswith("_mean"):
+            ep_str = ep_str[: -len("_mean")]
+        if not ep_str.isdigit():
+            continue
+        snapshots[int(ep_str)] = data[key]
+
+    if not snapshots:
+        # Real Core A training uses the batched-ES trainer, whose loop
+        # never calls the per-step attention-snapshot capture in
+        # marl_agents.py (that capture only fires along the rollout-based
+        # training path) — so a real cache can legitimately carry zero
+        # attention_snap_* keys. Fall back to the labeled placeholder
+        # rather than crashing on an empty gridspec.
+        logger.warning("Fig 38: no 'attention_snap_*' entries in real data — "
+                        "using synthetic/hardcoded fallback data, NOT a real measurement.")
+        n_agents = 14
+        data = {"attention_snap_0": np.ones((n_agents, n_agents)) / n_agents,
+                "attention_snap_100": np.random.dirichlet(np.ones(n_agents), n_agents),
+                "attention_snap_500": np.random.dirichlet(np.ones(n_agents) * 2, n_agents),
+                "attention_snap_1000": np.random.dirichlet(np.ones(n_agents) * 3, n_agents),
+                "attention_snap_5000": np.random.dirichlet(np.ones(n_agents) * 4, n_agents),
+                "attention_entropy_mean": 1.5 * np.exp(-np.arange(5000) / 1000) + 0.5}
+        snapshots = {0: data["attention_snap_0"], 100: data["attention_snap_100"],
+                     500: data["attention_snap_500"], 1000: data["attention_snap_1000"],
+                     5000: data["attention_snap_5000"]}
+        is_synthetic = True
+
     entropy = data.get("attention_entropy_mean", np.array([]))
-    
+
     fig = plt.figure(figsize=(16, 10))
     gs = fig.add_gridspec(3, len(snapshots), hspace=0.4, wspace=0.3)
     fig.suptitle("Figure 38 — Attention Weight Evolution During Training", fontsize=14)
@@ -1945,21 +1983,22 @@ def fig_42_warm_start():
     is_synthetic = data is None
     if data is None:
         logger.warning("Fig 42: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"with_ewc": [{"task_performances": np.array([[0.85,0,0,0,0],[0.83,0.84,0,0,0],[0.82,0.83,0.84,0,0],[0.81,0.82,0.83,0.84,0],[0.80,0.81,0.82,0.83,0.84]])}]}
-    
+        data = {"with_ewc": [{"task_performances": np.array([[0.85,0,0,0],[0.83,0.84,0,0],[0.82,0.83,0.84,0],[0.81,0.82,0.83,0.84]])}]}
+
     ewc_mats = [r["task_performances"] for r in data.get("with_ewc", [])]
-    avg_mat = np.mean(ewc_mats, axis=0) if ewc_mats else np.eye(5) * 0.8
-    
+    avg_mat = np.mean(ewc_mats, axis=0) if ewc_mats else np.eye(4) * 0.8
+    n_tasks = avg_mat.shape[0]
+
     warm_start = np.diag(avg_mat)
-    cold_start = [0.3, 0.35, 0.4, 0.45, 0.5]
-    
+    cold_start = [0.3, 0.35, 0.4, 0.45][:n_tasks]
+
     fig, ax = plt.subplots(figsize=(10, 6))
-    x = np.arange(5)
+    x = np.arange(n_tasks)
     width = 0.35
     ax.bar(x - width/2, warm_start, width, label="Warm-Start (Curriculum)", color="#2563eb", alpha=0.8, edgecolor="white")
     ax.bar(x + width/2, cold_start, width, label="Cold-Start (Scratch)", color="#ff6b35", alpha=0.8, edgecolor="white")
     ax.set_xticks(x)
-    ax.set_xticklabels(["0%", "25%", "50%", "75%", "100%"])
+    ax.set_xticklabels(["0%", "20%", "40%", "60%"][:n_tasks])
     ax.set_xlabel("PV Penetration Level", fontsize=12)
     ax.set_ylabel("Performance", fontsize=12)
     ax.set_title("Figure 42 — Warm-Start vs. Cold-Start Initialization", fontsize=13)
@@ -2024,11 +2063,21 @@ def fig_44_fault_contribution():
         data = {"fault_contribution": {"PV": 35, "Grid": 45, "Synchronous": 20}}
     
     contrib = data.get("fault_contribution", {"PV": 35, "Grid": 45, "Synchronous": 20})
+    # The real evaluator (training_pipeline.py's _eval_fault_contributions)
+    # legitimately can't compute this without pandapower installed, and
+    # records {"error": "..."} rather than crashing — but that sentinel
+    # isn't plottable as pie-slice sizes, so treat it the same as a
+    # missing cache: fall back to the honest placeholder.
+    if not contrib or "error" in contrib or not all(isinstance(v, (int, float)) for v in contrib.values()):
+        logger.warning(f"Fig 44: 'fault_contribution' data unusable ({contrib}) — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        contrib = {"PV": 35, "Grid": 45, "Synchronous": 20}
+        is_synthetic = True
     labels = list(contrib.keys())
     sizes = list(contrib.values())
-    colors = ["#f7c948", "#2563eb", "#39d353"]
-    explode = (0.05, 0, 0)
-    
+    palette = ["#f7c948", "#2563eb", "#39d353", "#ff6b35", "#8b5cf6", "#14b8a6"]
+    colors = [palette[i % len(palette)] for i in range(len(sizes))]
+    explode = [0.05] + [0] * (len(sizes) - 1)
+
     fig, ax = plt.subplots(figsize=(10, 8))
     wedges, texts, autotexts = ax.pie(sizes, explode=explode, labels=labels, colors=colors, autopct='%1.1f%%',
                                        shadow=False, startangle=90, textprops={'fontsize': 12, 'fontweight': 'bold'})
@@ -2339,6 +2388,18 @@ def fig_53_model_compression():
                               "pruning": {"size_mb": 22, "performance": 0.83}, "distillation": {"size_mb": 18, "performance": 0.82}}}
 
     comp = data.get("compression", {})
+    # The real evaluator (core_eval_bridge.py's fig-53 extractor) only
+    # ever measures ONE compression config per run — {"of", "size_kb",
+    # "drop"} — not a per-method {"size_mb", "performance"} comparison
+    # across original/int8/pruning/distillation. Rather than inventing a
+    # method breakdown that was never actually measured, fall back to
+    # the labeled placeholder when the shape doesn't match.
+    if not comp or not all(isinstance(v, dict) and "size_mb" in v and "performance" in v for v in comp.values()):
+        logger.warning(f"Fig 53: 'compression' data not in per-method {{size_mb, performance}} form ({comp}) — "
+                        "using hardcoded placeholder compression numbers, NOT a real measurement.")
+        comp = {"original": {"size_mb": 45, "performance": 0.85}, "int8": {"size_mb": 12, "performance": 0.84},
+                "pruning": {"size_mb": 22, "performance": 0.83}, "distillation": {"size_mb": 18, "performance": 0.82}}
+        is_synthetic = True
     methods = list(comp.keys())
     sizes = [comp[m]["size_mb"] for m in methods]
     perfs = [comp[m]["performance"] for m in methods]
@@ -2551,7 +2612,20 @@ def fig_58_seasonal():
         logger.warning("Fig 58: 'core_K_seasonal' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"spring": {"performance": 0.83, "pv_variability": 0.3}, "summer": {"performance": 0.80, "pv_variability": 0.5},
                 "autumn": {"performance": 0.84, "pv_variability": 0.25}, "winter": {"performance": 0.82, "pv_variability": 0.15}}
-    
+
+    # The real evaluator (core_eval_bridge.py's fig-58 extractor) only
+    # measures {"of", "cti_ok"} per season — it has no notion of a 0-1
+    # "performance" score or a "pv_variability" constant (that's
+    # descriptive per-season metadata, not something the evaluation
+    # measures). Rather than inventing a performance conversion that was
+    # never actually validated, fall back to the labeled placeholder.
+    if not data or not all(isinstance(v, dict) and "performance" in v and "pv_variability" in v for v in data.values()):
+        logger.warning(f"Fig 58: season data missing 'performance'/'pv_variability' ({data}) — "
+                        "using synthetic/hardcoded fallback data, NOT a real measurement.")
+        data = {"spring": {"performance": 0.83, "pv_variability": 0.3}, "summer": {"performance": 0.80, "pv_variability": 0.5},
+                "autumn": {"performance": 0.84, "pv_variability": 0.25}, "winter": {"performance": 0.82, "pv_variability": 0.15}}
+        is_synthetic = True
+
     seasons = list(data.keys())
     perfs = [data[s]["performance"] for s in seasons]
     variabilities = [data[s]["pv_variability"] for s in seasons]

@@ -110,6 +110,12 @@ def test_fig18_warns_on_missing_cache(caplog=None):
 
     handler = _Capture()
     pp.logger.addHandler(handler)
+    # Force a genuine cache miss rather than relying on results/core_cache/
+    # happening not to have a core_I_deployment entry — a real experiment
+    # run legitimately populates that cache, which previously made this
+    # test's "missing cache" precondition silently false.
+    orig_load_cache = pp.load_cache
+    pp.load_cache = lambda name: None
     try:
         pp._config = None
         orig_get_figures_dir = pp.get_figures_dir
@@ -119,6 +125,7 @@ def test_fig18_warns_on_missing_cache(caplog=None):
         finally:
             pp.get_figures_dir = orig_get_figures_dir
     finally:
+        pp.load_cache = orig_load_cache
         pp.logger.removeHandler(handler)
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

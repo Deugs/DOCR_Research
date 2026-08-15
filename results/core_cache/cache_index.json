@@ -74,5 +74,70 @@
       "seed"
     ],
     "size_mb": 0.0073394775390625
+  },
+  "71b0d1e1edbed40c": {
+    "name": "core_F_scalability",
+    "created": "2026-08-15T01:40:26.880706",
+    "config_keys": [
+      "name",
+      "systems",
+      "seed"
+    ],
+    "size_mb": 0.00023174285888671875
+  },
+  "b88cfba770e004b9": {
+    "name": "core_G_robustness",
+    "created": "2026-08-15T01:41:00.000707",
+    "config_keys": [
+      "name",
+      "stress_types",
+      "seed",
+      "real_eval"
+    ],
+    "size_mb": 0.0008306503295898438
+  },
+  "73c316a0c2a48590": {
+    "name": "core_H_transfer",
+    "created": "2026-08-15T08:30:45.848763",
+    "config_keys": [
+      "name",
+      "evaluations",
+      "seed",
+      "real_eval"
+    ],
+    "size_mb": 0.00014019012451171875
+  },
+  "a625709064c92945": {
+    "name": "core_I_deployment",
+    "created": "2026-08-15T08:32:01.931886",
+    "config_keys": [
+      "name",
+      "benchmarks",
+      "seed",
+      "real_eval"
+    ],
+    "size_mb": 0.0010938644409179688
+  },
+  "c97585bca5f3fd3f": {
+    "name": "core_J_protection",
+    "created": "2026-08-15T08:33:27.069667",
+    "config_keys": [
+      "name",
+      "analyses",
+      "seed",
+      "real_eval"
+    ],
+    "size_mb": 0.03118419647216797
+  },
+  "5b145985b6947a01": {
+    "name": "core_K_seasonal",
+    "created": "2026-08-15T08:34:49.514156",
+    "config_keys": [
+      "name",
+      "seasons",
+      "seed",
+      "real_eval"
+    ],
+    "size_mb": 0.0001277923583984375
   }
 }

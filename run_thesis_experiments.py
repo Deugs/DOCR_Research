@@ -901,6 +901,17 @@ def run_phase2(progress: ExperimentProgress):
 
             all_pv_results = {}
             for pv_level in obj4_pv_levels:
+                results_path = (
+                    Path(config.experiment.output_dir)
+                    / f"benchmark_pv{int(pv_level*100):03d}.pkl"
+                )
+                if results_path.exists():
+                    log(f"  PV level: {int(pv_level*100)}% — already computed, loading {results_path}")
+                    import pickle
+                    with open(results_path, "rb") as f:
+                        all_pv_results[pv_level] = pickle.load(f)
+                    continue
+
                 log(f"  PV level: {int(pv_level*100)}%")
                 bc = BenchmarkConfig(
                     systems=obj4_systems,
@@ -919,11 +930,6 @@ def run_phase2(progress: ExperimentProgress):
                 suite.print_comparison_table()
                 all_pv_results[pv_level] = suite.results
 
-                # Save results per PV level
-                results_path = (
-                    Path(config.experiment.output_dir)
-                    / f"benchmark_pv{int(pv_level*100):03d}.pkl"
-                )
                 try:
                     import pickle
                     with open(results_path, "wb") as f:
