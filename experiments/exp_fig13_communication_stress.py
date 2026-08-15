@@ -83,7 +83,7 @@ class CommunicationStressInjector:
         if self.stress_type == "packet_loss":
             return self._apply_packet_loss(messages, rng)
         elif self.stress_type == "latency":
-            return self._apply_latency(messages)
+            return self._apply_latency(messages, rng)
         elif self.stress_type == "quantization":
             return self._apply_quantization(messages)
         else:
@@ -99,14 +99,16 @@ class CommunicationStressInjector:
         # Dropped messages replaced with zeros (no information)
         return messages * mask
     
-    def _apply_latency(self, messages):
+    def _apply_latency(self, messages, rng=None):
         """Simulate message delay by using stale messages."""
         max_delay_steps = self.kwargs.get('max_delay_steps', 0)
         if max_delay_steps == 0:
             return messages
-        
+        if rng is None:
+            rng = np.random.default_rng()
+
         # Simplified: add small noise proportional to delay
-        delay_noise = np.random.normal(0, 0.1 * max_delay_steps, messages.shape)
+        delay_noise = rng.normal(0, 0.1 * max_delay_steps, messages.shape)
         return messages + delay_noise
     
     def _apply_quantization(self, messages):

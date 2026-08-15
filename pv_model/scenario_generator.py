@@ -74,7 +74,7 @@ class MarkovCloudModel:
         ])
 
         # Temperature (correlated with irradiance, lagged)
-        temperature = 20 + 10 * cos_factor + np.random.normal(0, 2, n_steps)
+        temperature = 20 + 10 * cos_factor + self.rng.normal(0, 2, n_steps)
 
         # Load profile (IEEE RTS residential + commercial mix)
         # Morning peak, evening peak, night minimum
@@ -83,7 +83,7 @@ class MarkovCloudModel:
             0.35 * np.exp(-((hours - 8) ** 2) / 8) +  # Morning peak
             0.25 * np.exp(-((hours - 19) ** 2) / 12)   # Evening peak
         )
-        load_pu = np.clip(load_base + np.random.normal(0, 0.05, n_steps), 0.2, 1.5)
+        load_pu = np.clip(load_base + self.rng.normal(0, 0.05, n_steps), 0.2, 1.5)
 
         return DailyProfile(hours, irradiance, temperature, load_pu)
 

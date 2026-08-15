@@ -1103,14 +1103,14 @@ class TrainingPipeline:
 
             for i in config.byzantine_agents:
                 if config.byzantine_strategy == "random":
-                    actions[i] = np.random.uniform(-1, 1, env.ACT_DIM)
+                    actions[i] = rng.uniform(-1, 1, env.ACT_DIM)
                 elif config.byzantine_strategy == "reverse":
                     honest_a, _ = act_fn(obs, i, rng)
                     actions[i] = -honest_a
                 elif config.byzantine_strategy == "colluding":
                     actions[i] = np.ones(env.ACT_DIM) * 0.9
                 else:
-                    actions[i] = np.random.uniform(-1, 1, env.ACT_DIM)
+                    actions[i] = rng.uniform(-1, 1, env.ACT_DIM)
 
             obs, reward, done, info = env.step(actions)
 

@@ -702,7 +702,15 @@ class MAPPOMARLTrainer:
                     not v for v in self.env.current_state.topology_state.line_status.values()
                 ) else 0.0
 
-            neighbor_stats = self._get_neighbor_stats(current_obs)
+            # _get_neighbor_stats indexes raw feature columns (tms_norm,
+            # ps_norm, cti_slack_norm, viol_flag) — current_obs is the
+            # GNN-decoded enhanced observation when use_comm is on, whose
+            # columns are an arbitrary nonlinear mix of raw+message
+            # features (see GNNMessageDecoder.decode), not those raw
+            # columns. Always use the true raw obs here so this matches
+            # the GAE bootstrap value below, which already (correctly)
+            # computes neighbor_stats from raw obs.
+            neighbor_stats = self._get_neighbor_stats(obs)
             value = self.critic.value(
                 TMS, PS, pv_level, topology_flag,
                 fault_type_idx=0, neighbor_stats=neighbor_stats
@@ -821,10 +829,16 @@ class MAPPOMARLTrainer:
                         self.buffer.log_probs[:T, ag],
                     )
 
-            # Update centralized critic
+            # Update centralized critic. Pass raw_obs (not buffer.obs, the
+            # GNN-enhanced observation used to update the actor above) —
+            # _update_critic_es only uses this to compute neighbor_stats,
+            # which indexes raw feature columns that don't exist in the
+            # decoded enhanced representation. buffer.raw_obs is None when
+            # use_comm is off, in which case buffer.obs already *is* the
+            # raw obs (see _collect_rollout).
             for _ in range(self.n_epochs):
                 self._update_critic_es(
-                    self.buffer.obs[:T],
+                    self.buffer.raw_obs[:T] if self.use_comm else self.buffer.obs[:T],
                     rets[:T],
                 )
 

@@ -133,10 +133,15 @@ class DistributionNetwork:
         )
 
         # ── Scenario generator ────────────────────────────────────────────────
-        self.scenario_gen = ScenarioGenerator(seed=42)
+        # Was hardcoded to seed=42, ignoring the caller-supplied seed entirely.
+        self.scenario_gen = ScenarioGenerator(seed=sensor_seed)
 
         # ── Sensor array ──────────────────────────────────────────────────────
         self.sensors = SensorArray(net_data.n_relays, seed=sensor_seed)
+
+        # ── Instance RNG (for anything in this class not delegated to a
+        #    sub-component's own seeded Generator) ─────────────────────────────
+        self.rng = np.random.default_rng(sensor_seed)
 
         # ── Current state ───────────────────────────────────────────────────────
         self.current_state = None
@@ -173,7 +178,9 @@ class DistributionNetwork:
             DynamicState with full network state
         """
         if seed is not None:
-            np.random.seed(seed)
+            # Re-seed this instance's own Generator instead of mutating the
+            # legacy global numpy RNG (which would affect unrelated code).
+            self.rng = np.random.default_rng(seed)
 
         # Reset topology
         self.topology.reset()
@@ -190,7 +197,7 @@ class DistributionNetwork:
         profile = self.scenario_gen.cloud_model.generate_daily_profile()
 
         if time_of_day is None:
-            time_of_day = np.random.uniform(0, 24)
+            time_of_day = self.rng.uniform(0, 24)
 
         # Interpolate profile values at time_of_day
         idx = int(time_of_day * 4) % len(profile.hours)  # 15-min resolution
@@ -410,9 +417,9 @@ class DistributionNetwork:
         scenarios = []
         for _ in range(n_scenarios):
             topology = {"line_outages": [], "switch_outages": []}
-            if stage >= 4 and np.random.random() < 0.3:
+            if stage >= 4 and self.rng.random() < 0.3:
                 max_line = max(1, self.topology.n_lines)
-                topology["line_outages"] = [int(np.random.randint(0, max_line))]
+                topology["line_outages"] = [int(self.rng.integers(0, max_line))]
 
             state = self.reset(
                 pv_level=pv_level,
