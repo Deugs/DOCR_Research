@@ -6,8 +6,10 @@ Translates run_thesis_experiments.py CLI args to unified_exp_fig05.py interface.
 
 FIXES APPLIED (vs original buggy version):
   1. --system is now ACTUALLY PASSED through to the experiment (was dropped)
-  2. --methods is now ACTUALLY PASSED through (was ignored)
-  3. --pv-levels is now ACTUALLY PASSED through (was ignored)
+  2. --methods is now ACTUALLY PASSED through (was accepted by argparse and
+     only echoed in the final print -- never forwarded to fig05_main, so
+     the hardcoded default method set ran regardless of what was requested)
+  3. --pv-levels is now ACTUALLY PASSED through (same bug as --methods)
   4. Imports unified_exp_fig05 which includes metaheuristic baselines
 """
 
@@ -58,13 +60,15 @@ def main():
     output_dir = str(Path(args.output).parent) if "." in args.output else args.output
     os.makedirs(output_dir, exist_ok=True)
 
-    # ── FIX: Actually pass --system through ──────────────────────────────────
+    # ── FIX: Actually pass --system / --methods / --pv-levels through ───────
     fig05_main(
         system=args.system,
         n_seeds=args.n_runs,
         train_steps=5000,
         n_eval=100,
         output_dir=output_dir,
+        methods=args.methods,
+        pv_levels=args.pv_levels,
     )
 
     print(f"[pv_sweep_evaluation] Figure 5 complete for {args.system}.")

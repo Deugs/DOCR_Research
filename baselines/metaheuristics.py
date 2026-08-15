@@ -551,9 +551,16 @@ def run_eeo(
             # Memory influence
             mem_idx = rng.integers(0, n_particles)
             mem_influence = 0.1 * (memory[mem_idx] - particles[i])
-            
-            # Update concentration
-            F = a2 * (rng.random(dim) - 0.5)
+
+            # Update concentration (Faramarzi et al. 2020, Eq. 9): the
+            # exponential exploitation term F MUST decay via t_vec so that
+            # search intensity shrinks as iterations progress -- t_vec was
+            # previously computed and discarded, which meant F never varied
+            # with iteration count (only with fresh randoms each step), so
+            # EEO never actually transitioned from exploration to
+            # exploitation like the real Equilibrium Optimizer does.
+            sign_vec = np.sign(rng.random(dim) - 0.5)
+            F = a2 * sign_vec * (np.exp(-lambda_vec * t_vec) - 1.0)
             GCP = 0.5 * (rng.random(dim) > 0.5).astype(float)
             G0 = GCP * (C_eq - lambda_vec * particles[i])
             
