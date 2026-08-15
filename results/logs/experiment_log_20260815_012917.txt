@@ -48,3 +48,6 @@
 2026-08-15 01:41:39,542 | INFO     | 
 [Phase 2] Running Objective 4 benchmark comparison (GA-SQP/HWOA/HHO/JAYA/EEO vs MARL)...
 2026-08-15 01:41:46,671 | INFO     |   PV level: 0%
+2026-08-15 02:00:32,072 | INFO     |     Saved: results/benchmark_pv000.pkl
+2026-08-15 02:00:32,100 | INFO     |     Statistical report saved: results/stat_comparison_pv000.txt
+2026-08-15 02:00:32,100 | INFO     |   PV level: 20%
