@@ -212,6 +212,10 @@ def run_mappo_safe_ewc(net, total_steps=30000, seed=0, verbose=True, use_pandapo
         base_trainer.actor.set_all_params(cur_params)
     ewc_trainer.ewc_regularizer.register_task("MAPPO-Safe-EWC", cur_params)
     ewc_trainer.ewc_regularizer.update_fisher("MAPPO-Safe-EWC", fisher)
+    # No "next" task will ever register here to trigger the lagged
+    # consolidation (this is a single-shot call, not a task sequence) —
+    # finalize() closes this one out explicitly.
+    ewc_trainer.ewc_regularizer.finalize()
 
     safe_stats = safe_env.get_safe_rl_stats()
     ewc_stats = ewc_trainer.get_adaptation_stats()

@@ -753,6 +753,11 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
         trainer.actor.set_all_params(cur_params)
     ewc_trainer.ewc_regularizer.register_task("PV060", cur_params)
     ewc_trainer.ewc_regularizer.update_fisher("PV060", fisher)
+    # register_task()/update_fisher() only consolidate a task into
+    # task_memory when the *next* task's register_task() fires — with no
+    # next task here, finalize() closes this one out explicitly so it's
+    # not silently dropped (n_tasks_consolidated would otherwise stay 0).
+    ewc_trainer.ewc_regularizer.finalize()
 
     act_fn = _make_act_fn(trainer)
 
@@ -1071,6 +1076,13 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
             pbar.update(1)
             pbar.set_postfix(pv=f"{pv:.0%}")
 
+    if use_ewc and ewc_wrapper is not None:
+        # The loop above only consolidates a task into task_memory when
+        # the *next* task's register_task() call fires (lagged by one
+        # iteration) — so TASKS[-1] (60% PV) is never consolidated
+        # without this: finalize() closes it out explicitly.
+        ewc_wrapper.ewc_regularizer.finalize()
+
     return {
         "task_performances": np.array(task_performances),
         "use_ewc": use_ewc,
@@ -1218,6 +1230,9 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int):
         # by construction, which is expected here).
         ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
         ewc_trainer.ewc_regularizer.register_task(method, trainer.actor.get_all_params())
+        # No "next" task will ever register here to trigger the lagged
+        # consolidation — finalize() closes this one out explicitly.
+        ewc_trainer.ewc_regularizer.finalize()
 
     act_fn = _make_act_fn(trainer)
     rng = np.random.default_rng(seed + 9999)
@@ -1436,6 +1451,11 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
                 if prev_task_name is not None:
                     ewc_trainer.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
                 prev_task_name, prev_fisher = task_name, fisher
+        if use_ewc:
+            # The loop above only consolidates a task when the *next*
+            # task's register_task() fires — TASKS[-1] (60% PV) has no
+            # next task, so finalize() closes it out explicitly.
+            ewc_trainer.ewc_regularizer.finalize()
     else:
         trainer.train(total_steps=total_steps, verbose=False)
         if use_ewc:
@@ -1443,6 +1463,7 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
             # genuinely runs (see Core A for the same rationale — no
             # forgetting to prevent with only one task, by construction).
             ewc_trainer.ewc_regularizer.register_task(config_name, trainer.actor.get_all_params())
+            ewc_trainer.ewc_regularizer.finalize()
 
     act_fn = _make_act_fn(trainer)
 

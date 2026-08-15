@@ -61,7 +61,7 @@ def main():
     args = p.parse_args()
 
     # Find and load the actual experiment module
-    target_file = "exp_fig09_cti_violation_dynamics.py"
+    target_file = "exp_fig07_curriculum_learning.py"
     try:
         exp_path = _find_exp_file(target_file)
     except FileNotFoundError as e:
@@ -77,14 +77,15 @@ def main():
     if exp_dir not in sys.path:
         sys.path.insert(0, exp_dir)
 
-    spec = importlib.util.spec_from_file_location("exp_fig09", exp_path)
-    exp_fig09 = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(exp_fig09)
+    spec = importlib.util.spec_from_file_location("exp_fig07", exp_path)
+    exp_fig07 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(exp_fig07)
 
     out_dir = os.path.dirname(args.output) or "outputs"
     os.makedirs(out_dir, exist_ok=True)
 
-    exp_fig09.main(n_episodes=args.episodes, seed=args.seed, output_dir=out_dir, system=args.system)
+    exp_fig07.main(network=args.system, episodes_per_task=args.episodes,
+                   n_seeds=args.n_runs, seed=args.seed, output_dir=out_dir)
 
 
 def _run_stub(args):
@@ -98,8 +99,8 @@ def _run_stub(args):
     os.makedirs(out_dir, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.text(0.5, 0.5, "STUB: Actual experiment file not found\n\n" + 
-            "exp_fig09_cti_violation_dynamics.py\nwas not found in project.", 
+    ax.text(0.5, 0.5, "STUB: Actual experiment file not found\n\n" +
+            "exp_fig07_curriculum_learning.py\nwas not found in project.",
             ha="center", va="center", fontsize=12, transform=ax.transAxes)
     ax.set_title("Placeholder - curriculum_trainer", fontsize=14)
     ax.axis("off")

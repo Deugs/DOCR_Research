@@ -1177,9 +1177,33 @@ def compute_comm_gradient(comm_graph, raw_obs, dloss_denhanced):
             comm_grad[idx:idx+arr.size] = g.ravel()
         idx += arr.size
 
-    # Attention (placeholder — full attention backprop requires custom handling)
+    # Attention: GradGNNAttention.forward() decomposes a_vec into two
+    # linear "pseudo-weights" (tape ops named "att_a1"/"att_a2") so the
+    # (n,n) pairwise score matrix can be built via tape.reshape+tape.add
+    # instead of an explicit repeat -- see GradGNNAttention.forward(). Its
+    # true params (get_params() order: [W_att.ravel(), a_vec]) map back to
+    # tape gradients as follows:
+    #   W_att -> "att_W_W"   (shape (hidden_dim, msg_dim))
+    #   a_vec -> concat("att_a1_W", "att_a2_W")  (each (1, hidden_dim))
+    # This was previously skipped entirely (left as zeros), silently
+    # dropping attention from the comm-graph gradient update.
     if comm_graph.attention is not None:
-        idx += comm_graph.attention.n_params
+        att = comm_graph.attention
+        n_att = att.n_params
+        att_grad = np.zeros(n_att)
+
+        g_w_att = all_grads.get("att_W_W")
+        if g_w_att is not None:
+            att_grad[:att.W_att.size] = g_w_att.ravel()[:att.W_att.size]
+
+        g_a1 = all_grads.get("att_a1_W")
+        g_a2 = all_grads.get("att_a2_W")
+        if g_a1 is not None and g_a2 is not None:
+            a_vec_grad = np.concatenate([g_a1.ravel(), g_a2.ravel()])
+            att_grad[att.W_att.size:att.W_att.size + a_vec_grad.size] = a_vec_grad
+
+        comm_grad[idx:idx + n_att] = att_grad
+        idx += n_att
 
     return comm_grad
 
@@ -1242,7 +1266,8 @@ class GradientBasedMAPPOMARLTrainer:
 
         # Buffer
         self.buffer = self._make_buffer(env.n_agents, actor_obs_dim, env.ACT_DIM,
-                                         rollout_len, use_comm, msg_dim)
+                                         rollout_len, use_comm, msg_dim,
+                                         raw_obs_dim=env.OBS_DIM)
 
         # Optimizers
         self.actor_opt = Adam(lr=lr_actor)
@@ -1311,9 +1336,9 @@ class GradientBasedMAPPOMARLTrainer:
 
         return Critic(n_relays, hidden, seed)
 
-    def _make_buffer(self, n_agents, obs_dim, act_dim, cap, use_comm, msg_dim):
+    def _make_buffer(self, n_agents, obs_dim, act_dim, cap, use_comm, msg_dim, raw_obs_dim=None):
         class Buf:
-            def __init__(self, n, od, ad, c, uc, md):
+            def __init__(self, n, od, ad, c, uc, md, rod):
                 self.obs = np.zeros((c, n, od))
                 self.actions = np.zeros((c, n, ad))
                 self.rewards = np.zeros((c, n))
@@ -1331,12 +1356,19 @@ class GradientBasedMAPPOMARLTrainer:
                 if uc:
                     self.messages = np.zeros((c, n, md))
                     self.attention = np.zeros((c, n, n))
+                    # Pre-communication (raw) observations per timestep, needed
+                    # so _update_actor_and_comm() can recompute the comm graph's
+                    # forward pass (with a gradient tape) against the SAME input
+                    # that actually produced obs[t] during rollout collection —
+                    # not whatever self.env's raw observation happens to be
+                    # after the whole rollout has already finished.
+                    self.raw_obs = np.zeros((c, n, rod if rod is not None else od))
                 self.ptr = self.size = 0
                 self.capacity = c
                 self.n_agents = n
 
             def add(self, obs, act, rew, lp, val, done, msg=None, attn=None,
-                    tms=None, ps=None, pv_level=0.0):
+                    tms=None, ps=None, pv_level=0.0, raw_obs=None):
                 i = self.ptr % self.capacity
                 self.obs[i] = obs
                 self.actions[i] = act
@@ -1353,6 +1385,8 @@ class GradientBasedMAPPOMARLTrainer:
                     self.messages[i] = msg
                 if self.use_comm and attn is not None:
                     self.attention[i] = attn
+                if self.use_comm and raw_obs is not None:
+                    self.raw_obs[i] = raw_obs
                 self.ptr += 1
                 self.size = min(self.ptr, self.capacity)
 
@@ -1374,7 +1408,7 @@ class GradientBasedMAPPOMARLTrainer:
             def clear(self):
                 self.ptr = self.size = 0
 
-        return Buf(n_agents, obs_dim, act_dim, cap, use_comm, msg_dim)
+        return Buf(n_agents, obs_dim, act_dim, cap, use_comm, msg_dim, raw_obs_dim)
 
     def _get_neighbor_stats(self, obs):
         return np.array([
@@ -1404,7 +1438,16 @@ class GradientBasedMAPPOMARLTrainer:
         n_clipped = 0
 
         for t in range(T):
-            raw_obs = self.env._get_obs() if hasattr(self.env, '_get_obs') else obs_batch[t]
+            # Use the raw (pre-comm-graph) observation actually recorded at
+            # timestep t, not self.env's current observation — by the time
+            # this update runs, the whole rollout has already finished, so
+            # self.env's live observation is just the final timestep's obs
+            # repeated for every t, not the historical per-t input that
+            # actually produced obs_batch[t]/enhanced_obs at collection time.
+            if self.use_comm and hasattr(self.buffer, 'raw_obs'):
+                raw_obs = self.buffer.raw_obs[t]
+            else:
+                raw_obs = obs_batch[t]
 
             if self.use_comm and self.comm_graph is not None:
                 comm_tape = ComputationTape()
@@ -1508,7 +1551,7 @@ class GradientBasedMAPPOMARLTrainer:
 
             self.buffer.add(current_obs, actions, rewards, log_probs, val, done,
                           msg=messages, attn=info.get("attention"),
-                          tms=TMS, ps=PS, pv_level=pv)
+                          tms=TMS, ps=PS, pv_level=pv, raw_obs=obs)
 
             self._global_step += 1
             if (self.use_comm and info.get("attention") is not None and
