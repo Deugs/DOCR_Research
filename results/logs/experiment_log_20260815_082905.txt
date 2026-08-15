@@ -44,3 +44,10 @@
 2026-08-15 08:29:18,179 | INFO     | ──────────────────────────────────────────────────────────────────────
 2026-08-15 08:29:18,179 | INFO     | ▶ Phase 2: Unified Core Training (all 11 cores A-K)
 2026-08-15 08:29:18,179 | INFO     |   CMD: python run_core_training.py --all --fast --system 8bus --pv 0.6 --n-runs 2 --episodes 500 --n-workers 4
+2026-08-15 08:34:50,159 | INFO     |   ✓ SUCCESS in 332.0s
+2026-08-15 08:34:50,160 | INFO     | 
+[Phase 2] Running Objective 4 benchmark comparison (GA-SQP/HWOA/HHO/JAYA/EEO vs MARL)...
+2026-08-15 08:34:50,993 | INFO     |   PV level: 0% - already computed, loading results/benchmark_pv000.pkl
+2026-08-15 08:34:51,001 | INFO     |   PV level: 20% - already computed, loading results/benchmark_pv020.pkl
+2026-08-15 08:34:51,009 | INFO     |   PV level: 40% - already computed, loading results/benchmark_pv040.pkl
+2026-08-15 08:34:51,018 | INFO     |   PV level: 60%

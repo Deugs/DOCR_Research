@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-08-15T08:34:49.515461",
+  "fast_mode": true,
+  "use_synthetic": false,
+  "config_used": true,
+  "elapsed_seconds": 331.04306507110596,
+  "cores": {
+    "A": {
+      "feeds": "Figs 9,10,12,21,37,38,41,48-50,55-57",
+      "status": "complete"
+    },
+    "B": {
+      "feeds": "Figs 5,6,7,16,29,39",
+      "status": "complete"
+    },
+    "C": {
+      "feeds": "Figs 11,12,31-33,55-56",
+      "status": "complete"
+    },
+    "D": {
+      "feeds": "Fig 39",
+      "status": "complete"
+    },
+    "E": {
+      "feeds": "Fig 40",
+      "status": "complete"
+    },
+    "F": {
+      "feeds": "Fig 15",
+      "status": "complete"
+    },
+    "G": {
+      "feeds": "Figs 13,20,22,24,54",
+      "status": "complete"
+    },
+    "H": {
+      "feeds": "Figs 23,25",
+      "status": "complete"
+    },
+    "I": {
+      "feeds": "Figs 18,53",
+      "status": "complete"
+    },
+    "J": {
+      "feeds": "Figs 43,44,45,46,47",
+      "status": "complete"
+    },
+    "K": {
+      "feeds": "Fig 58",
+      "status": "complete"
+    }
+  },
+  "cache_dir": "/home/user/DOCR_Research/results/core_cache",
+  "estimated_gpu_days": "~1-2 hours (fast)",
+  "cache_stats": {
+    "hits": 7,
+    "misses": 4,
+    "stores": 4
+  },
+  "progress_report": "/home/user/DOCR_Research/results/progress/training_progress_20260815_083449.json"
+}
