@@ -84,5 +84,16 @@
       "seed"
     ],
     "size_mb": 0.00023174285888671875
+  },
+  "b88cfba770e004b9": {
+    "name": "core_G_robustness",
+    "created": "2026-08-15T01:41:00.000707",
+    "config_keys": [
+      "name",
+      "stress_types",
+      "seed",
+      "real_eval"
+    ],
+    "size_mb": 0.0008306503295898438
   }
 }
