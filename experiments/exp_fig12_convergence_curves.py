@@ -200,13 +200,21 @@ def compute_convergence_time(returns: np.ndarray, threshold: float = 0.95,
 
 
 def bootstrap_ci(data: np.ndarray, n_bootstrap: int = 1000,
-                 confidence: float = 0.95) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute bootstrap confidence intervals."""
+                 confidence: float = 0.95, seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute bootstrap confidence intervals.
+
+    Uses a seeded np.random.default_rng instead of the module-global
+    np.random.choice — every other stochastic step in this file (see
+    run_single_training's `rng`, evaluate_traditional's `rng`) already goes
+    through a seeded Generator, so the CI band this feeds into fig12's
+    shaded region was the one unseeded, non-reproducible exception.
+    """
+    rng = np.random.default_rng(seed)
     n_runs, n_episodes = data.shape
     boot_means = np.zeros((n_bootstrap, n_episodes))
-    
+
     for b in range(n_bootstrap):
-        idx = np.random.choice(n_runs, size=n_runs, replace=True)
+        idx = rng.choice(n_runs, size=n_runs, replace=True)
         boot_means[b] = data[idx].mean(axis=0)
     
     alpha = (1 - confidence) / 2
@@ -300,8 +308,13 @@ def main(n_runs: int = 50, n_episodes: int = 2000, seed_base: int = 0,
         std_returns = all_returns.std(axis=0)
         se_returns = std_returns / np.sqrt(n_runs)
         
-        # Bootstrap CI (more robust than normal approximation)
-        ci_lower, ci_upper = bootstrap_ci(all_returns, n_bootstrap=1000, confidence=0.95)
+        # Bootstrap CI (more robust than normal approximation). Seeded
+        # per-method (deterministic, distinct from the training seeds) so
+        # re-running with the same seed_base reproduces identical CI bands.
+        ci_lower, ci_upper = bootstrap_ci(
+            all_returns, n_bootstrap=1000, confidence=0.95,
+            seed=seed_base + _method_seed_offset(method),
+        )
         
         all_results[method] = {
             "returns": all_returns,
