@@ -82,6 +82,10 @@ class RelaySensor:
         self.ct_saturated = False
         self.saturation_recovery_time = 0.0
 
+        # Elapsed time since a decaying DC offset started (persists across
+        # successive measure_current() calls; reset when the offset is absent)
+        self.dc_offset_elapsed_time = 0.0
+
         # Measurement history for filtering
         self.current_history = []
         self.voltage_history = []
@@ -111,8 +115,14 @@ class RelaySensor:
             self.saturation_recovery_time = 0.1  # 100ms recovery
 
         if self.ct_saturated:
-            # Saturated CT: clipped output with decay
-            self.saturation_recovery_time -= self.dt * self.sampling_rate
+            # Saturated CT: clipped output with decay.
+            # Each call to measure_current() represents one new sample, i.e.
+            # self.dt seconds of elapsed time. (Previously this multiplied by
+            # self.sampling_rate too, which cancels the sampling_rate factor
+            # inside self.dt and collapses to the constant 1/50 s regardless
+            # of sampling_rate or how many calls have actually elapsed, so the
+            # recovery timer never genuinely tracked elapsed time.)
+            self.saturation_recovery_time -= self.dt
             if self.saturation_recovery_time <= 0:
                 self.ct_saturated = False
 
@@ -129,10 +139,18 @@ class RelaySensor:
         phase_rad = np.radians(self.rng.normal(0, self.ct.phase_error))
         measured *= np.cos(phase_rad)
 
-        # Add DC offset if present
+        # Add DC offset if present. The offset decays with real elapsed time
+        # since the fault began, not a fixed per-sample dt (which stays tiny
+        # and constant regardless of how many calls have elapsed, so the
+        # offset never actually decayed). self.dc_offset_elapsed_time is
+        # persisted across calls and accumulates by self.dt each time the
+        # offset is active, and resets once it is no longer present.
         if dc_offset and fault_condition:
-            dc_component = true_current_a * 0.6 * np.exp(-self.dt * 10)  # Decaying DC
+            dc_component = true_current_a * 0.6 * np.exp(-self.dc_offset_elapsed_time * 10)
+            self.dc_offset_elapsed_time += self.dt
             measured += dc_component
+        else:
+            self.dc_offset_elapsed_time = 0.0
 
         # Add measurement noise
         noise = self.rng.normal(0, abs(measured) * self.ct.noise_std + 0.1)
@@ -290,6 +308,7 @@ class RelaySensor:
         """Reset sensor state."""
         self.ct_saturated = False
         self.saturation_recovery_time = 0.0
+        self.dc_offset_elapsed_time = 0.0
         self.current_history = []
         self.voltage_history = []
 

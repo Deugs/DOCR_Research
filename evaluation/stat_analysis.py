@@ -65,12 +65,17 @@ def friedman_test(
     mean_ranks = np.mean(ranks, axis=0)
     
     # Friedman statistic
-    # χ²_F = (12N / k(k+1)) * [ΣR_j² - k(k+1)²/4]
-    # where N = n_datasets, k = n_algorithms, R_j = sum of ranks for algo j
+    # χ²_F = (12 / (Nk(k+1))) * ΣS_j² - 3N(k+1)
+    # where N = n_datasets, k = n_algorithms, S_j = sum of ranks for algo j
+    # (equivalently, in terms of average ranks R̄_j = S_j/N:
+    #  χ²_F = (12N/(k(k+1))) * [ΣR̄_j² - k(k+1)²/4] — the previous version
+    #  of this code used average-rank-formula prefactor 12N/(k(k+1)) but
+    #  the sum-of-ranks values ΣS_j², inflating the statistic by N²  and
+    #  causing near-universal false "significant" results.)
     N, k = n_datasets, n_algorithms
     sum_ranks = np.sum(ranks, axis=0)
-    
-    chi2_stat = (12.0 * N / (k * (k + 1))) * (
+
+    chi2_stat = (12.0 / (N * k * (k + 1))) * (
         np.sum(sum_ranks ** 2) - N * N * k * (k + 1) ** 2 / 4.0
     )
     

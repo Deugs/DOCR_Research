@@ -608,13 +608,20 @@ def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None,
     n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
-        "name": "core_A_mappo_safe_ewc_8bus_100pv", 
-        "method": "MAPPO-Safe-EWC", 
-        "system": "8bus", 
-        "pv": 1.0, 
-        "n_runs": n_runs, 
-        "n_episodes": n_episodes, 
-        "seed": seed
+        "name": "core_A_mappo_safe_ewc_8bus_100pv",
+        "method": "MAPPO-Safe-EWC",
+        "system": "8bus",
+        "pv": 1.0,
+        "n_runs": n_runs,
+        "n_episodes": n_episodes,
+        "seed": seed,
+        # Bumped: Safe RL / EWC were previously dead no-op attribute
+        # guards (trainer.use_safety/use_ewc are not real attributes on
+        # MAPPOMARLTrainer), so every prior cache entry under this name
+        # is actually plain unconstrained MAPPO+GNN mislabeled as
+        # "MAPPO-Safe-EWC". This marker forces a genuine re-run now that
+        # both are wired for real (env-wrapped Safe RL + registered EWC task).
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -664,6 +671,8 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+    from marl.continual_trainer import create_ewc_trainer, EWCConfig
     from network.relay_physics import check_constraints
 
     net = get_8bus()
@@ -677,9 +686,21 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
     # Previously use_comm=False was used as a workaround for the matmul
     # crash — now fixed via _make_act_fn which routes obs through the
     # comm graph before calling actor.sample().
-    trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
-    if hasattr(trainer, 'use_safety'): trainer.use_safety = True
-    if hasattr(trainer, 'use_ewc'):    trainer.use_ewc = True
+    #
+    # "Safe" and "EWC" were previously no-ops: `trainer.use_safety`/
+    # `use_ewc` are never real attributes on MAPPOMARLTrainer (the
+    # hasattr guards were always False), so this cached result was
+    # actually plain MAPPO+GNN despite being labeled and cached as
+    # "MAPPO-Safe-EWC". Safe RL is a real env wrapper (project actions +
+    # Lagrangian CTI penalty); it must wrap env BEFORE the trainer is
+    # constructed, not be set as a post-hoc attribute.
+    safe_env = create_safe_rl_env(env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
+    trainer = MAPPOMARLTrainer(safe_env, use_comm=True, seed=seed)
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
 
     logger_obj = UnifiedTrainingLogger(
         n_agents=env.n_agents,
@@ -699,12 +720,54 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
     history = trainer.train(total_steps=total_steps, verbose=False)
     logger.info(f"  [Core A] Training complete.")
 
+    # Register this (single) task with EWC. A lone task has nothing to
+    # protect against forgetting — that's expected, not a bug — but the
+    # apparatus should genuinely run rather than stay entirely inert:
+    # this is the same real Fisher-estimation procedure Core B uses
+    # across its multi-task curriculum, applied here to the one task
+    # Core A trains.
+    cur_params = trainer.actor.get_all_params()
+    obs_f = safe_env.reset(seed=seed + 9000)
+    s_obs, s_act = [], []
+    done_f, sf = False, 0
+    while not done_f and sf < 30:
+        acts = np.zeros((env.n_agents, env.ACT_DIM))
+        enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, rng) if trainer.comm_graph is not None else (obs_f, None, None)
+        for i in range(env.n_agents):
+            a, _ = trainer.actor.sample(enhanced_f[i], rng)
+            acts[i] = a
+            s_obs.append(enhanced_f[i].copy())
+            s_act.append(a.copy())
+        obs_f, _, done_f, _ = safe_env.step(acts); sf += 1
+    n_p = len(cur_params)
+    fisher = np.zeros(n_p)
+    if s_obs:
+        idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+        h = 1e-3
+        for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+            bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            b2 = cur_params.copy(); b2[p_idx] += h
+            trainer.actor.set_all_params(b2)
+            ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            fisher[p_idx] = ((ul - bl) / h) ** 2
+        trainer.actor.set_all_params(cur_params)
+    ewc_trainer.ewc_regularizer.register_task("PV060", cur_params)
+    ewc_trainer.ewc_regularizer.update_fisher("PV060", fisher)
+    # register_task()/update_fisher() only consolidate a task into
+    # task_memory when the *next* task's register_task() fires — with no
+    # next task here, finalize() closes this one out explicitly so it's
+    # not silently dropped (n_tasks_consolidated would otherwise stay 0).
+    ewc_trainer.ewc_regularizer.finalize()
+
     act_fn = _make_act_fn(trainer)
 
-    # Post-training evaluation rollout (for logging/convergence curves)
+    # Post-training evaluation rollout (for logging/convergence curves) —
+    # uses safe_env (not the raw env) so action projection and the
+    # Lagrangian CTI penalty are actually exercised during evaluation,
+    # matching how the policy was trained.
     with ProgressTracker(total=min(n_episodes, 200), desc="[Core A] Eval", unit="ep", enable=False) as pbar:
         for ep in range(min(n_episodes, 200)):
-            obs = env.reset(seed=seed + ep)
+            obs = safe_env.reset(seed=seed + ep)
             done = False
             ep_reward = 0.0
             ep_safety_acts = 0
@@ -714,13 +777,15 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
                 for i in range(env.n_agents):
                     a, _ = act_fn(obs, i, rng)
                     actions[i] = a
-                obs, reward, done, info = env.step(actions)
+                obs, reward, done, info = safe_env.step(actions)
                 ep_reward += float(np.mean(reward))
+                if info.get("safe_rl", {}).get("projected_actions"):
+                    ep_projections += 1
+                ep_safety_acts += info.get("safe_rl", {}).get("cti_violations", 0)
 
-            TMS, PS = env.get_state()
+            TMS, PS = safe_env.get_state()
             c = check_constraints(env.net, TMS, PS)
-            lag_norm = float(np.linalg.norm(trainer.lagrange_multipliers)) \
-                if hasattr(trainer, 'lagrange_multipliers') else 0.0
+            lag_norm = float(np.mean(safe_env.get_safe_rl_stats().get("lambda_mean", 0.0)))
             attn = getattr(getattr(trainer, 'actor', None), 'attention_weights', None)
             if attn is not None:
                 attn = attn.copy()
@@ -838,11 +903,14 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
     n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
-        "name": "core_B_curriculum", 
+        "name": "core_B_curriculum",
         "tasks": [0.0, 0.20, 0.40, 0.60],  # active sweep (was 0/25/50/75/100%)
-        "episodes_per_task": episodes_per_task, 
-        "n_runs": n_runs, 
-        "seed": seed
+        "episodes_per_task": episodes_per_task,
+        "n_runs": n_runs,
+        "seed": seed,
+        # Bumped: Safe RL was previously a dead post-hoc attribute set;
+        # now genuinely wraps the env (see _run_curriculum_single).
+        "real_safety": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -900,13 +968,21 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
     from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
     net = get_8bus()
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=0)
-    base_trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
-    if hasattr(base_trainer, 'use_safety'): base_trainer.use_safety = True
-    if hasattr(base_trainer, 'use_ewc'):    base_trainer.use_ewc = use_ewc
+    # Safe RL was previously a dead post-hoc attribute set (use_safety is
+    # not a real MAPPOMARLTrainer attribute) — it's a real env wrapper and
+    # must wrap env before the trainer is constructed. curriculum_stage
+    # mutation below reaches the real env through SafeRLWrapper's property.
+    safe_env = create_safe_rl_env(env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
+    base_trainer = MAPPOMARLTrainer(safe_env, use_comm=True, seed=seed)
 
     ewc_wrapper = create_ewc_trainer(base_trainer, EWCConfig()) if use_ewc else None
 
@@ -938,7 +1014,10 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
                 cur = base_trainer.actor.get_all_params()
                 # Estimate Fisher for the task just completed before
                 # register_task() consolidates the previous one.
-                obs_f = env.reset(seed=seed + 9000 + task_idx)
+                # Uses safe_env (not the raw env) so this rollout is
+                # collected under the same action projection the policy
+                # was actually trained under.
+                obs_f = safe_env.reset(seed=seed + 9000 + task_idx)
                 s_obs, s_act = [], []
                 done_f = False; sf = 0
                 while not done_f and sf < 30:
@@ -955,7 +1034,7 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
                         acts[i] = a
                         s_obs.append(enhanced_f[i].copy())
                         s_act.append(a.copy())
-                    obs_f, _, done_f, _ = env.step(acts); sf += 1
+                    obs_f, _, done_f, _ = safe_env.step(acts); sf += 1
 
                 n_p = len(cur)
                 fisher = np.zeros(n_p)
@@ -975,26 +1054,34 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
                 prev_task_name = task_name
                 prev_fisher = fisher
 
-            # Evaluate across all tasks seen so far
+            # Evaluate across all tasks seen so far — via safe_env so the
+            # safety projection applies during evaluation too.
             task_perf = []
             for eval_pv in TASKS:
                 env.curriculum_stage = int(eval_pv * 5)
                 rewards = []
                 for ep in range(30):
-                    obs = env.reset(seed=seed + 50000 + int(eval_pv * 1000) + ep)
+                    obs = safe_env.reset(seed=seed + 50000 + int(eval_pv * 1000) + ep)
                     done = False; ep_reward = 0
                     while not done:
                         actions = np.zeros((env.n_agents, env.ACT_DIM))
                         for i in range(env.n_agents):
                             a, _ = act_fn(obs, i, rng)
                             actions[i] = a
-                        obs, r, done, _ = env.step(actions)
+                        obs, r, done, _ = safe_env.step(actions)
                         ep_reward += float(np.mean(r))
                     rewards.append(ep_reward)
                 task_perf.append(float(np.mean(rewards)))
             task_performances.append(task_perf)
             pbar.update(1)
             pbar.set_postfix(pv=f"{pv:.0%}")
+
+    if use_ewc and ewc_wrapper is not None:
+        # The loop above only consolidates a task into task_memory when
+        # the *next* task's register_task() call fires (lagged by one
+        # iteration) — so TASKS[-1] (60% PV) is never consolidated
+        # without this: finalize() closes it out explicitly.
+        ewc_wrapper.ewc_regularizer.finalize()
 
     return {
         "task_performances": np.array(task_performances),
@@ -1046,11 +1133,15 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
     n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
-        "name": "core_C_baselines", 
-        "methods": ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"], 
-        "n_runs": n_runs, 
-        "n_episodes": n_episodes, 
-        "seed": seed
+        "name": "core_C_baselines",
+        "methods": ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"],
+        "n_runs": n_runs,
+        "n_episodes": n_episodes,
+        "seed": seed,
+        # Bumped: "Safe"/"EWC" methods previously trained identically to
+        # plain "MAPPO" (dead post-hoc attribute guards). Now genuinely
+        # differ — see _run_baseline_single.
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1102,6 +1193,8 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int):
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+    from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
     net = get_8bus()
     # curriculum_stage=3 → 60% PV (active sweep max)
@@ -1109,14 +1202,37 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int):
     if method == "Traditional":
         return _evaluate_traditional(env, net, n_episodes, seed)
 
+    use_safe = method in ["MAPPO-Safe-EWC", "MAPPO-Safe"]
+    use_ewc = method == "MAPPO-Safe-EWC"
     use_comm = method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO"]
-    trainer = MAPPOMARLTrainer(env, use_comm=use_comm, seed=seed)
-    if hasattr(trainer, 'use_safety'): trainer.use_safety = (method in ["MAPPO-Safe-EWC", "MAPPO-Safe"])
-    if hasattr(trainer, 'use_ewc'):    trainer.use_ewc = (method == "MAPPO-Safe-EWC")
+
+    # Safe RL is a real env wrapper (use_safety was previously a dead
+    # post-hoc attribute — MAPPOMARLTrainer never defines it — so "Safe"
+    # methods here trained identically to plain "MAPPO").
+    train_env = env
+    if use_safe:
+        train_env = create_safe_rl_env(env, SafeRLConfig(
+            project_actions=True, enforce_cti=True,
+            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+            use_pid=True, adaptive_rho=True,
+        ))
+    trainer = MAPPOMARLTrainer(train_env, use_comm=use_comm, seed=seed)
 
     # ── ACTUAL TRAINING ───────────────────────────────────────────────────
     total_steps = n_episodes * 300
     trainer.train(total_steps=total_steps, verbose=False)
+
+    if use_ewc:
+        # Register this single task with EWC so the apparatus genuinely
+        # runs (n_tasks_learned reflects reality) rather than staying
+        # completely inert — see Core A for the same pattern and its
+        # rationale (one task has nothing to protect against forgetting,
+        # by construction, which is expected here).
+        ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
+        ewc_trainer.ewc_regularizer.register_task(method, trainer.actor.get_all_params())
+        # No "next" task will ever register here to trigger the lagged
+        # consolidation — finalize() closes this one out explicitly.
+        ewc_trainer.ewc_regularizer.finalize()
 
     act_fn = _make_act_fn(trainer)
     rng = np.random.default_rng(seed + 9999)
@@ -1124,7 +1240,7 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int):
     returns = []
     with ProgressTracker(total=min(n_episodes, 200), desc=f"[Core C] {method} eval", unit="ep", enable=False) as pbar:
         for ep in range(min(n_episodes, 200)):
-            obs = env.reset(seed=seed + ep)
+            obs = train_env.reset(seed=seed + ep)
             done = False
             ep_return = 0.0
             while not done:
@@ -1132,7 +1248,7 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int):
                 for i in range(env.n_agents):
                     a, _ = act_fn(obs, i, rng)
                     actions[i] = a
-                obs, reward, done, _ = env.step(actions)
+                obs, reward, done, _ = train_env.step(actions)
                 ep_return += float(np.mean(reward))
             returns.append(ep_return)
             pbar.update(1)
@@ -1199,11 +1315,15 @@ def run_core_D(n_runs: int = None, n_episodes: int = None, seed: int = None,
     n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
-        "name": "core_D_ablation", 
-        "configs": ["MAPPO", "MAPPO+GNN", "MAPPO+GNN+Safe", "MAPPO+GNN+Safe+EWC", "MAPPO+GNN+Safe+EWC+Curr"], 
-        "n_runs": n_runs, 
-        "n_episodes": n_episodes, 
-        "seed": seed
+        "name": "core_D_ablation",
+        "configs": ["MAPPO", "MAPPO+GNN", "MAPPO+GNN+Safe", "MAPPO+GNN+Safe+EWC", "MAPPO+GNN+Safe+EWC+Curr"],
+        "n_runs": n_runs,
+        "n_episodes": n_episodes,
+        "seed": seed,
+        # Bumped: "Safe"/"EWC" arms previously trained identically to
+        # "MAPPO+GNN" (dead post-hoc attribute guards, unused ewc_wrapper).
+        # Now genuinely differ — see _run_ablation_single.
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1257,34 +1377,100 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+    from marl.continual_trainer import create_ewc_trainer, EWCConfig
     from network.relay_physics import check_constraints
 
     net = get_8bus()
     # curriculum_stage=3 → 60% PV; use 0 if curriculum training is enabled
     env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph",
                           curriculum_stage=0 if use_curr else 3, seed=seed)
-    trainer = MAPPOMARLTrainer(env, use_comm=use_comm, seed=seed)
-    if hasattr(trainer, 'use_safety'): trainer.use_safety = use_safe
-    if hasattr(trainer, 'use_ewc'):    trainer.use_ewc = use_ewc
+    # "Safe" was previously a dead post-hoc attribute set (use_safety is
+    # not a real MAPPOMARLTrainer attribute) — it's a real env wrapper.
+    train_env = env
+    if use_safe:
+        train_env = create_safe_rl_env(env, SafeRLConfig(
+            project_actions=True, enforce_cti=True,
+            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+            use_pid=True, adaptive_rho=True,
+        ))
+    trainer = MAPPOMARLTrainer(train_env, use_comm=use_comm, seed=seed)
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig()) if use_ewc else None
 
     total_steps = n_episodes * 300
+    rng = np.random.default_rng(seed + 9999)
 
     if use_curr:
-        # Curriculum over 0/20/40/60%
+        # Curriculum over 0/20/40/60% — when EWC is also enabled, drive
+        # real task-transition consolidation across the stages (same
+        # pattern as Core B), rather than leaving the ewc_trainer
+        # entirely unused as before. Without EWC, this arm isolates
+        # curriculum warm-starting alone.
         steps_per_task = total_steps // 4
-        for pv in [0.0, 0.20, 0.40, 0.60]:
+        TASKS = [0.0, 0.20, 0.40, 0.60]
+        prev_task_name, prev_fisher = None, None
+        act_fn_curr = _make_act_fn(trainer)
+        for task_idx, pv in enumerate(TASKS):
             env.curriculum_stage = int(pv * 5)
+
+            if use_ewc and prev_task_name is not None:
+                cur = trainer.actor.get_all_params()
+                ewc_grad = ewc_trainer.apply_ewc_to_gradient(cur, np.zeros_like(cur))
+                trainer.actor.set_all_params(cur - 0.01 * ewc_grad)
+
             trainer.train(total_steps=steps_per_task, verbose=False)
+            task_name = f"PV{int(pv*100):03d}"
+
+            if use_ewc:
+                cur = trainer.actor.get_all_params()
+                obs_f = train_env.reset(seed=seed + 9000 + task_idx)
+                s_obs, s_act = [], []
+                done_f, sf = False, 0
+                while not done_f and sf < 30:
+                    acts = np.zeros((env.n_agents, env.ACT_DIM))
+                    enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, rng) if trainer.comm_graph is not None else (obs_f, None, None)
+                    for i in range(env.n_agents):
+                        a, _ = act_fn_curr(obs_f, i, rng)
+                        acts[i] = a
+                        s_obs.append(enhanced_f[i].copy())
+                        s_act.append(a.copy())
+                    obs_f, _, done_f, _ = train_env.step(acts); sf += 1
+                n_p = len(cur)
+                fisher = np.zeros(n_p)
+                if s_obs:
+                    idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+                    h = 1e-3
+                    for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+                        bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                        b2 = cur.copy(); b2[p_idx] += h
+                        trainer.actor.set_all_params(b2)
+                        ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                        fisher[p_idx] = ((ul - bl) / h) ** 2
+                    trainer.actor.set_all_params(cur)
+                ewc_trainer.ewc_regularizer.register_task(task_name, cur)
+                if prev_task_name is not None:
+                    ewc_trainer.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+                prev_task_name, prev_fisher = task_name, fisher
+        if use_ewc:
+            # The loop above only consolidates a task when the *next*
+            # task's register_task() fires — TASKS[-1] (60% PV) has no
+            # next task, so finalize() closes it out explicitly.
+            ewc_trainer.ewc_regularizer.finalize()
     else:
         trainer.train(total_steps=total_steps, verbose=False)
+        if use_ewc:
+            # Single task, no curriculum: register it so the apparatus
+            # genuinely runs (see Core A for the same rationale — no
+            # forgetting to prevent with only one task, by construction).
+            ewc_trainer.ewc_regularizer.register_task(config_name, trainer.actor.get_all_params())
+            ewc_trainer.ewc_regularizer.finalize()
 
     act_fn = _make_act_fn(trainer)
-    rng = np.random.default_rng(seed + 9999)
 
     of_values, cti_values = [], []
     with ProgressTracker(total=50, desc=f"[Core D] {config_name} eval", unit="ep", enable=False) as pbar:
         for ep in range(50):
-            obs = env.reset(seed=seed + 999 + ep)
+            obs = train_env.reset(seed=seed + 999 + ep)
             done = False
             ep_of = float('inf')
             while not done:
@@ -1292,10 +1478,10 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
                 for i in range(env.n_agents):
                     a, _ = act_fn(obs, i, rng)
                     actions[i] = a
-                obs, _, done, info = env.step(actions)
+                obs, _, done, info = train_env.step(actions)
                 ep_of = min(ep_of, info.get("OF", float('inf')))
             of_values.append(ep_of)
-            TMS, PS = env.get_state()
+            TMS, PS = train_env.get_state()
             c = check_constraints(net, TMS, PS)
             cti_values.append(c["cti_violations"])
             pbar.update(1)

@@ -7,6 +7,7 @@ Usage: python exp_fig35.py --output <path>
 
 import argparse
 import os
+import sys
 
 import matplotlib
 matplotlib.use('Agg')
@@ -15,6 +16,9 @@ import matplotlib.patches as mpatches
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch, Circle, Rectangle, Polygon, Wedge
 import numpy as np
 import matplotlib.gridspec as gridspec
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from evaluation.experiments._synthetic_label import mark_synthetic
 
 
 # Global style
@@ -163,7 +167,13 @@ def generate_figure(output_dir):
     # ========== BOTTOM: Feature Importance (SHAP-style) ==========
     ax3 = fig.add_subplot(gs[1, :])
 
-    feature_names = ['I_fault\n(Magnitude)', 'P_dir\n(Direction)', 'V_mag\n(Voltage)', 
+    # NOTE: these are hand-typed illustrative values, not SHAP values computed
+    # from a trained policy (see experiments/exp_fig48_shap_analysis.py for the
+    # real KernelSHAP computation against a trained MAPPO actor). They exist
+    # here only to sketch the *expected* qualitative ranking for this panel of
+    # the observation-space diagram. mark_synthetic() below watermarks the
+    # figure so this is never mistaken for a real result.
+    feature_names = ['I_fault\n(Magnitude)', 'P_dir\n(Direction)', 'V_mag\n(Voltage)',
                      'PV_lvl\n(Penetration)', 'I_mag\n(Current)', 'Topo_flag\n(Topology)',
                      'TMS_nbr\n(Neighbor)', 'PS_nbr\n(Neighbor)', 'V_ang\n(Angle)', 'I_ang\n(Angle)']
     importance = [0.28, 0.22, 0.15, 0.12, 0.10, 0.06, 0.04, 0.02, 0.01, 0.00]
@@ -175,8 +185,9 @@ def generate_figure(output_dir):
     ax3.set_xlabel('Normalized Feature Importance (SHAP-based)', fontsize=11, fontweight='bold')
     ax3.set_xlim(0, 0.35)
     ax3.invert_yaxis()
-    ax3.set_title('(c) Learned Feature Importance for Relay Decision-Making (8-Bus, 100% PV)', 
-                  fontsize=12, fontweight='bold', pad=10)
+    ax3.set_title('(c) Illustrative Feature Importance for Relay Decision-Making (8-Bus, 100% PV)\n'
+                  '[not computed from a trained model — see Figure 48 for real SHAP values]',
+                  fontsize=11, fontweight='bold', pad=10)
 
     # Add value labels
     for i, (bar, val) in enumerate(zip(bars, importance)):
@@ -196,6 +207,8 @@ def generate_figure(output_dir):
     ax3.grid(axis='x', alpha=0.3)
 
     fig.suptitle('Figure 35: Observation Space Feature Breakdown & Encoding', fontsize=14, fontweight='bold', y=0.98)
+
+    mark_synthetic(fig, note="panel (c) feature-importance bars are illustrative, not SHAP values from a trained model")
 
     plt.savefig(output_dir + '/fig35_observation_space.png', dpi=200, bbox_inches='tight', facecolor='white')
     plt.close()

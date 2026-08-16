@@ -22,6 +22,8 @@ Tests:
 
 import numpy as np
 import sys, os
+import tempfile
+from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from evaluation.thesis_validation import (
@@ -181,7 +183,7 @@ def test_validation_report():
     print("    ✓ PASS: Validation report generated")
 
 
-def test_latex_table_generation():
+def test_latex_table_generation(tmp_path):
     """Test 7: LaTeX table generation."""
     print("  Test 7: LaTeX table generation...")
 
@@ -189,44 +191,78 @@ def test_latex_table_generation():
     validator.results = {"results": []}
     validator.validate_all_claims()
 
-    latex = validator.generate_latex_tables("/tmp/test_thesis_table.tex")
+    output_path = tmp_path / "test_thesis_table.tex"
+    latex = validator.generate_latex_tables(str(output_path))
 
     assert "\\begin{table}" in latex
     assert "\\end{table}" in latex
     assert "C1" in latex
 
-    assert os.path.exists("/tmp/test_thesis_table.tex")
+    assert output_path.exists()
 
     print("    ✓ PASS: LaTeX table generated")
 
 
-def test_reproducibility_checklist():
+def test_reproducibility_checklist(tmp_path):
     """Test 8: Reproducibility checklist."""
     print("  Test 8: Reproducibility checklist...")
 
-    checklist = ReproducibilityChecklist(repo_dir=".")
+    # Build a fake repo tree with a known, deliberate mix of present/absent
+    # markers so every check's actual boolean VALUE (not just its presence
+    # as a key) can be verified against what run_check() should compute.
+    (tmp_path / ".git").mkdir()                       # Code availability     -> True
+    (tmp_path / "requirements.txt").write_text("numpy\n")  # Environment spec -> True
+    (tmp_path / "configs").mkdir()                     # Hyperparameters       -> True
+    (tmp_path / "evaluation").mkdir()
+    (tmp_path / "evaluation" / "stat_analysis.py").write_text("# stub\n")  # Statistical tests -> True
+    # Deliberately NOT created: "data", "Dockerfile", "outputs",
+    # "evaluation/evaluation.py" -> their checks must come back False.
+
+    checklist = ReproducibilityChecklist(repo_dir=str(tmp_path))
     checks = checklist.run_all_checks()
 
+    expected = {
+        "Code availability": True,
+        "Data availability": False,
+        "Environment specification": True,
+        "Docker container": False,
+        "Random seeds": True,             # always documented in code
+        "Hyperparameters": True,
+        "Hardware specification": True,   # always documented in thesis
+        "Runtime logs": False,
+        "Statistical tests": True,
+        "Plot generation": False,
+    }
+
     assert len(checks) == 10
-    assert "Code availability" in checks
+    assert checks == expected, f"Checklist values diverged from expected: {checks}"
+
+    expected_passed = sum(expected.values())
+    assert expected_passed == 6
+    assert sum(checks.values()) == expected_passed
 
     report = checklist.generate_report()
     assert "REPRODUCIBILITY CHECKLIST" in report
-    assert "Score:" in report
+    assert f"Score: {expected_passed}/10 (60%)" in report
+    # Every individual check result must be reflected in the report with the
+    # correct pass/fail marker, not just the aggregate score.
+    for name, passed_flag in expected.items():
+        marker = "✓" if passed_flag else "✗"
+        assert f"{marker} {name}:" in report, f"Report missing '{marker} {name}:'"
 
     print(f"    ✓ PASS: Reproducibility checklist ({sum(checks.values())}/{len(checks)} checks)")
 
 
-def test_dockerfile_generation():
+def test_dockerfile_generation(tmp_path):
     """Test 9: Dockerfile generation."""
     print("  Test 9: Dockerfile generation...")
 
-    generate_dockerfile("/tmp/test_dockerfile")
+    output_path = tmp_path / "test_dockerfile"
+    generate_dockerfile(str(output_path))
 
-    assert os.path.exists("/tmp/test_dockerfile")
+    assert output_path.exists()
 
-    with open("/tmp/test_dockerfile") as f:
-        content = f.read()
+    content = output_path.read_text()
 
     assert "FROM python:3.10-slim" in content
     assert "requirements.txt" in content
@@ -234,16 +270,16 @@ def test_dockerfile_generation():
     print("    ✓ PASS: Dockerfile generated")
 
 
-def test_github_actions_generation():
+def test_github_actions_generation(tmp_path):
     """Test 10: GitHub Actions CI config."""
     print("  Test 10: GitHub Actions CI config...")
 
-    generate_github_actions("/tmp/test_ci.yml")
+    output_path = tmp_path / "test_ci.yml"
+    generate_github_actions(str(output_path))
 
-    assert os.path.exists("/tmp/test_ci.yml")
+    assert output_path.exists()
 
-    with open("/tmp/test_ci.yml") as f:
-        content = f.read()
+    content = output_path.read_text()
 
     assert "name: DOCR-MARL CI" in content
     assert "test_phase1.py" in content
@@ -348,12 +384,26 @@ def run_all_tests():
         test_full_validation_pipeline,
     ]
 
+    # These tests take a `tmp_path`-style fixture when run under pytest.
+    # When this module is executed directly (not via pytest), give each of
+    # them its own throwaway temp directory instead.
+    tests_needing_tmp_path = {
+        test_latex_table_generation,
+        test_reproducibility_checklist,
+        test_dockerfile_generation,
+        test_github_actions_generation,
+    }
+
     passed = 0
     failed = 0
 
     for test in tests:
         try:
-            test()
+            if test in tests_needing_tmp_path:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    test(Path(tmpdir))
+            else:
+                test()
             passed += 1
         except Exception as e:
             print(f"    ✗ FAIL: {e}")

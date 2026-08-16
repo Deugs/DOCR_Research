@@ -61,29 +61,30 @@ class PandapowerNetwork:
         # Add external grid (slack bus) at bus 0
         pp.create_ext_grid(net, bus=bus_map[0], vm_pu=1.0, va_degree=0.0)
 
-        # Add lines (simplified radial/ring topology)
-        # Topology definitions for all supported test systems
+        # Derive the pandapower line topology from this network's own
+        # relay-pair bus data (RelayPair.bus_pri/bus_bkp, 1-indexed) instead
+        # of a topology guess keyed only on bus count -- previously this was
+        # a hardcoded stand-in completely decoupled from the actual relay
+        # network topology used everywhere else (network/network_data.py,
+        # marl/comm_graph.py, etc.), so pandapower's power flow / fault
+        # study described a different graph than the one relays actually
+        # coordinate on.
         n = self.net_data.n_buses
-        if n == 3:
-            line_pairs = [(0,1), (1,2)]
-        elif n == 8:
-            line_pairs = [(0,1), (1,2), (2,3), (1,4), (4,5), (5,6), (6,7), (3,7)]
-        elif n == 14:
-            # IEEE 14-bus standard topology
-            line_pairs = [(0,1), (0,4), (1,2), (1,3), (1,4), (2,3), (3,4),
-                         (3,6), (3,8), (4,5), (5,10), (5,11), (5,12),
-                         (6,7), (7,8), (8,13), (9,10), (11,12), (12,13)]
-        elif n == 30:
-            line_pairs = [(i, i+1) for i in range(29)] + [(0, 29), (5, 10), (10, 15), (15, 20)]
-        elif n == 39:
-            line_pairs = [(i, i+1) for i in range(38)] + [(0, 10), (10, 20), (20, 30)]
-        elif n == 57:
-            # IEEE 57-bus simplified ring-radial topology
-            line_pairs = [(i, i+1) for i in range(56)] + [(0, 28), (14, 42), (28, 56)]
-        elif n == 118:
-            # IEEE 118-bus simplified topology
-            line_pairs = [(i, i+1) for i in range(117)] + [(0, 39), (39, 78), (78, 117)]
-        else:
+        edges = set()
+        for p in self.net_data.pairs:
+            b1, b2 = p.bus_pri - 1, p.bus_bkp - 1
+            if b1 != b2 and 0 <= b1 < n and 0 <= b2 < n:
+                edges.add(tuple(sorted((b1, b2))))
+        line_pairs = sorted(edges)
+        if not line_pairs:
+            # Junction-bus convention networks (bus_pri == bus_bkp for every
+            # pair, e.g. get_14bus()/get_39bus()/get_57bus()/get_118bus())
+            # don't encode a from/to edge per pair at all -- every relay
+            # pair shares one junction bus by definition -- so there is no
+            # real topology to recover from RelayPair data here. Fall back
+            # to a simple ring so every bus still connects to something;
+            # this remains an intentionally simplified stand-in for those
+            # networks pending real per-line bus endpoint data.
             line_pairs = [(i, (i+1) % n) for i in range(n)]
 
         for from_bus, to_bus in line_pairs:
@@ -99,7 +100,12 @@ class PandapowerNetwork:
         # Add loads based on Iload_max (convert A to MW)
         for i in range(self.net_data.n_relays):
             bus_idx = min(i, self.net_data.n_buses - 1)
-            p_mw = self.net_data.Iload_max[i] * self.net_data.base_voltage * 1.732 / 1e6  # 3-phase
+            # P(MW) = sqrt(3) * V_LL(kV) * I(A) / 1000 for 3-phase real power
+            # (V_LL(kV)*1000 = volts, so P(W) = sqrt(3)*V_LL(kV)*1000*I(A),
+            # and P(MW) = that / 1e6 = sqrt(3)*V_LL(kV)*I(A) / 1e3). The
+            # previous "/ 1e6" divisor left the kV->V conversion undone,
+            # undersizing every load by 1000x.
+            p_mw = self.net_data.Iload_max[i] * self.net_data.base_voltage * 1.732 / 1e3  # 3-phase
             pp.create_load(
                 net, 
                 bus=bus_map[bus_idx], 
@@ -192,9 +198,21 @@ class PandapowerNetwork:
         fc = {}
         ft_scale = {"3ph": 1.0, "LL": 0.87, "1ph": 0.58, "2ph-g": 0.75}.get(fault_type, 1.0)
 
-        # Use If_min as base fault current, scaled by fault type
+        # If_min is indexed by RELAY (len == n_relays), not by bus, so it
+        # can't be read directly with the bus loop index `i` below (n_buses
+        # != n_relays for every supported network) -- that mismatch used to
+        # silently pull the wrong relay's bound for every bus. Look up the
+        # relays actually located at bus `i` via RelayPair.bus_pri/bus_bkp
+        # (1-indexed, hence the `bus_no = i + 1`) and use their fault
+        # currents instead.
+        default_ik = float(np.min(self.net_data.If_min)) if len(self.net_data.If_min) > 0 else 5000.0
         for i in range(self.net_data.n_buses):
-            base_ik = self.net_data.If_min[min(i, len(self.net_data.If_min)-1)] if len(self.net_data.If_min) > 0 else 5000.0
+            bus_no = i + 1
+            relay_currents = (
+                [p.If_pri for p in self.net_data.pairs if p.bus_pri == bus_no] +
+                [p.If_bkp for p in self.net_data.pairs if p.bus_bkp == bus_no]
+            )
+            base_ik = min(relay_currents) if relay_currents else default_ik
             fc[f"bus_{i}"] = base_ik * ft_scale
 
         return fc

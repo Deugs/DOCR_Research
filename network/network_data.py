@@ -336,10 +336,40 @@ def get_30bus() -> NetworkData:
         (40,31,   6594.1, 1475.1,  41, 32), (40,32,   6594.1, 3612.4,  41, 33),
         (40,36,   6594.1, 1538.6,  41, 37), (41,39,   2587.7, 2583.2,  42, 40),
     ]
-    pairs = [RelayPair(p, b, ip, ib, bp, bb) for p, b, ip, ib, bp, bb in raw]
-    rng = np.random.default_rng(42)
-    Iload_max = rng.uniform(200, 800, 42)
-    If_min    = rng.uniform(1500, 5000, 42)
+    # `raw`'s last two columns were `(primary_relay_idx + 1, backup_relay_idx
+    # + 1)` for every one of the 70 rows -- a bijective per-relay placeholder,
+    # not real IEEE 30-bus bus topology (it reaches "bus 42" in a 30-bus
+    # network). Because it never lets two different relays share a bus, it
+    # silently defeats every consumer that groups relays by shared bus_pri:
+    # NetworkData.n_lines() came out as 70 (one "line" per pair) instead of
+    # the ~41 branches of a real IEEE 30-bus system, and
+    # marl/comm_graph.py's build_relay_adjacency() same-bus adjacency (relays
+    # at a common bus should be treated as neighbours) never fired for this
+    # network. Real per-relay bus placement isn't available in this codebase
+    # (only the per-pair fault currents below are, from the cited paper), so
+    # the true topology can't be reconstructed here without new source data.
+    # As a bounded placeholder, wrap the relay index into the valid
+    # [1, n_buses] range so bus ids are at least in-range and relays do share
+    # buses; n_lines/adjacency still won't exactly match the real 41-branch
+    # topology -- flagged here for a future fix once real bus data exists.
+    n_buses_30 = 30
+    pairs = [
+        RelayPair(p, b, ip, ib, (p % n_buses_30) + 1, (b % n_buses_30) + 1)
+        for p, b, ip, ib, bp, bb in raw
+    ]
+
+    # PS bounds derived from the real per-relay primary fault current already
+    # present in `raw` above, using the same 60%-of-primary-fault-current
+    # convention as get_14bus()/get_39bus() for If_min, and the same
+    # Iload_max/If_min ratio (~0.3) as get_8bus()'s hand-authored values for
+    # Iload_max -- replacing the previous np.random.uniform() draw, which was
+    # completely decoupled from this network's actual fault-current data.
+    n_relays_30 = 42
+    If_pri_by_relay = np.zeros(n_relays_30)
+    for p, b, ip, ib, bp, bb in raw:
+        If_pri_by_relay[p] = ip  # a relay's own fault current is identical across all its pair rows
+    If_min    = If_pri_by_relay * 0.60
+    Iload_max = If_min * 0.30
 
     # DG buses for 30-bus system (distributed across the network)
     dg_buses = [

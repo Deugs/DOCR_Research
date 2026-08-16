@@ -143,12 +143,20 @@ def generate_figure(output_dir):
                 arrowprops=dict(arrowstyle='<->', color=colors['danger'], lw=1.5, ls='--'))
 
     # Parameter counts annotation
+    # Numbers below are verified against the real classes in marl/marl_agents.py
+    # and marl/comm_graph.py (obs_dim=10, msg_dim=8, GNN hidden=32, attention
+    # hidden=16, actor hidden=64, act_dim=2, critic hidden=128, n_relays=14):
+    #   GNNMessageEncoder(10).n_params            == 616
+    #   GNNAttention(8).n_params                   == 160
+    #   SharedGaussianActor(18,2,hidden=64)
+    #       .net.n_params() (=Trunk 5,376 + Policy Head 130) == 5,506; + log_std(2) -> get_all_params() == 5,508
+    #   MAPPOCentralCritic(14, hidden=128).n_params() == 21,889
     ax.text(0.5, 2.0, 'Parameter Counts:', fontsize=10, fontweight='bold', color=colors['dark'])
-    ax.text(0.5, 1.5, '• GNN Encoder:  10×32 + 32×8 + biases  =  416 params', fontsize=8, color=colors['neutral'])
-    ax.text(0.5, 1.1, '• Attention (a, W):  8×8 + 16  =  80 params', fontsize=8, color=colors['neutral'])
-    ax.text(0.5, 0.7, '• Shared Trunk:  18×64 + 64×64 + biases  =  5,952 params', fontsize=8, color=colors['neutral'])
-    ax.text(0.5, 0.3, '• Policy Head:  64×4 + biases  =  260 params  |  Value Head:  64×1 + biases  =  65 params', fontsize=8, color=colors['neutral'])
-    ax.text(8.5, 2.0, 'Total per agent (shared):  ~6,800 params  |  Memory:  ~2.1 MB (FP32)', fontsize=9, fontweight='bold', color=colors['primary'])
+    ax.text(0.5, 1.5, '• GNN Encoder:  10×32 + 32×8 + biases(32+8)  =  616 params', fontsize=8, color=colors['neutral'])
+    ax.text(0.5, 1.1, '• Attention (a, W):  8×16 + 2×16  =  160 params', fontsize=8, color=colors['neutral'])
+    ax.text(0.5, 0.7, '• Shared Trunk:  18×64 + 64×64 + biases(64+64)  =  5,376 params', fontsize=8, color=colors['neutral'])
+    ax.text(0.5, 0.3, '• Policy Head:  64×2 + bias(2) + log_std(2)  =  132 params  |  Value Head (critic, centralized):  40×128 + 128×128 + 128×1 + biases  =  21,889 params', fontsize=8, color=colors['neutral'])
+    ax.text(8.5, 2.0, 'Total per agent (shared, GNN+Actor):  6,284 params  |  Critic (centralized):  21,889 params', fontsize=9, fontweight='bold', color=colors['primary'])
 
     # Legend box
     legend_elements = [

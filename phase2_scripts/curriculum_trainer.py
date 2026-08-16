@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
 CLI Adapter: curriculum_trainer.py
-Explicit import from exp_fig09_cti_violation_dynamics
-Place this file alongside exp_fig09_cti_violation_dynamics.py (project root)
+Explicit import from exp_fig07_curriculum_learning
+Place this file alongside exp_fig07_curriculum_learning.py (project root)
 """
 import argparse
 import sys
 import os
 
-# The real exp_fig*.py this adapter wraps lives in marl/experiments/, not alongside this file (see README_PHASE2_ADAPTERS.md —
+# The real exp_fig*.py this adapter wraps lives in marl/ (top level), not alongside this file (see README_PHASE2_ADAPTERS.md —
 # this package was never actually merged into that layout).
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_TARGET_DIR = os.path.join(_REPO_ROOT, "marl", "experiments")
+_TARGET_DIR = os.path.join(_REPO_ROOT, "marl")
 if _TARGET_DIR not in sys.path:
     sys.path.insert(0, _TARGET_DIR)
 
-from exp_fig09_cti_violation_dynamics import main as fig09_main
+from exp_fig07_curriculum_learning import main as fig07_main
 
 
 def main():
@@ -31,10 +31,11 @@ def main():
     out_dir = os.path.dirname(args.output) if args.output else "outputs"
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"[Adapter] curriculum_trainer.py -> calling fig09_main()")
+    print(f"[Adapter] curriculum_trainer.py -> calling fig07_main()")
     print(f"  Output dir: {out_dir}")
 
-    fig09_main(n_episodes=args.episodes, seed=args.seed, output_dir=out_dir)
+    fig07_main(network=args.system, episodes_per_task=args.episodes,
+               n_seeds=args.n_runs, seed=args.seed, output_dir=out_dir)
 
 
 if __name__ == "__main__":
