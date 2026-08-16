@@ -99,7 +99,11 @@ class PandapowerNetwork:
 
         # Add loads based on Iload_max (convert A to MW)
         for i in range(self.net_data.n_relays):
-            bus_idx = min(i, self.net_data.n_buses - 1)
+            # Real bus this relay is located at (from its RelayPair's
+            # bus_pri/bus_bkp) — the previous placeholder min(i, n_buses-1)
+            # ignored real topology, dumping multiple relays' loads onto
+            # whichever bus happened to match their index.
+            bus_idx = self.net_data.get_relay_bus(i)
             # P(MW) = sqrt(3) * V_LL(kV) * I(A) / 1000 for 3-phase real power
             # (V_LL(kV)*1000 = volts, so P(W) = sqrt(3)*V_LL(kV)*1000*I(A),
             # and P(MW) = that / 1e6 = sqrt(3)*V_LL(kV)*I(A) / 1e3). The

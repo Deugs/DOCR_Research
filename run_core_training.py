@@ -1229,7 +1229,39 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int):
         # rationale (one task has nothing to protect against forgetting,
         # by construction, which is expected here).
         ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
-        ewc_trainer.ewc_regularizer.register_task(method, trainer.actor.get_all_params())
+        cur = trainer.actor.get_all_params()
+        # Real (if cheap) Fisher estimation via finite differences, same
+        # method Core A/B/D use — without an explicit update_fisher()
+        # call here, _consolidate_current_task falls back to a uniform
+        # placeholder (fisher = 0.1 everywhere), which is a real
+        # inconsistency with the other Cores' EWC registrations.
+        fisher_rng = np.random.default_rng(seed + 8000)
+        obs_f = train_env.reset(seed=seed + 9000)
+        s_obs, s_act = [], []
+        done_f, sf = False, 0
+        while not done_f and sf < 30:
+            acts = np.zeros((env.n_agents, env.ACT_DIM))
+            enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, fisher_rng) if trainer.comm_graph is not None else (obs_f, None, None)
+            for i in range(env.n_agents):
+                a, _ = trainer.actor.sample(enhanced_f[i], fisher_rng)
+                acts[i] = a
+                s_obs.append(enhanced_f[i].copy())
+                s_act.append(a.copy())
+            obs_f, _, done_f, _ = train_env.step(acts); sf += 1
+        n_p = len(cur)
+        fisher = np.zeros(n_p)
+        if s_obs:
+            idx = fisher_rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+            h = 1e-3
+            for p_idx in fisher_rng.choice(n_p, size=min(n_p, 50), replace=False):
+                bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                b2 = cur.copy(); b2[p_idx] += h
+                trainer.actor.set_all_params(b2)
+                ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                fisher[p_idx] = ((ul - bl) / h) ** 2
+            trainer.actor.set_all_params(cur)
+        ewc_trainer.ewc_regularizer.register_task(method, cur)
+        ewc_trainer.ewc_regularizer.update_fisher(method, fisher)
         # No "next" task will ever register here to trigger the lagged
         # consolidation — finalize() closes this one out explicitly.
         ewc_trainer.ewc_regularizer.finalize()
@@ -1462,7 +1494,39 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
             # Single task, no curriculum: register it so the apparatus
             # genuinely runs (see Core A for the same rationale — no
             # forgetting to prevent with only one task, by construction).
-            ewc_trainer.ewc_regularizer.register_task(config_name, trainer.actor.get_all_params())
+            # Real (if cheap) Fisher estimation via finite differences,
+            # same method used above for the curriculum arm — without an
+            # explicit update_fisher() call, _consolidate_current_task
+            # falls back to a uniform placeholder (fisher = 0.1
+            # everywhere), a real inconsistency with the curriculum arm.
+            cur = trainer.actor.get_all_params()
+            fisher_rng = np.random.default_rng(seed + 8000)
+            obs_f = train_env.reset(seed=seed + 9000)
+            s_obs, s_act = [], []
+            done_f, sf = False, 0
+            while not done_f and sf < 30:
+                acts = np.zeros((env.n_agents, env.ACT_DIM))
+                enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, fisher_rng) if trainer.comm_graph is not None else (obs_f, None, None)
+                for i in range(env.n_agents):
+                    a, _ = trainer.actor.sample(enhanced_f[i], fisher_rng)
+                    acts[i] = a
+                    s_obs.append(enhanced_f[i].copy())
+                    s_act.append(a.copy())
+                obs_f, _, done_f, _ = train_env.step(acts); sf += 1
+            n_p = len(cur)
+            fisher = np.zeros(n_p)
+            if s_obs:
+                idx = fisher_rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+                h = 1e-3
+                for p_idx in fisher_rng.choice(n_p, size=min(n_p, 50), replace=False):
+                    bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    b2 = cur.copy(); b2[p_idx] += h
+                    trainer.actor.set_all_params(b2)
+                    ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    fisher[p_idx] = ((ul - bl) / h) ** 2
+                trainer.actor.set_all_params(cur)
+            ewc_trainer.ewc_regularizer.register_task(config_name, cur)
+            ewc_trainer.ewc_regularizer.update_fisher(config_name, fisher)
             ewc_trainer.ewc_regularizer.finalize()
 
     act_fn = _make_act_fn(trainer)
@@ -1530,13 +1594,17 @@ def run_core_E(n_seeds: int = None, n_steps: int = None, seed: int = None,
     n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
-        "name": "core_E_hparam", 
-        "lambda_ewc": [1e2, 1e3, 1e4, 1e5, 1e6], 
-        "alpha_lambda": [1e-5, 1e-4, 1e-3, 1e-2], 
-        "hidden_dim": [16, 32, 64, 128], 
-        "n_seeds": n_seeds, 
-        "n_steps": n_steps, 
-        "seed": seed
+        "name": "core_E_hparam",
+        "lambda_ewc": [1e2, 1e3, 1e4, 1e5, 1e6],
+        "alpha_lambda": [1e-5, 1e-4, 1e-3, 1e-2],
+        "hidden_dim": [16, 32, 64, 128],
+        "n_seeds": n_seeds,
+        "n_steps": n_steps,
+        "seed": seed,
+        # Bumped: lambda_ewc/alpha_lambda were previously received but
+        # never used at all (CTI was also hardcoded to 0). Now genuinely
+        # wired — see _run_hparam_single.
+        "real_hparam_effect": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1590,35 +1658,92 @@ def _run_hparam_single(lambda_ewc, alpha_lambda, hidden_dim, seed, n_steps):
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+    from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
     net = get_8bus()
-    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=3, seed=seed)
-    trainer = MAPPOMARLTrainer(env, use_comm=False,
+    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=0, seed=seed)
+    # alpha_lambda is this grid's swept Lagrangian dual-ascent learning
+    # rate — genuinely modulates how fast the constraint penalty adapts.
+    # use_pid=False (unlike Core A-D's SafeRLConfig) is required here:
+    # AugmentedLagrangian.update_lagrangian's PID branch never reads
+    # lambda_lr at all (only its Kp/Ki/Kd gains) — with use_pid=True this
+    # sweep's whole point (alpha_lambda) would silently have zero effect.
+    safe_env = create_safe_rl_env(env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=alpha_lambda, rho_penalty=10.0,
+        use_pid=False, adaptive_rho=True,
+    ))
+    trainer = MAPPOMARLTrainer(safe_env, use_comm=False,
                                 hidden_actor=hidden_dim, hidden_critic=hidden_dim, seed=seed)
-
-    # ── ACTUAL TRAINING ───────────────────────────────────────────────────
-    trainer.train(total_steps=n_steps, verbose=False)
-
-    act_fn = _make_act_fn(trainer)
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig(lambda_ewc=lambda_ewc))
     rng = np.random.default_rng(seed + 9999)
 
-    of_values = []
+    # lambda_ewc (this grid's swept EWC regularization strength) only has
+    # a real effect across a task transition — previously received but
+    # never used at all. Run a short warm-start task (0% PV) before
+    # switching to the target (60% PV) task with a real EWC gradient
+    # correction (computed from real, if cheap, Fisher estimation) applied
+    # at the switch, so this hyperparameter genuinely modulates the
+    # outcome.
+    warm_steps = max(n_steps // 4, 300)
+    env.curriculum_stage = 0
+    trainer.train(total_steps=warm_steps, verbose=False)
+
+    cur = trainer.actor.get_all_params()
+    obs_f = safe_env.reset(seed=seed + 9000)
+    s_obs, s_act = [], []
+    done_f, sf = False, 0
+    while not done_f and sf < 15:
+        acts = np.zeros((env.n_agents, env.ACT_DIM))
+        for i in range(env.n_agents):
+            a, _ = trainer.actor.sample(obs_f[i], rng)
+            acts[i] = a
+            s_obs.append(obs_f[i].copy())
+            s_act.append(a.copy())
+        obs_f, _, done_f, _ = safe_env.step(acts); sf += 1
+    n_p = len(cur)
+    fisher = np.zeros(n_p)
+    if s_obs:
+        idx = rng.choice(len(s_obs), size=min(15, len(s_obs)), replace=False)
+        h = 1e-3
+        for p_idx in rng.choice(n_p, size=min(n_p, 20), replace=False):
+            bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            b2 = cur.copy(); b2[p_idx] += h
+            trainer.actor.set_all_params(b2)
+            ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            fisher[p_idx] = ((ul - bl) / h) ** 2
+        trainer.actor.set_all_params(cur)
+    ewc_trainer.ewc_regularizer.register_task("warmstart", cur)
+    ewc_trainer.ewc_regularizer.update_fisher("warmstart", fisher)
+    ewc_grad = ewc_trainer.apply_ewc_to_gradient(cur, np.zeros_like(cur))
+    trainer.actor.set_all_params(cur - 0.01 * ewc_grad)
+
+    env.curriculum_stage = 3
+    trainer.train(total_steps=max(n_steps - warm_steps, 300), verbose=False)
+
+    act_fn = _make_act_fn(trainer)
+
+    of_values, cti_values = [], []
     with ProgressTracker(total=30, desc="[Core E] HParam eval", unit="ep", enable=False) as pbar:
         for ep in range(30):
-            obs = env.reset(seed=seed + 999 + ep)
+            obs = safe_env.reset(seed=seed + 999 + ep)
             done = False
             ep_of = float('inf')
+            ep_cti = 0
             while not done:
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
                 for i in range(env.n_agents):
                     a, _ = act_fn(obs, i, rng)
                     actions[i] = a
-                obs, _, done, info = env.step(actions)
+                obs, _, done, info = safe_env.step(actions)
                 ep_of = min(ep_of, info.get("OF", float('inf')))
+                ep_cti += info.get("safe_rl", {}).get("cti_violations", 0)
             of_values.append(ep_of)
+            cti_values.append(ep_cti)
             pbar.update(1)
 
-    return float(np.mean(of_values)), 0
+    return float(np.mean(of_values)), float(np.mean(cti_values))
 
 
 def _generate_synthetic_hparam(lambda_ewc, alpha_lambda, hidden_dim, seed, n_steps):
@@ -1774,10 +1899,14 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     seed = seed if seed is not None else SEED
     
     config = {
-        "name": "core_G_robustness", 
-        "stress_types": ["communication", "byzantine", "bandwidth", "sensor", "adversarial"], 
+        "name": "core_G_robustness",
+        "stress_types": ["communication", "byzantine", "bandwidth", "sensor", "adversarial"],
         "seed": seed,
-        "real_eval": BRIDGE_AVAILABLE
+        "real_eval": BRIDGE_AVAILABLE,
+        # Bumped: core_eval_bridge.py's base policy previously trained as
+        # plain MAPPO+GNN despite being labeled MAPPO-Safe-EWC (dead
+        # hasattr guards). Now genuinely Safe RL + EWC wrapped.
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1877,10 +2006,11 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     seed = seed if seed is not None else SEED
     
     config = {
-        "name": "core_H_transfer", 
-        "evaluations": ["unseen_faults", "zero_shot_8to30"], 
+        "name": "core_H_transfer",
+        "evaluations": ["unseen_faults", "zero_shot_8to30"],
         "seed": seed,
-        "real_eval": BRIDGE_AVAILABLE
+        "real_eval": BRIDGE_AVAILABLE,
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1948,10 +2078,15 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     seed = seed if seed is not None else SEED
     
     config = {
-        "name": "core_I_deployment", 
-        "benchmarks": ["inference_latency", "model_compression"], 
+        "name": "core_I_deployment",
+        "benchmarks": ["inference_latency", "model_compression"],
         "seed": seed,
-        "real_eval": BRIDGE_AVAILABLE
+        "real_eval": BRIDGE_AVAILABLE,
+        "real_safety_ewc": True,
+        # Bumped: the latency loop previously timed env.reset() + an
+        # unseeded np.random.randn() call ("simulate inference") rather
+        # than the trained actor — see run_core_I.
+        "real_inference_timing": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1978,18 +2113,24 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             logger.info("\n[Core I] Fig 18: Inference Latency (REAL)")
             # Latency is measured during base policy inference
             base_result = bridge._get_base_result()
-            # Simulate latency measurement
             import time
-            latencies = []
             from network.network_data import get_8bus
             from marl.marl_env import DynamicDOCREnv
             net = get_8bus()
             env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph")
+            # Reconstruct the ACTUAL trained actor (and its GNN comm
+            # module, if trained with use_comm=True) rather than timing
+            # env.reset() + an unseeded np.random.randn() call ("simulate
+            # inference") — that measured reset overhead and RNG cost,
+            # not the policy. mean_fn is the deterministic per-agent
+            # forward pass a real deployment would call every step.
+            _, mean_fn, _, _ = bridge._get_pipeline()._get_actor_for_eval(env, base_result, net=net)
+            latencies = []
+            obs = env.reset(seed=seed)
             for _ in range(100):
                 t0 = time.perf_counter()
-                obs = env.reset()
-                # Simulate inference
-                _ = np.random.randn(env.n_agents, env.ACT_DIM)
+                for i in range(env.n_agents):
+                    _ = mean_fn(obs[i])
                 latencies.append((time.perf_counter() - t0) * 1000)
             
             results["latency"] = {
@@ -2047,10 +2188,14 @@ def run_core_J(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     seed = seed if seed is not None else SEED
     
     config = {
-        "name": "core_J_protection", 
-        "analyses": ["coordination", "fault_contribution", "daily_profile", "relay_curves", "sympathetic_tripping"], 
+        "name": "core_J_protection",
+        "analyses": ["coordination", "fault_contribution", "daily_profile", "relay_curves", "sympathetic_tripping"],
         "seed": seed,
-        "real_eval": BRIDGE_AVAILABLE
+        "real_eval": BRIDGE_AVAILABLE,
+        "real_safety_ewc": True,
+        # Bumped: coordination-diagram jitter previously drew from
+        # unseeded global np.random.normal.
+        "seeded_jitter": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2081,8 +2226,9 @@ def run_core_J(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             # Use actual relay settings from trained policy
             tms = base_result.best_tms
             ps = base_result.best_ps
-            op_times_primary = 0.1 + 0.05 * distances + np.random.normal(0, 0.01, n_pairs)
-            op_times_backup = 0.3 + 0.08 * distances + np.random.normal(0, 0.01, n_pairs)
+            _rng_j = np.random.default_rng(seed + 43)
+            op_times_primary = 0.1 + 0.05 * distances + _rng_j.normal(0, 0.01, n_pairs)
+            op_times_backup = 0.3 + 0.08 * distances + _rng_j.normal(0, 0.01, n_pairs)
             results["coordination"] = {"distances": distances, "primary": op_times_primary, "backup": op_times_backup}
             
             # Fig 44: Fault Current Contribution (REAL)
@@ -2142,10 +2288,11 @@ def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     seed = seed if seed is not None else SEED
     
     config = {
-        "name": "core_K_seasonal", 
-        "seasons": ["spring", "summer", "autumn", "winter"], 
+        "name": "core_K_seasonal",
+        "seasons": ["spring", "summer", "autumn", "winter"],
         "seed": seed,
-        "real_eval": BRIDGE_AVAILABLE
+        "real_eval": BRIDGE_AVAILABLE,
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:

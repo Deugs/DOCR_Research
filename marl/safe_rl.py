@@ -535,8 +535,12 @@ class SafeRLWrapper:
                 "rho":                   self.lagrangian.rho,
                 "projected_actions":     proj_applied,
                 "projection_magnitude":  proj_delta_l2,                      # Fig 21
+                # Fraction of action COMPONENTS actually altered by
+                # projection — was inverted (measuring the unchanged
+                # fraction instead) despite the name; unused by any
+                # current consumer, but fixed so it means what it says.
                 "action_projection_ratio": float(
-                    np.mean(np.abs(safe_actions - actions) < 1e-6)
+                    np.mean(np.abs(safe_actions - actions) >= 1e-6)
                 ),
             }
         else:
@@ -547,6 +551,17 @@ class SafeRLWrapper:
         self.PS = getattr(self.env, 'PS', None)
         self.step_count = getattr(self.env, 'step_count', 0)
         self.current_state = getattr(self.env, 'current_state', None)
+
+        # Dual-ascent update at episode boundaries. This used to require an
+        # external caller to invoke update_lagrangian() explicitly — no
+        # real training path (Core A-D, mains/main3-6.py) ever did, so
+        # lambda/rho stayed frozen at their init values for the whole run
+        # despite lambda_lr/adaptive_rho being configured. Triggering it
+        # here makes the wrapper self-contained, matching its own
+        # docstring ("Use wrapper like regular env but with safe actions")
+        # — no calling code needs Safe-RL-specific awareness.
+        if done and self.config.enforce_cti:
+            self.update_lagrangian()
 
         return obs, rewards, done, info
 

@@ -67,7 +67,7 @@ class DistributionNetwork:
 
     Integrates:
     1. Pandapower network (power flow, short-circuit)
-    2. PV plants with IEC 61427-1 ride-through
+    2. PV plants with simplified linear fault-ride-through (LVRT) approximation
     3. Topology manager (N-1, reconfiguration)
     4. Scenario generator (profiles, fault scenarios)
     5. Sensor array (CT/PT with noise)
@@ -369,7 +369,11 @@ class DistributionNetwork:
         true_voltages = np.zeros(self.net_data.n_relays)
 
         for i in range(self.net_data.n_relays):
-            bus_idx = min(i, self.net_data.n_buses - 1)
+            # Real bus this relay is located at (from its RelayPair's
+            # bus_pri/bus_bkp) — the previous placeholder min(i, n_buses-1)
+            # ignored real topology, reading voltage for the wrong bus and
+            # matching this relay against the wrong DG bus below.
+            bus_idx = self.net_data.get_relay_bus(i)
             true_voltages[i] = self.current_state.bus_voltages.get(bus_idx, 1.0)
 
             # Approximate current from load and PV

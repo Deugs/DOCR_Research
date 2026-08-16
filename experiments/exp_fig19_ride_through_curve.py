@@ -5,8 +5,10 @@ fig19_pv_ride_through_v2.py -- Figure 19 (EXPERIMENTAL DATA VERSION)
 ======================================================================
 PV Inverter Fault Ride-Through Curve with Experimental Data.
 
-Uses DOCR-MARL fault simulation data combined with realistic PV inverter
-models per IEEE 1547-2018 / IEC 61427-1.
+Uses DOCR-MARL fault simulation data combined with a simplified PV inverter
+fault ride-through model, loosely informed by the general shape of grid-code
+requirements (see IEEE 1547-2018 / IEC 61727 for the standards that actually
+govern grid-connected PV fault behavior).
 
 Data Sources:
   1. Simulated fault trajectories from DynamicDOCREnv fault studies
@@ -453,7 +455,7 @@ def plot_figure(trajectories, agg_data, pv_stats, output_dir):
     # Bottom annotation
     fig.text(0.5, 0.01,
              'Data: DOCR-MARL 8-Bus System Fault Simulations (OpenDSS/pandapower backend)  |  '
-             'Inverter Model: IEEE Std 1547-2018 / IEC 61427-1 Compliant  |  '
+             'Inverter Model: Simplified Linear FRT Approximation  |  '
              'Fault Current: 1.2-1.5x rated via current-limited inverter control  |  '
              'Reactive Injection: k-factor = 2.0 (0.9-V) for V < 0.9 pu',
              ha='center', fontsize=9, fontweight='bold', color=c['neutral'],
@@ -522,7 +524,7 @@ def main(n_scenarios=50, seed=42, output_dir=figure_path+''):
              i_f_std=agg_data['i_f_std'],
              pv_stats=pv_stats,
              n_trajectories=len(trajectories),
-             standard='IEEE 1547-2018 / IEC 61427-1',
+             standard='Simplified linear FRT approximation (informed by IEEE 1547-2018 / IEC 61727)',
              seed=seed,
     )
     print(f"[SAVE] Data: {out_npz}")
@@ -533,7 +535,7 @@ def main(n_scenarios=50, seed=42, output_dir=figure_path+''):
     print("=" * 70)
     print(f"Total fault scenarios: {len(trajectories)}")
     print(f"System: DOCR-MARL 8-Bus Test System")
-    print(f"Standard: IEEE 1547-2018 / IEC 61427-1")
+    print(f"Standard: Simplified linear FRT approximation (informed by IEEE 1547-2018 / IEC 61727)")
     print(f"Fault type: 3-Phase bolted faults")
     print("\nReactive Current & Fault Current by PV Level:")
     for pv_level in sorted(pv_stats.keys()):

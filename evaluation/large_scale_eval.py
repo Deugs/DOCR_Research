@@ -235,7 +235,14 @@ class LargeScaleEvaluator:
                 config = r.get("config", r)
                 system = config.get("system", "unknown")
                 n_relays = system_sizes.get(system, 0)
-                n_pairs = n_relays * 2  # Approximate
+
+                # Use the system's real n_pairs (from its NetworkData
+                # object) rather than a fixed flat guess — n_pairs differs
+                # across the 3/8/14/30/39/57/118-bus systems this evaluator
+                # spans (e.g. 8bus=20, 14bus=26/38 depending on definition,
+                # 30bus=70, ...). Mirrors the correct approach used in
+                # compute_safety_metrics below.
+                n_pairs = NETWORKS[system]().n_pairs if system in NETWORKS else r.get("n_pairs", n_relays * 2)
 
                 m = ScalabilityMetrics(
                     system_name=system,

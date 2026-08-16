@@ -389,6 +389,15 @@ class ThesisValidator:
                     metrics[f"{method}_cti_violation_rate"] = total_viols / total_pairs
                 else:
                     metrics[f"{method}_cti_violation_rate_unavailable"] = True
+            # pass_criteria checks the unprefixed "cti_violation_rate" key —
+            # this is a claim about one specific method (the claim's own
+            # subject, i.e. the last of required_methods, e.g. "MAPPO-Safe"),
+            # not an average across every method in the comparison. Without
+            # this alias the criterion could never match any key this
+            # function actually writes.
+            primary_cti = claim.required_methods[-1]
+            if f"{primary_cti}_cti_violation_rate" in metrics:
+                metrics["cti_violation_rate"] = metrics[f"{primary_cti}_cti_violation_rate"]
 
         # CTI satisfaction rate
         if "cti_satisfied" in claim.metrics:
@@ -396,6 +405,9 @@ class ThesisValidator:
                 satisfied = [r.get("cti_satisfied", False) for r in by_method.get(method, [])]
                 if satisfied:
                     metrics[f"{method}_cti_satisfied_rate"] = float(np.mean(satisfied))
+            primary_cti = claim.required_methods[-1]
+            if f"{primary_cti}_cti_satisfied_rate" in metrics:
+                metrics["cti_satisfied_rate"] = metrics[f"{primary_cti}_cti_satisfied_rate"]
 
         # Forgetting measure (for EWC)
         if "forgetting_measure" in claim.metrics:
@@ -405,6 +417,73 @@ class ThesisValidator:
                 ewc_of = np.mean([r.get("best_of", 0) for r in ewc_results])
                 base_of = np.mean([r.get("best_of", 0) for r in baseline_results])
                 metrics["forgetting_measure"] = abs(ewc_of - base_of) / base_of if base_of > 0 else 0
+
+        # Backward transfer (continual-learning literature convention:
+        # positive = old-task performance IMPROVED after learning new
+        # tasks; negative = forgetting). This dataset (flat per-run
+        # TrainingResult entries) doesn't carry a per-task retention
+        # matrix like Core B's task_performances (evaluating an OLD
+        # task's env with the model trained through a LATER task), so a
+        # strict formal BWT isn't computable here — this reuses the same
+        # real (not fabricated) aggregate best_of values as
+        # forgetting_measure above, signed rather than abs()'d: EWC
+        # finishing below the non-EWC Safe-RL baseline's OF (lower is
+        # better in this codebase) is scored as positive transfer, above
+        # it as forgetting. A documented proxy, not a formal per-task BWT.
+        if "backward_transfer" in claim.metrics:
+            ewc_results = by_method.get("MAPPO-Safe-EWC", [])
+            baseline_results = by_method.get("MAPPO-Safe", [])
+            if ewc_results and baseline_results:
+                ewc_of = np.mean([r.get("best_of", 0) for r in ewc_results])
+                base_of = np.mean([r.get("best_of", 0) for r in baseline_results])
+                metrics["backward_transfer"] = (
+                    (base_of - ewc_of) / base_of if base_of > 0 else 0.0
+                )
+
+        # Samples to convergence / sample efficiency (curriculum vs.
+        # non-curriculum). "Convergence" = first history index after
+        # which every later OF value stays within `tol` relative of the
+        # run's final OF (a standard settling-time definition), measured
+        # in units of logged history entries (checkpoints), not raw env
+        # steps — TrainingResult doesn't record the step count per
+        # checkpoint, but both methods share the same logging cadence
+        # from this pipeline, so the RATIO between them is still a valid
+        # comparison even though neither absolute count is in real steps.
+        if "samples_to_convergence" in claim.metrics or "final_of" in claim.metrics:
+            def _convergence_point(history, tol=0.05):
+                if not history:
+                    return None
+                arr = np.asarray(history, dtype=float)
+                final = arr[-1]
+                if final == 0:
+                    return len(arr)
+                within = np.abs(arr - final) <= tol * abs(final)
+                # First index after which ALL remaining points stay within tol.
+                for i in range(len(arr)):
+                    if np.all(within[i:]):
+                        return i
+                return len(arr)
+
+            for method in claim.required_methods:
+                method_results = by_method.get(method, [])
+                conv_points = [
+                    _convergence_point(r.get("history", []))
+                    for r in method_results if r.get("history")
+                ]
+                conv_points = [c for c in conv_points if c is not None]
+                final_ofs = [r.get("best_of") for r in method_results if r.get("best_of") is not None]
+                if conv_points:
+                    metrics[f"{method}_samples_to_convergence"] = float(np.mean(conv_points))
+                if final_ofs:
+                    metrics[f"{method}_final_of"] = float(np.mean(final_ofs))
+
+            curriculum_method = claim.required_methods[-1]   # e.g. "MAPPO-Safe-EWC"
+            baseline_method = claim.required_methods[0]       # e.g. "MAPPO"
+            curr_key = f"{curriculum_method}_samples_to_convergence"
+            base_key = f"{baseline_method}_samples_to_convergence"
+            if curr_key in metrics and base_key in metrics and metrics[base_key] > 0:
+                metrics["sample_efficiency_ratio"] = metrics[curr_key] / metrics[base_key]
+                metrics["final_of"] = metrics.get(f"{curriculum_method}_final_of")
 
         # Inference latency
         if "inference_latency_ms" in claim.metrics:

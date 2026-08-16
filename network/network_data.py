@@ -34,7 +34,9 @@ class DGConfig:
     p_mw:         float       # rated active power (MW)
     q_mvar:       float = 0.0  # rated reactive power (Mvar)
     pv_penetration: float = 0.0  # 0.0 to 1.0 (100%)
-    inverter_model: str = "iec_61427"  # or "ieee_1547"
+    inverter_model: str = "simplified_linear_frt"  # descriptive tag only — a simplified linear
+    # low-voltage-ride-through (LVRT) approximation, not a certified standards implementation.
+    # (Alternative tag: "ieee_1547".)
     ride_through: bool = True  # fault ride-through capability
 
 
@@ -58,6 +60,26 @@ class NetworkData:
     @property
     def n_pairs(self) -> int:
         return len(self.pairs)
+
+    def get_relay_bus(self, relay_idx: int) -> int:
+        """
+        Real 0-indexed bus a relay is physically located at, from its
+        RelayPair's bus_pri/bus_bkp (1-indexed on RelayPair, matching the
+        convention already used elsewhere — see pandapower_network.py's
+        `b1, b2 = p.bus_pri - 1, p.bus_bkp - 1`).
+
+        Callers previously used a placeholder `min(relay_idx, n_buses-1)`
+        instead of this, silently mis-locating loads/sensor readings for
+        any relay whose index didn't happen to coincide with its real bus.
+        """
+        for p in self.pairs:
+            if p.primary == relay_idx:
+                return p.bus_pri - 1
+            if p.backup == relay_idx:
+                return p.bus_bkp - 1
+        # Relay not found in any pair — should not happen in practice;
+        # fall back to the old placeholder rather than raising.
+        return min(relay_idx, self.n_buses - 1)
 
     def ps_bounds(self) -> Tuple[np.ndarray, np.ndarray]:
         """Return (PS_min, PS_max) arrays per relay."""
@@ -230,6 +252,50 @@ class NetworkData:
         return new_net, outage_factor
 
 
+def _ensure_feasible_ps_bounds(If_min: np.ndarray, Iload_max: np.ndarray,
+                                system_name: str, olf: float = 1.25,
+                                margin: float = 1.1) -> np.ndarray:
+    """
+    Guarantee ps_min <= ps_max (i.e. If_min >= margin * 1.5 * olf *
+    Iload_max, since ps_max=(2/3)*If_min and ps_min=olf*Iload_max) for
+    every relay.
+
+    For get_14/57/118bus, If_min is derived per-line from V_pre_pu /
+    z_mag using ONLY that line's own series impedance — a simplified
+    per-line estimate with no representation of upstream/source
+    impedance or meshed current redistribution. For branches with
+    disproportionately high series impedance relative to their peers
+    (e.g. IEEE 14-bus's bus-4-to-9 transformer branch at x=0.556 pu,
+    roughly 10x a typical transmission line's reactance in this same
+    system), this estimate can fall below what the relay's own load
+    current legitimately requires — silently producing ps_min > ps_max,
+    which np.clip then resolves by always returning ps_max regardless of
+    input, i.e. clamping that relay's pickup below its required overload
+    margin with no warning anywhere in the pipeline.
+
+    This floors If_min (only where the naive estimate is infeasible) to
+    the minimum value that keeps ps_bounds() well-formed, and logs which
+    relays were affected — an explicit, disclosed modeling limitation of
+    the simplified per-line estimate, not a claim of a more precise
+    short-circuit study value for those relays.
+    """
+    required = margin * 1.5 * olf * Iload_max
+    infeasible = If_min < required
+    if np.any(infeasible):
+        import warnings
+        idx = np.where(infeasible)[0]
+        warnings.warn(
+            f"{system_name}: per-line fault-current estimate was below "
+            f"the minimum required for a feasible PS range on relay(s) "
+            f"{idx.tolist()} — flooring If_min for these relays only "
+            f"(see _ensure_feasible_ps_bounds docstring).",
+            stacklevel=2,
+        )
+        If_min = If_min.copy()
+        If_min[infeasible] = required[infeasible]
+    return If_min
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # IEEE 3-BUS  (6 relays, 6 P/B pairs) — Toy validation only
 # ─────────────────────────────────────────────────────────────────────────────
@@ -283,9 +349,9 @@ def get_8bus() -> NetworkData:
 
     # DG buses for PV integration (Phase 1)
     dg_buses = [
-        DGConfig(bus_idx=3, p_mw=2.0, pv_penetration=0.0, inverter_model="iec_61427"),
-        DGConfig(bus_idx=5, p_mw=1.5, pv_penetration=0.0, inverter_model="iec_61427"),
-        DGConfig(bus_idx=7, p_mw=1.0, pv_penetration=0.0, inverter_model="iec_61427"),
+        DGConfig(bus_idx=3, p_mw=2.0, pv_penetration=0.0, inverter_model="simplified_linear_frt"),
+        DGConfig(bus_idx=5, p_mw=1.5, pv_penetration=0.0, inverter_model="simplified_linear_frt"),
+        DGConfig(bus_idx=7, p_mw=1.0, pv_penetration=0.0, inverter_model="simplified_linear_frt"),
     ]
 
     return NetworkData(
@@ -373,12 +439,12 @@ def get_30bus() -> NetworkData:
 
     # DG buses for 30-bus system (distributed across the network)
     dg_buses = [
-        DGConfig(bus_idx=5,  p_mw=5.0,  pv_penetration=0.0, inverter_model="iec_61427"),
-        DGConfig(bus_idx=10, p_mw=3.0,  pv_penetration=0.0, inverter_model="iec_61427"),
-        DGConfig(bus_idx=15, p_mw=4.0,  pv_penetration=0.0, inverter_model="iec_61427"),
-        DGConfig(bus_idx=20, p_mw=2.5,  pv_penetration=0.0, inverter_model="iec_61427"),
-        DGConfig(bus_idx=25, p_mw=3.5,  pv_penetration=0.0, inverter_model="iec_61427"),
-        DGConfig(bus_idx=30, p_mw=2.0,  pv_penetration=0.0, inverter_model="iec_61427"),
+        DGConfig(bus_idx=5,  p_mw=5.0,  pv_penetration=0.0, inverter_model="simplified_linear_frt"),
+        DGConfig(bus_idx=10, p_mw=3.0,  pv_penetration=0.0, inverter_model="simplified_linear_frt"),
+        DGConfig(bus_idx=15, p_mw=4.0,  pv_penetration=0.0, inverter_model="simplified_linear_frt"),
+        DGConfig(bus_idx=20, p_mw=2.5,  pv_penetration=0.0, inverter_model="simplified_linear_frt"),
+        DGConfig(bus_idx=25, p_mw=3.5,  pv_penetration=0.0, inverter_model="simplified_linear_frt"),
+        DGConfig(bus_idx=30, p_mw=2.0,  pv_penetration=0.0, inverter_model="simplified_linear_frt"),
     ]
 
     return NetworkData(
@@ -579,10 +645,11 @@ def get_39bus() -> NetworkData:
     ]
     dg_buses = [
         DGConfig(bus_idx=b, p_mw=p * 0.10, pv_penetration=0.0,
-                 inverter_model="iec_61427")
+                 inverter_model="simplified_linear_frt")
         for b, p in gen_data
     ]
 
+    If_min = _ensure_feasible_ps_bounds(If_min, Iload_max, "get_39bus")
     return NetworkData(
         "IEEE-39Bus", n_relays, pairs, Iload_max, If_min,
         n_buses=39, base_voltage=345.0, base_mva=100.0,
@@ -718,10 +785,11 @@ def get_14bus() -> NetworkData:
     gen_data = [(1, 232.4), (2, 40.0), (3, 0.0), (6, 0.0), (8, 0.0)]
     dg_buses = [
         DGConfig(bus_idx=b, p_mw=p * 0.10, pv_penetration=0.0,
-                 inverter_model="iec_61427")
+                 inverter_model="simplified_linear_frt")
         for b, p in gen_data if p > 0
     ]
 
+    If_min = _ensure_feasible_ps_bounds(If_min, Iload_max, "get_14bus")
     return NetworkData(
         "IEEE-14Bus", n_relays, pairs, Iload_max, If_min,
         n_buses=14, base_voltage=13.8, base_mva=100.0,
@@ -880,10 +948,11 @@ def get_57bus() -> NetworkData:
                 (8, 350.0), (9, 100.0), (12, 310.0)]
     dg_buses = [
         DGConfig(bus_idx=b, p_mw=p * 0.10, pv_penetration=0.0,
-                 inverter_model="iec_61427")
+                 inverter_model="simplified_linear_frt")
         for b, p in gen_data
     ]
 
+    If_min = _ensure_feasible_ps_bounds(If_min, Iload_max, "get_57bus")
     return NetworkData(
         "IEEE-57Bus", n_relays, pairs, Iload_max, If_min,
         n_buses=57, base_voltage=138.0, base_mva=100.0,
@@ -1084,10 +1153,11 @@ def get_118bus() -> NetworkData:
                 (103, 300.0), (111, 300.0)]
     dg_buses = [
         DGConfig(bus_idx=b, p_mw=p * 0.10, pv_penetration=0.0,
-                 inverter_model="iec_61427")
+                 inverter_model="simplified_linear_frt")
         for b, p in gen_data
     ]
 
+    If_min = _ensure_feasible_ps_bounds(If_min, Iload_max, "get_118bus")
     return NetworkData(
         "IEEE-118Bus", n_relays, pairs, Iload_max, If_min,
         n_buses=118, base_voltage=138.0, base_mva=100.0,
@@ -1167,13 +1237,18 @@ def get_network_metadata() -> Dict[str, Dict]:
 # Network descriptions (for documentation / CLI help)
 # ─────────────────────────────────────────────────────────────────────────────
 _NETWORK_DESCRIPTIONS = {
+    # Relay/pair counts here are static text and can silently drift from
+    # the actual generated topology below (a prior audit found all of
+    # 14/39/57/118bus stale) — verify against NetworkData.n_pairs /
+    # Iload_max.size (via get_network_metadata()/get_system_summary(),
+    # which read the live values) rather than trusting this dict alone.
     "3bus":   "IEEE 3-Bus Radial (6 relays, 6 P/B pairs) — toy validation",
     "8bus":   "IEEE 8-Bus Distribution (14 relays, 20 P/B pairs) — small-scale MARL",
-    "14bus":  "IEEE 14-Bus Meshed (20 relays, 38 P/B pairs) — standard benchmark",
+    "14bus":  "IEEE 14-Bus Meshed (20 relays, 26 P/B pairs) — standard benchmark",
     "30bus":  "IEEE 30-Bus Meshed (42 relays, 70 P/B pairs) — medium-scale MARL",
-    "39bus":  "IEEE 39-Bus New England (46 relays, 56 P/B pairs) — stability studies",
-    "57bus":  "IEEE 57-Bus Meshed (80 relays, 128 P/B pairs) — large-scale MARL",
-    "118bus": "IEEE 118-Bus Backbone (186 relays, 304 P/B pairs) — very large-scale",
+    "39bus":  "IEEE 39-Bus New England (46 relays, 42 P/B pairs) — stability studies",
+    "57bus":  "IEEE 57-Bus Meshed (156 relays, 192 P/B pairs) — large-scale MARL",
+    "118bus": "IEEE 118-Bus Backbone (318 relays, 440 P/B pairs) — very large-scale",
 }
 
 NETWORKS = {

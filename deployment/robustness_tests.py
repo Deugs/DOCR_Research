@@ -15,6 +15,7 @@ All tests produce degradation metrics and recovery statistics.
 
 from __future__ import annotations
 
+import zlib
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -363,7 +364,7 @@ class RobustnessTester:
                 seed = (
                     self.config.seed
                     + run_idx * 100
-                    + (hash(cond_name) & 0xFFF)
+                    + (zlib.crc32(cond_name.encode()) & 0xFFF)
                 )
 
                 try:
@@ -688,7 +689,7 @@ class RobustnessTester:
                 seed = (
                     self.config.seed
                     + run_idx * 100
-                    + (hash(cond_name) & 0xFFF)
+                    + (zlib.crc32(cond_name.encode()) & 0xFFF)
                 )
                 stressed_net = self.apply_stress_to_net(net, cond_config, seed=seed)
 

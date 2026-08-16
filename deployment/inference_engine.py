@@ -644,7 +644,7 @@ def export_marl_deployment(
         Paths to relay deployment packages.
     """
     config = config or InferenceConfig()
-    exporter = ONNXExporter(actor_network)
+    exporter = ONNXExporter(actor_network, input_shape=config.input_shape)
 
     # Export shared model
     model_path = f"{output_dir}/shared_actor.onnx"

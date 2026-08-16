@@ -1118,7 +1118,7 @@ def fig_19_pv_ride_through():
     ieee_time = np.where(voltage < 0.5, 0.0, np.where(voltage < 0.88, 0.16, np.where(voltage < 1.1, 21.0, 0.0)))
     
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(voltage, iec_time, 'o-', color="#2563eb", lw=2, markersize=4, label="IEC 61427-1", markevery=10)
+    ax.plot(voltage, iec_time, 'o-', color="#2563eb", lw=2, markersize=4, label="Simplified FRT Approximation", markevery=10)
     ax.plot(voltage, ieee_time, 's-', color="#ff6b35", lw=2, markersize=4, label="IEEE 1547-2018", markevery=10)
     ax.fill_between(voltage, 0, iec_time, alpha=0.1, color="#2563eb")
     ax.fill_between(voltage, 0, ieee_time, alpha=0.1, color="#ff6b35")
