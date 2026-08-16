@@ -33,7 +33,7 @@ def main():
     print(f"[Adapter] ewc_ablation.py -> calling fig16_main()")
     print(f"  Output dir: {out_dir}")
 
-    fig16_main(n_seeds=args.n_runs, output_dir=out_dir)
+    fig16_main(n_seeds=args.n_runs, output_dir=out_dir, system=args.system)
 
 
 if __name__ == "__main__":

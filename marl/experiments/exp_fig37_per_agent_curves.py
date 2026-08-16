@@ -81,14 +81,27 @@ def run_per_agent_logging(env, trainer, n_episodes: int = 1000, seed: int = 42):
     return log
 
 
-def main(n_episodes: int = 1000, seed: int = 42, output_dir: str = "outputs"):
+def main(n_episodes: int = 1000, seed: int = 42, output_dir: str = "outputs", system: str = "8bus"):
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("Figure 37 — Per-Agent Learning Curves")
     logger.info("  Episodes: %d", n_episodes)
-    
-    net = get_8bus()
+    logger.info("  System: %s", system)
+
+    if system == "8bus":
+        net = get_8bus()
+    elif system == "14bus":
+        from network.network_data import get_14bus
+        net = get_14bus()
+    elif system == "30bus":
+        from network.network_data import get_30bus
+        net = get_30bus()
+    elif system == "39bus":
+        from network.network_data import get_39bus
+        net = get_39bus()
+    else:
+        net = get_8bus()
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
                           fault_type="3ph", curriculum_stage=5)
     trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
