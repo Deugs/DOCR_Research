@@ -49,7 +49,7 @@ def generate_figure(output_dir):
     # Voltage (pu)
     voltage = np.linspace(0.0, 1.2, 500)
 
-    # Ride-through curve (IEC 61427-1 / IEEE 1547-2018)
+    # Simplified ride-through curve (loosely informed by IEEE 1547-2018 / IEC 61727)
     # Must remain connected in region, may disconnect outside
     def ride_through_time(v):
         if v >= 1.1:
@@ -95,7 +95,7 @@ def generate_figure(output_dir):
 
     ax.set_xlabel('Voltage (pu)', fontsize=12)
     ax.set_ylabel('Maximum Trip Time (s)', fontsize=12)
-    ax.set_title('Figure 19: PV Inverter Fault Ride-Through Curve (IEC 61427-1 / IEEE 1547-2018)', fontsize=13, fontweight='bold')
+    ax.set_title('Figure 19: PV Inverter Fault Ride-Through Curve (Simplified Approximation)', fontsize=13, fontweight='bold')
     ax.set_xlim(0, 1.2)
     ax.set_ylim(0.001, 1000)
     ax.set_yticks([0.001, 0.01, 0.1, 1, 10, 100, 1000])

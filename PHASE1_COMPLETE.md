@@ -12,7 +12,7 @@ Phase 1 (Baseline Network Modeling, Weeks 1-3) has been fully implemented follow
 docr_marl_thesis/
 ├── data/                    # NEW: PV/load profiles
 ├── network/                 # ENHANCED: +pandapower, +39-bus, +DG
-├── pv_model/                # NEW: IEC 61427-1 inverter, Markov clouds
+├── pv_model/                # NEW: simplified linear FRT inverter model, Markov clouds
 ├── environment/             # NEW: topology, sensors, dynamic network
 ├── marl/                    # REFACTORED: curriculum, 10-dim obs, PV aware
 ├── baselines/               # REORGANIZED: ga_sqp enhanced
@@ -38,7 +38,7 @@ docr_marl_thesis/
 - **Fallback**: Analytical calculation when pandapower not installed
 
 #### B. PV Inverter Model (pv_model/pv_inverter.py)
-- **New**: PVInverter class with IEC 61427-1 fault ride-through
+- **New**: PVInverter class with simplified linear fault ride-through approximation
 - **New**: PVRideThroughCurve dataclass (v_low, v_high, t_ride, t_rec, k_i, k_q)
 - **New**: MPPT power calculation with temperature derating
 - **New**: Fault ride-through: current injection + reactive power support
@@ -299,6 +299,6 @@ measured_i, measured_v = dist.get_sensor_measurements(fault_condition=True)
 ## References
 
 - Al-Bhadely & Inan, "Optimal Coordination of Directional Overcurrent Relays Using Hybrid GA-SQP", Energies 2023, 16, 7031
-- IEC 61427-1: Utility-interconnected photovoltaic inverters
-- IEEE 1547-2018: Standard for Interconnection and Interoperability
+- IEEE 1547-2018: Standard for Interconnection and Interoperability (PV FRT model is a simplified
+  linear approximation loosely informed by this and IEC 61727, not a certified implementation of either)
 - Yu et al., "The Surprising Effectiveness of MAPPO", 2022

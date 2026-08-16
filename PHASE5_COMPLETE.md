@@ -482,8 +482,8 @@ Phase 5 feeds into Phase 6 by providing the large-scale dataset required for rig
 - Al-Bhadely & İnan, "Optimal Coordination of Directional Overcurrent Relays Using Hybrid GA-SQP", Energies 2023
 - Yu et al., "The Surprising Effectiveness of PPO in Cooperative Multi-Agent Games", NeurIPS 2022
 - NREL NSRDB: National Solar Radiation Database
-- IEC 61427-1: Utility-interconnected photovoltaic inverters
-- IEEE 1547-2018: Standard for Interconnection and Interoperability
+- IEEE 1547-2018: Standard for Interconnection and Interoperability (PV FRT model is a simplified
+  linear approximation loosely informed by this and IEC 61727, not a certified implementation of either)
 
 ## Files Delivered
 
