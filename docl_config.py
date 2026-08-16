@@ -59,13 +59,18 @@ class FaultType(Enum):
 
 # System metadata (relays, pairs, typical training times)
 SYSTEM_METADATA = {
+    # n_relays/n_pairs are static text and can drift from the actual
+    # generated topology in network/network_data.py (a prior audit found
+    # 14/39/57/118bus stale here) — verify against
+    # NETWORKS[name]().n_pairs / Iload_max.size if these are ever
+    # suspected stale again.
     "3bus":   {"n_relays": 6,   "n_pairs": 6,   "fast_episodes": 100,  "full_episodes": 1000},
     "8bus":   {"n_relays": 14,  "n_pairs": 20,  "fast_episodes": 500,  "full_episodes": 5000},
-    "14bus":  {"n_relays": 20,  "n_pairs": 38,  "fast_episodes": 500,  "full_episodes": 5000},
+    "14bus":  {"n_relays": 20,  "n_pairs": 26,  "fast_episodes": 500,  "full_episodes": 5000},
     "30bus":  {"n_relays": 42,  "n_pairs": 70,  "fast_episodes": 500,  "full_episodes": 5000},
-    "39bus":  {"n_relays": 46,  "n_pairs": 56,  "fast_episodes": 500,  "full_episodes": 5000},
-    "57bus":  {"n_relays": 80,  "n_pairs": 128, "fast_episodes": 500,  "full_episodes": 5000},
-    "118bus": {"n_relays": 186, "n_pairs": 304, "fast_episodes": 500,  "full_episodes": 5000},
+    "39bus":  {"n_relays": 46,  "n_pairs": 42,  "fast_episodes": 500,  "full_episodes": 5000},
+    "57bus":  {"n_relays": 156, "n_pairs": 192, "fast_episodes": 500,  "full_episodes": 5000},
+    "118bus": {"n_relays": 318, "n_pairs": 440, "fast_episodes": 500,  "full_episodes": 5000},
 }
 
 
