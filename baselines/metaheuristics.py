@@ -277,9 +277,15 @@ def run_hho(
                 r = rng.random()
                 
                 if r < 0.5 and abs(E) >= 0.5:
-                    # Soft besiege
+                    # Soft besiege (Heidari et al. 2019, Eq. 6):
+                    # X(t+1) = (X_rabbit - X) - E*|J*X_rabbit - X|.
+                    # Previous code omitted the escaping-energy multiplier E
+                    # entirely and used a spurious "2*rng.random()" scale on
+                    # the X term (an artifact copy-pasted from the
+                    # exploration-phase formula above), so exploitation never
+                    # actually shrank with decaying energy.
                     J = 2 * (1 - rng.random())
-                    hawks[i] = rabbit - hawks[i] - abs(J * rabbit - 2 * rng.random() * hawks[i])
+                    hawks[i] = (rabbit - hawks[i]) - E * abs(J * rabbit - hawks[i])
                 elif r < 0.5 and abs(E) < 0.5:
                     # Hard besiege
                     hawks[i] = rabbit - abs(rabbit - hawks[i]) * E
@@ -304,7 +310,13 @@ def run_hho(
                     continue
                 else:
                     # Hard besiege with progressive rapid dives
-                    Y = rabbit - E * abs(rabbit - hawks.mean(axis=0))
+                    # (Heidari et al. 2019, Eq. 11): Y = X_rabbit -
+                    # E*|J*X_rabbit - X_m(t)|. The jump-strength factor J was
+                    # missing entirely (only E was applied), which drops one
+                    # of the two randomization terms the paper uses to model
+                    # the rabbit's erratic escape jumps.
+                    J = 2 * (1 - rng.random())
+                    Y = rabbit - E * abs(J * rabbit - hawks.mean(axis=0))
                     Y_fit = _fitness(Y, net, fault_type=fault_type, topology_state=topology_state)
                     
                     step = _levy_flight(dim, rng)
@@ -561,10 +573,33 @@ def run_eeo(
             # exploitation like the real Equilibrium Optimizer does.
             sign_vec = np.sign(rng.random(dim) - 0.5)
             F = a2 * sign_vec * (np.exp(-lambda_vec * t_vec) - 1.0)
-            GCP = 0.5 * (rng.random(dim) > 0.5).astype(float)
+
+            # Generation-rate control parameter (Faramarzi et al. 2020, Eq. 12):
+            # GCP = 0.5 * r1 * 1(r2 >= GP). The previous code fixed the scale at
+            # a flat 0.5 with no r1 factor, which biases the generation term's
+            # magnitude and drops the intended randomization.
+            GP = 0.5
+            r1 = rng.random(dim)
+            r2 = rng.random(dim)
+            GCP = 0.5 * r1 * (r2 >= GP).astype(float)
+
+            # Generation term (Eq. 15-16): G0 = GCP*(C_eq - lambda*C), and the
+            # rate actually applied must decay through the same F used in the
+            # concentration update: G = G0 * F. The previous code computed G0
+            # but never multiplied by F, and divided by C_eq_avg instead of
+            # using the (1-F) closing factor from Eq. 13, so the generation
+            # term neither tracked the exploration/exploitation schedule nor
+            # matched the published update rule.
             G0 = GCP * (C_eq - lambda_vec * particles[i])
-            
-            particles[i] = C_eq + (particles[i] - C_eq) * F + G0 / (lambda_vec * C_eq_avg + 1e-10) + mem_influence
+            G = G0 * F
+
+            # Eq. 13: C(t+1) = C_eq + (C-C_eq)*F + (G/(lambda*V))*(1-F), V=1.
+            particles[i] = (
+                C_eq
+                + (particles[i] - C_eq) * F
+                + (G / (lambda_vec + 1e-10)) * (1.0 - F)
+                + mem_influence
+            )
             particles[i] = np.clip(particles[i], lo, hi)
             
             fitness[i] = _fitness(particles[i], net, fault_type=fault_type, topology_state=topology_state)
