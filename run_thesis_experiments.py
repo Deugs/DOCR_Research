@@ -1410,6 +1410,24 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    # --list-presets/--generate-config are defined on the parser (via
+    # build_config_parser() in docl_config.py, which also handles them in
+    # its OWN __main__ block) but this file's main() never checked
+    # args.list_presets/args.generate_config — passing either flag here
+    # silently fell through every branch below to parser.print_help()
+    # instead of doing anything. The fallback (non-config-system) parser
+    # doesn't define these flags at all, hence the hasattr guards.
+    if CONFIG_SYSTEM_AVAILABLE and getattr(args, "list_presets", False):
+        print("\nAvailable Presets:")
+        print("=" * 60)
+        for name, desc in list_presets().items():
+            print(f"  {name:<25} {desc}")
+        print()
+        return
+    if CONFIG_SYSTEM_AVAILABLE and getattr(args, "generate_config", None):
+        generate_example_config(args.generate_config)
+        return
+
     # Initialize configuration from args
     try:
         config = initialize_config(args)
