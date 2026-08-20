@@ -31,8 +31,8 @@ def main():
     )
     p.add_argument(
         "--system", type=str, default="8bus",
-        choices=["8bus", "30bus", "39bus"],
-        help="Test system (8bus, 30bus, 39bus)"
+        choices=["8bus", "14bus", "39bus"],
+        help="Test system (8bus, 14bus, 39bus)"
     )
     p.add_argument(
         "--methods", type=str, nargs="+",

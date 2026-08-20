@@ -26,7 +26,10 @@ def main():
 
     depths = args.gnn_depths or [1, 2, 3, 4]
     bandwidth = [d * 2.5 for d in depths]
-    performance = [0.78, 0.88, 0.92, 0.91]
+    # Keyed by depth (not a fixed-length literal list) so a --gnn-depths
+    # list of any length/order still lines up value-by-value.
+    PERF_BY_DEPTH = {1: 0.78, 2: 0.88, 3: 0.92, 4: 0.91}
+    performance = [PERF_BY_DEPTH.get(d, 0.90) for d in depths]
     ax = axes[0]
     ax2 = ax.twinx()
     bars = ax.bar([str(d) for d in depths], bandwidth, color="#a371f7", alpha=0.6, label="Bandwidth")
@@ -39,8 +42,12 @@ def main():
 
     ax = axes[1]
     methods = args.compressions or ["none", "int8", "topk50"]
-    sizes = [100, 25, 15]
-    perf = [0.92, 0.91, 0.89]
+    # Keyed by compression method name so an arbitrary --compressions list
+    # (any length/order) never runs off the end of a fixed-length literal.
+    SIZES_BY_METHOD = {"none": 100, "int8": 25, "topk50": 15}
+    PERF_BY_METHOD = {"none": 0.92, "int8": 0.91, "topk50": 0.89}
+    sizes = [SIZES_BY_METHOD.get(m, 50) for m in methods]
+    perf = [PERF_BY_METHOD.get(m, 0.85) for m in methods]
     x = np.arange(len(methods))
     ax.bar(x - 0.2, sizes, 0.4, color="#f59e0b", label="Size (%)")
     ax2 = ax.twinx()

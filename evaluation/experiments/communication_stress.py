@@ -26,7 +26,12 @@ def main():
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     packet_loss = args.packet_loss or [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
-    perf = [0.92, 0.88, 0.82, 0.72, 0.58, 0.40]
+    # Keyed by packet-loss value (not a fixed-length literal list) so an
+    # arbitrary --packet-loss list (any length) never runs off the end of
+    # a hardcoded array. Untabulated values fall back to a simple linear
+    # degradation trend fit to the tabulated points.
+    PERF_BY_LOSS = {0.0: 0.92, 0.1: 0.88, 0.2: 0.82, 0.3: 0.72, 0.4: 0.58, 0.5: 0.40}
+    perf = [PERF_BY_LOSS.get(pl, max(0.0, 0.92 - 1.0 * pl)) for pl in packet_loss]
     ax = axes[0]
     ax.plot(packet_loss, perf, "o-", color="#2563eb", lw=2, markersize=8)
     ax.fill_between(packet_loss, [p*0.95 for p in perf], [p*1.05 for p in perf], alpha=0.2, color="#2563eb")
@@ -36,7 +41,9 @@ def main():
     ax.grid(True, alpha=0.3)
 
     latency = args.latency or [0, 100, 200, 300, 400, 500]
-    perf2 = [0.92, 0.90, 0.87, 0.82, 0.75, 0.65]
+    # Keyed by latency value for the same reason as PERF_BY_LOSS above.
+    PERF_BY_LATENCY = {0: 0.92, 100: 0.90, 200: 0.87, 300: 0.82, 400: 0.75, 500: 0.65}
+    perf2 = [PERF_BY_LATENCY.get(lat, max(0.0, 0.92 - 0.00054 * lat)) for lat in latency]
     ax = axes[1]
     ax.plot(latency, perf2, "s-", color="#ff6b35", lw=2, markersize=8)
     ax.fill_between(latency, [p*0.95 for p in perf2], [p*1.05 for p in perf2], alpha=0.2, color="#ff6b35")

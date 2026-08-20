@@ -27,7 +27,7 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
 
 from network.network_data import NetworkData, NETWORKS
-from network.relay_physics import check_constraints
+from network.relay_physics import check_constraints, compute_fault_currents_dynamic
 
 # Import metaheuristics
 from baselines.metaheuristics import (
@@ -131,56 +131,72 @@ class BenchmarkSuite:
         
         return self.results
     
-    def _run_method(self, method: str, net: NetworkData, seed: int, 
+    def _run_method(self, method: str, net: NetworkData, seed: int,
                     cfg: BenchmarkConfig, verbose: bool = False) -> Dict:
         """Run a single method and return standardized result dict."""
-        
+
+        # PV-scale the network before it reaches any objective/constraint
+        # evaluation. `topology_state["fault_currents"]` carries the
+        # PV-penetration-dependent fault currents (see
+        # network.relay_physics.compute_fault_currents_dynamic) that
+        # objective_function/check_constraints use when present, falling
+        # back to the network's static (0% PV) fault currents otherwise.
+        # Without this, cfg.pv_level was accepted by every run_* call only
+        # for logging/result-dict bookkeeping and never actually changed
+        # what was optimized or measured.
+        topology_state = {
+            "fault_currents": compute_fault_currents_dynamic(
+                net, pv_penetration=cfg.pv_level, fault_type=cfg.fault_type
+            )
+        }
+
         if method == "GA-SQP":
             from baselines.ga_sqp import run_ga_sqp
             result = run_ga_sqp(
                 net, ga_pop=cfg.ga_pop, ga_gen=cfg.ga_gen,
                 seed=seed, verbose=verbose,
-                fault_type=cfg.fault_type, pv_level=cfg.pv_level
+                fault_type=cfg.fault_type, pv_level=cfg.pv_level,
+                topology_state=topology_state,
             )
             result["method"] = "GA-SQP"
             return result
-        
+
         elif method == "HWOA":
             return run_hwoa(
                 net, n_whales=cfg.pop_size, max_iter=cfg.max_iter,
                 seed=seed, verbose=verbose,
                 fault_type=cfg.fault_type, pv_level=cfg.pv_level,
-                use_sqp=cfg.use_sqp
+                use_sqp=cfg.use_sqp, topology_state=topology_state,
             )
-        
+
         elif method == "HHO":
             return run_hho(
                 net, n_hawks=cfg.pop_size, max_iter=cfg.max_iter,
                 seed=seed, verbose=verbose,
                 fault_type=cfg.fault_type, pv_level=cfg.pv_level,
-                use_sqp=cfg.use_sqp
+                use_sqp=cfg.use_sqp, topology_state=topology_state,
             )
-        
+
         elif method == "JAYA":
             return run_jaya(
                 net, n_pop=cfg.pop_size, max_iter=cfg.max_iter,
                 seed=seed, verbose=verbose,
                 fault_type=cfg.fault_type, pv_level=cfg.pv_level,
-                use_sqp=cfg.use_sqp
+                use_sqp=cfg.use_sqp, topology_state=topology_state,
             )
-        
+
         elif method == "EEO":
             return run_eeo(
                 net, n_particles=cfg.pop_size, max_iter=cfg.max_iter,
                 seed=seed, verbose=verbose,
                 fault_type=cfg.fault_type, pv_level=cfg.pv_level,
-                use_sqp=cfg.use_sqp
+                use_sqp=cfg.use_sqp, topology_state=topology_state,
             )
-        
+
         elif method in ("IPPO", "MAPPO", "MAPPO-Comm", "MAPPO-Safe", "MAPPO-Safe-EWC", "Single-PPO"):
             # MARL methods - import dynamically to avoid dependency issues
             return self._run_marl_method(method, net, seed, cfg, verbose)
-        
+
         else:
             raise ValueError(f"Unknown method: {method}")
     
@@ -189,12 +205,22 @@ class BenchmarkSuite:
         """Run MARL methods (requires marl modules)."""
         from marl.marl_env import DynamicDOCREnv
         from marl.marl_agents import MAPPOMARLTrainer
-        
+
+        # Map the requested PV level onto DynamicDOCREnv's curriculum_stage,
+        # matching the convention run_core_training.py's curriculum runs use
+        # (env.curriculum_stage = int(pv * 5): 0.0->0, 0.2->1, 0.4->2, 0.6->3,
+        # 0.8->4, 1.0->5) — env.pv_levels[curriculum_stage] then sets
+        # env.current_pv_level for the whole episode. Previously this
+        # constructor call never set curriculum_stage, so every MARL method
+        # trained/evaluated at the env default (0% PV) regardless of
+        # cfg.pv_level.
+        curriculum_stage = int(round(cfg.pv_level * 5))
         env = DynamicDOCREnv(
             net, action_scale=0.05, max_steps=300, seed=seed,
-            use_pandapower=cfg.use_pandapower, fault_type=cfg.fault_type
+            use_pandapower=cfg.use_pandapower, fault_type=cfg.fault_type,
+            curriculum_stage=curriculum_stage,
         )
-        
+
         use_comm = "Comm" in method
         
         trainer = MAPPOMARLTrainer(
@@ -212,8 +238,14 @@ class BenchmarkSuite:
         )
         elapsed = time.perf_counter() - t0
         
+        topology_state = {
+            "fault_currents": compute_fault_currents_dynamic(
+                net, pv_penetration=cfg.pv_level, fault_type=cfg.fault_type
+            )
+        }
         result["constraints"] = check_constraints(
-            net, result["TMS"], result["PS"], fault_type=cfg.fault_type
+            net, result["TMS"], result["PS"], fault_type=cfg.fault_type,
+            topology_state=topology_state,
         )
         result["elapsed"] = elapsed
         result["method"] = method

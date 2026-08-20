@@ -2,7 +2,7 @@
 """
 run_all_systems.py
 ──────────────────
-Orchestrates Figure 5 experiments across ALL test systems (8/30/39-bus).
+Orchestrates Figure 5 experiments across ALL test systems (8/14/39-bus).
 
 Runs unified_exp_fig05.py sequentially for each system, then produces
 a combined comparison figure showing scalability trends.
@@ -12,7 +12,7 @@ Usage:
 
 Outputs:
     outputs/8bus/fig05_pv_sweep.npz
-    outputs/30bus/fig05_pv_sweep.npz
+    outputs/14bus/fig05_pv_sweep.npz
     outputs/39bus/fig05_pv_sweep.npz
     outputs/combined_scalability.png   ← Figure 15 replacement
 """
@@ -38,7 +38,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SYSTEMS = ["8bus", "30bus", "39bus"]
+SYSTEMS = ["8bus", "14bus", "39bus"]
 
 METHOD_COLORS = {
     "MAPPO-Safe-EWC": "#2563eb",

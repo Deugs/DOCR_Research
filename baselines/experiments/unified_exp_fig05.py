@@ -44,7 +44,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from network.network_data import NETWORKS
-from network.relay_physics import check_constraints
+from network.relay_physics import check_constraints, compute_fault_currents_dynamic
 from baselines.ga_sqp import run_ga_sqp
 from baselines.metaheuristics import run_metaheuristic
 from baselines.experiments.exp_fig05_pv_sweep_evaluation import (
@@ -94,12 +94,27 @@ def run_metaheuristic_seed(method: str, net, pv_level: float, seed: int,
     become one sample in the per-seed distribution used for the significance
     test below.
     """
+    # PV-scale the fault currents the optimizer/constraints actually see —
+    # previously pv_level was only threaded through for logging/result-dict
+    # bookkeeping (run_ga_sqp/run_metaheuristic never received a
+    # topology_state), so every metaheuristic gave bit-identical results at
+    # every PV level for a given seed. See
+    # network.relay_physics.compute_fault_currents_dynamic and
+    # evaluation.benchmark_suite._run_method for the same pattern.
+    topology_state = {
+        "fault_currents": compute_fault_currents_dynamic(
+            net, pv_penetration=pv_level, fault_type=fault_type
+        )
+    }
+
     if method == "GA-SQP":
         res = run_ga_sqp(net, ga_pop=_CANON_CFG.ga_pop, ga_gen=_CANON_CFG.ga_gen, seed=seed,
-                          verbose=False, fault_type=fault_type, pv_level=pv_level)
+                          verbose=False, fault_type=fault_type, pv_level=pv_level,
+                          topology_state=topology_state)
     else:
         res = run_metaheuristic(method, net, pop_size=_CANON_CFG.pop_size, max_iter=_CANON_CFG.max_iter,
-                                 seed=seed, verbose=False, fault_type=fault_type, pv_level=pv_level)
+                                 seed=seed, verbose=False, fault_type=fault_type, pv_level=pv_level,
+                                 topology_state=topology_state)
     return {
         "mean_OF": float(res["OF"]),
         "std_OF": 0.0,
