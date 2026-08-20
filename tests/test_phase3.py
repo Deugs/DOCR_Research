@@ -195,6 +195,46 @@ def test_safe_rl_wrapper():
     print(f"  SafeRL Wrapper: rewards_mean={rewards.mean():.4f}, λ_mean={stats['lambda_mean']:.3f}")
 
 
+def test_safe_rl_wrapper_auto_updates_lagrangian_at_episode_end():
+    """SafeRLWrapper.step() must call update_lagrangian() itself when an
+    episode ends (done=True), not rely on an external caller to do so.
+
+    Before this fix, no real training path (Core A-D, mains/main3-6.py)
+    ever called update_lagrangian() explicitly, so lambda/rho stayed
+    frozen at their init values for an entire run despite lambda_lr /
+    adaptive_rho being configured. This steps a short (max_steps=3)
+    episode to completion and checks the wrapper's own dual-ascent
+    counter advanced, and its per-episode violation/step counters reset,
+    WITHOUT this test ever calling update_lagrangian() itself.
+    """
+    from marl.marl_env import DynamicDOCREnv
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+    from network.network_data import get_3bus
+
+    net = get_3bus()
+    env = DynamicDOCREnv(net, use_pandapower=False, seed=42, max_steps=3)
+    safe_env = create_safe_rl_env(env, SafeRLConfig(enforce_cti=True))
+
+    assert safe_env.n_updates == 0
+
+    safe_env.reset(seed=42)
+    actions = np.zeros((net.n_relays, env.ACT_DIM))
+    done = False
+    steps = 0
+    while not done and steps < 10:  # env.max_steps=3 guards against a runaway loop
+        _, _, done, _ = safe_env.step(actions)
+        steps += 1
+
+    assert done, "episode should have ended within max_steps=3"
+    assert safe_env.n_updates == 1, \
+        "SafeRLWrapper.step() should auto-trigger exactly one update_lagrangian() call at episode end"
+    # update_lagrangian() resets these after folding them into the dual update.
+    assert safe_env.episode_violations == 0
+    assert safe_env.episode_steps == 0
+
+    print(f"  SafeRL auto-update: n_updates={safe_env.n_updates} after {steps}-step episode")
+
+
 def test_safe_rl_wrapper_curriculum_stage_property():
     """Test SafeRLWrapper.curriculum_stage getter/setter propagates to the real env.
 
@@ -662,6 +702,7 @@ def run_all_tests():
         test_lagrange_multiplier_updates,
         test_pid_lagrangian,
         test_safe_rl_wrapper,
+        test_safe_rl_wrapper_auto_updates_lagrangian_at_episode_end,
         test_safe_rl_wrapper_curriculum_stage_property,
         test_adaptive_rho,
         test_ewc_fisher_estimation,

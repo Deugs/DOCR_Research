@@ -205,9 +205,6 @@ class DistributionNetwork:
         temperature = profile.temperature[idx]
         load_pu = profile.load_pu[idx]
 
-        # Update PV plant outputs
-        self._update_pv_output(pv_level, irradiance, temperature)
-
         # Update pandapower if available
         if self.pp_available:
             self.pp_net.update_pv_penetration(pv_level)
@@ -281,13 +278,6 @@ class DistributionNetwork:
                 switch_outages=topology_changes.get("switch_outages", []),
             )
             self.current_state.topology_state = self.topology.current_state.copy()
-
-        # Update PV output (simplified: assume irradiance changes slowly)
-        self._update_pv_output(
-            self.current_state.pv_penetration,
-            self.current_state.irradiance,
-            self.current_state.temperature,
-        )
 
         # Recompute fault currents
         self.current_state.fault_currents = self._compute_fault_currents(
@@ -436,21 +426,6 @@ class DistributionNetwork:
     # ═══════════════════════════════════════════════════════════════════════
     #  Internal helpers
     # ═══════════════════════════════════════════════════════════════════════
-
-    def _update_pv_output(self, pv_level: float, irradiance: float, temperature: float):
-        """Update all PV plant outputs."""
-        for bus_idx, plant in self.pv_plants.items():
-            # Get bus voltage (approximate)
-            v_pu = 1.0
-            if self.current_state and bus_idx in self.current_state.bus_voltages:
-                v_pu = self.current_state.bus_voltages[bus_idx]
-
-            p, q, i = plant.get_total_output(
-                irradiance=irradiance,
-                temperature=temperature,
-                v_terminal_pu=v_pu,
-            )
-            # Note: In full implementation, this would update pandapower sgen values
 
     def _compute_fault_currents(
         self,

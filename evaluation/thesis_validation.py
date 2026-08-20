@@ -458,11 +458,14 @@ class ThesisValidator:
                 if final == 0:
                     return len(arr)
                 within = np.abs(arr - final) <= tol * abs(final)
-                # First index after which ALL remaining points stay within tol.
-                for i in range(len(arr)):
-                    if np.all(within[i:]):
-                        return i
-                return len(arr)
+                # First index after which ALL remaining points stay within
+                # tol == one past the LAST index that is NOT within tol
+                # (0 if every point already is). Equivalent to the
+                # previous "for i: if all(within[i:]): return i" loop, but
+                # O(n) instead of O(n^2) (that loop re-scanned the
+                # remaining suffix from scratch at every i).
+                not_within = np.where(~within)[0]
+                return int(not_within[-1] + 1) if len(not_within) > 0 else 0
 
             for method in claim.required_methods:
                 method_results = by_method.get(method, [])

@@ -341,6 +341,38 @@ def load_cache(name: str):
     logger.warning(f"Cache not found: {name}. Using synthetic fallback.")
     return None
 
+
+def load_bridge_cache(fig_num: int) -> Optional[Dict]:
+    """Load the real evaluation result CoreEvalBridge cached for THIS
+    exact figure number (results/core_cache/core_eval_fig{NN}.json).
+
+    Unlike load_cache()'s bridge_map, which maps a Core NAME to a list of
+    files and returns the first one that happens to exist (silently
+    handing figure N's caller a different figure's cache data if N's own
+    file is missing but an earlier one in the list isn't — see fig 44/47
+    both living under "core_J_protection"), this looks up the one file
+    that can only ever contain fig_num's own data.
+    """
+    cache_file = get_cache_dir() / f"core_eval_fig{fig_num:02d}.json"
+    if not cache_file.exists():
+        return None
+    with open(cache_file) as f:
+        payload = json.load(f)
+    logger.info(f"Loaded bridge cache: {cache_file}")
+    return payload.get("data")
+
+
+def _annotate_panel_synthetic(ax, note: str) -> None:
+    """Lightweight per-axes counterpart to mark_synthetic() for figures
+    where only ONE panel is fabricated while another panel in the same
+    figure is real — a full-figure diagonal watermark would misrepresent
+    the real panel as fake too."""
+    ax.text(0.5, 0.5, f"ILLUSTRATIVE\n(not measured — {note})",
+            transform=ax.transAxes, fontsize=10, color="red", alpha=0.45,
+            ha="center", va="center", rotation=25, zorder=1000)
+    logger.warning(f"[panel-synthetic] {note}")
+
+
 def save_fig(fig, path: Path, dpi: int = None):
     """Save figure and close. Uses config DPI if available."""
     if dpi is None and _config is not None:
@@ -816,8 +848,10 @@ def fig_12_convergence_bands():
     logger.info("\\n[Fig 12] Convergence Curves with 95% Confidence Bands")
     core_A = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
     core_C = load_cache("core_C_baselines")
-    
-    if core_A is None or core_C is None:
+    is_synthetic = core_A is None or core_C is None
+
+    if is_synthetic:
+        logger.warning("Fig 12: 'core_A_mappo_safe_ewc_8bus_100pv' and/or 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         n_eps = 2000
         methods = {
             "MAPPO-Safe-EWC": {"mean": -5 + 8.5 * (1 - np.exp(-np.arange(n_eps) / 350)), "std": np.ones(n_eps) * 0.8},
@@ -853,15 +887,20 @@ def fig_12_convergence_bands():
     ax.grid(True, alpha=0.3)
     
     ax = axes[1]
+    # Only mean/std per method are cached (not raw per-episode returns),
+    # so this panel always resamples a distribution around them rather
+    # than showing genuine per-episode data — true even when the curves
+    # in the left panel are real. Seeded so re-running is deterministic.
+    rng_box = np.random.default_rng(42)
     final_returns = []
     labels = []
     for method, data in methods.items():
         if method == "Traditional": continue
         final_mean = data["mean"][-100:].mean() if len(data["mean"]) > 100 else data["mean"][-1]
         final_std = data["std"][-100:].mean() if len(data["std"]) > 100 else data["std"][-1]
-        final_returns.append(np.random.normal(final_mean, final_std, 50))
+        final_returns.append(rng_box.normal(final_mean, final_std, 50))
         labels.append(method)
-    
+
     bp = ax.boxplot(final_returns, tick_labels=labels, patch_artist=True)
     for patch, label in zip(bp["boxes"], labels):
         patch.set_facecolor(colors.get(label, "#333"))
@@ -870,7 +909,11 @@ def fig_12_convergence_bands():
     ax.set_title("Final Performance Distribution", fontsize=12)
     ax.set_xticklabels(labels, rotation=15, ha="right", fontsize=9)
     ax.grid(True, alpha=0.3, axis="y")
-    
+    _annotate_panel_synthetic(ax, "resampled from cached mean/std, not raw per-episode returns")
+
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv/core_C_baselines cache missing")
     save_fig(fig, get_fig_path(12, "figs_11_20"))
 
 # ==================================================================
@@ -922,25 +965,61 @@ def fig_13_communication_stress():
 # ==================================================================
 @timed_figure(14)
 def fig_14_n1_contingency():
-    """Fig 14: N-1 contingency impact — from Core G / checkpoint eval."""
+    """Fig 14: N-1 contingency impact — from experiments/exp_fig14_n1_contingency.py's npz, if run."""
     logger.info("\\n[Fig 14] N-1 Contingency Impact and Recovery")
-    rng = np.random.default_rng(42)
-    line_outages = [f"L{i}" for i in range(1, 13)]
-    impact = [rng.uniform(0.1, 0.4) for _ in line_outages]
-    recovery = [rng.uniform(0.7, 0.95) for _ in line_outages]
-    
+    # experiments/exp_fig14_n1_contingency.py is a real, standalone
+    # per-line N-1 evaluation (trains a policy, outages each line via
+    # NetworkData.apply_n1_outage(), evaluates pre-trained vs.
+    # fine-tuned) that saves outputs/fig14_n1_contingency.npz. No Core
+    # run currently produces the 12-line matrix this figure needs
+    # (Core G's real bridge only covers figs 13/20/22/24/54 — see
+    # run_core_training.py:run_core_G), and this module is pure
+    # post-processing (no training here), so we load that npz if
+    # someone has run the real script, else honestly disclose.
+    npz_path = BASE_DIR / "outputs" / "fig14_n1_contingency.npz"
+    real = None
+    if npz_path.exists():
+        try:
+            with np.load(npz_path, allow_pickle=True) as npz:
+                real = {k: npz[k] for k in npz.files}
+        except Exception as e:
+            logger.warning(f"Fig 14: failed to load {npz_path}: {e}")
+    is_synthetic = real is None
+
+    if is_synthetic:
+        logger.warning(f"Fig 14: '{npz_path}' not found — using synthetic/hardcoded fallback data, NOT a real measurement. Run experiments/exp_fig14_n1_contingency.py to produce real data.")
+        rng = np.random.default_rng(42)
+        line_outages = [f"L{i}" for i in range(1, 13)]
+        impact = [rng.uniform(0.1, 0.4) for _ in line_outages]
+        recovery = [rng.uniform(0.7, 0.95) for _ in line_outages]
+        ylabel = "Relative Performance"
+        label_impact, label_recovery = "Immediate Impact", "After Recovery"
+    else:
+        line_outages = [str(n) for n in real["line_names"]]
+        baseline_of = float(real["baseline_of"][0])
+        # Normalize objective values to the same "relative performance"
+        # scale the figure's axis promises (1.0 = matches baseline;
+        # lower objective is better, so express as baseline/observed).
+        impact = [baseline_of / max(v, 1e-9) for v in real["pretrain_of"]]
+        recovery = [baseline_of / max(v, 1e-9) for v in real["finetuned_of"]]
+        ylabel = "Relative Performance (baseline OF / observed OF)"
+        label_impact, label_recovery = "Pre-trained (no adapt)", "After Fine-tuning"
+
     fig, ax = plt.subplots(figsize=(12, 6))
     x = np.arange(len(line_outages))
     width = 0.35
-    ax.bar(x - width/2, impact, width, label="Immediate Impact", color="#ff6b35", alpha=0.8, edgecolor="white")
-    ax.bar(x + width/2, recovery, width, label="After Recovery", color="#39d353", alpha=0.8, edgecolor="white")
+    ax.bar(x - width/2, impact, width, label=label_impact, color="#ff6b35", alpha=0.8, edgecolor="white")
+    ax.bar(x + width/2, recovery, width, label=label_recovery, color="#39d353", alpha=0.8, edgecolor="white")
     ax.set_xlabel("Line Outage", fontsize=12)
-    ax.set_ylabel("Relative Performance", fontsize=12)
+    ax.set_ylabel(ylabel, fontsize=12)
     ax.set_title("Figure 14 — N-1 Contingency Impact and Recovery (30-Bus)", fontsize=13)
     ax.set_xticks(x)
     ax.set_xticklabels(line_outages, rotation=45, ha="right")
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3, axis="y")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note=f"{npz_path.name} missing")
     save_fig(fig, get_fig_path(14, "figs_11_20"))
 
 
@@ -1109,26 +1188,17 @@ def fig_18_inference_latency():
 # ==================================================================
 # FIGURE 19: PV Ride-Through Curves
 # ==================================================================
-@timed_figure(19)
-def fig_19_pv_ride_through():
-    """Fig 19: PV Inverter Fault Ride-Through Curves."""
-    logger.info("\\n[Fig 19] PV Inverter Fault Ride-Through Curves")
-    voltage = np.linspace(0.5, 1.15, 100)
-    iec_time = np.where(voltage < 0.88, 0.16, np.where(voltage < 1.1, 10.0, 0.0))
-    ieee_time = np.where(voltage < 0.5, 0.0, np.where(voltage < 0.88, 0.16, np.where(voltage < 1.1, 21.0, 0.0)))
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(voltage, iec_time, 'o-', color="#2563eb", lw=2, markersize=4, label="Simplified FRT Approximation", markevery=10)
-    ax.plot(voltage, ieee_time, 's-', color="#ff6b35", lw=2, markersize=4, label="IEEE 1547-2018", markevery=10)
-    ax.fill_between(voltage, 0, iec_time, alpha=0.1, color="#2563eb")
-    ax.fill_between(voltage, 0, ieee_time, alpha=0.1, color="#ff6b35")
-    ax.set_xlabel("Voltage (p.u.)", fontsize=12)
-    ax.set_ylabel("Ride-Through Time (s)", fontsize=12)
-    ax.set_title("Figure 19 — PV Inverter Fault Ride-Through Curves", fontsize=13)
-    ax.legend(fontsize=11)
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim(0, 25)
-    save_fig(fig, get_fig_path(19, "figs_01_10"))
+# Not defined here — Fig 19 is generated by phase1_scripts/exp_fig19.py
+# (registered in run_thesis_experiments.py's MANUAL_FIGURE_SCRIPTS and
+# actually invoked by run_phase1() in the real pipeline). This module
+# previously ALSO defined and registered its own fig_19_pv_ride_through()
+# with a completely different curve (different IEC/IEEE thresholds, axis
+# scale, and framing) under the same figure number and output path —
+# whichever of the two happened to run last would silently overwrite the
+# other's file with no indication of the conflict. Since
+# phase1_scripts/exp_fig19.py is the one the orchestrated pipeline
+# actually uses, the duplicate here was removed rather than kept
+# alongside it.
 
 
 # ==================================================================
@@ -2186,32 +2256,51 @@ def fig_46_relay_curves():
 # ==================================================================
 @timed_figure(47)
 def fig_47_sympathetic_tripping():
-    """Fig 47: Sympathetic tripping prevention — from Core J."""
+    """Fig 47: Sympathetic tripping prevention — from Core J / core_eval_fig47."""
     logger.info("\\n[Fig 47] Sympathetic Tripping Prevention Analysis")
-    data = load_cache("core_J_protection")
-    is_synthetic = data is None
-    if data is None:
-        logger.warning("Fig 47: 'core_J_protection' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"sympathetic": {"cases_prevented": 15, "cases_total": 20, "prevention_rate": 0.75}}
-    
-    sym = data.get("sympathetic", {"cases_prevented": 15, "cases_total": 20, "prevention_rate": 0.75})
-    prevented = sym.get("cases_prevented", 15)
-    total = sym.get("cases_total", 20)
+    # core_eval_fig47.json holds REAL data from
+    # training_pipeline._eval_sympathetic_tripping: {"sympathetic": <CTI
+    # violation count under the trained policy>, "traditional": <count
+    # under fixed, non-adaptive settings>} — a count comparison, not the
+    # "cases_prevented/cases_total out of a fixed scenario set" shape
+    # this figure originally assumed. load_cache("core_J_protection")
+    # is NOT used here: its bridge_map returns whichever of
+    # fig44/45/46/47's cache files happens to exist first, which can
+    # silently hand this function a different figure's data.
+    real = load_bridge_cache(47)
+    is_synthetic = real is None or "sympathetic" not in real or "traditional" not in real
+    if is_synthetic:
+        logger.warning("Fig 47: 'core_eval_fig47.json' cache not found/incomplete — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        marl_viol, trad_viol = 5, 20
+    else:
+        marl_viol, trad_viol = int(real["sympathetic"]), int(real["traditional"])
+
+    # Honest reframing: the real signal is a CTI-violation COUNT (lower
+    # is better) for MARL vs. traditional settings, not a discrete
+    # prevented/not-prevented tally out of a fixed case set. "Prevented"
+    # is the reduction in violations MARL achieves relative to traditional.
+    total = max(trad_viol, marl_viol, 1)
+    prevented = max(total - marl_viol, 0)
     not_prevented = total - prevented
-    
+
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
     fig.suptitle("Figure 47 — Sympathetic Tripping Prevention Analysis", fontsize=13)
-    
+
     ax = axes[0]
-    labels = ["Prevented", "Not Prevented"]
+    labels = ["Prevented\n(vs. traditional)", "Remaining\nviolations"]
     sizes = [prevented, not_prevented]
     colors = ["#39d353", "#ff6b35"]
     wedges, texts, autotexts = ax.pie(sizes, labels=labels, colors=colors, autopct='%1.0f%%',
                                        startangle=90, textprops={'fontsize': 11, 'fontweight': 'bold'})
     for autotext in autotexts:
         autotext.set_color('white')
-    ax.set_title(f"Prevention Rate: {prevented}/{total} cases", fontsize=12)
-    
+    ax.set_title(f"MARL: {marl_viol} violations vs. Traditional: {trad_viol}", fontsize=12)
+
+    # The trained policy is only ever evaluated against ONE fault type
+    # per run (config.fault_type) — there is no real per-fault-type
+    # breakdown anywhere in training_pipeline._eval_sympathetic_tripping,
+    # so this panel is illustrative regardless of whether the pie chart
+    # above used real data.
     ax = axes[1]
     scenarios = ["Line-to-Ground", "Line-to-Line", "3-Phase", "High-Z"]
     prevented_by_type = [4, 5, 3, 3]
@@ -2226,10 +2315,11 @@ def fig_47_sympathetic_tripping():
     ax.set_title("By Fault Type", fontsize=12)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3, axis="y")
-    
+    _annotate_panel_synthetic(ax, "no per-fault-type breakdown in _eval_sympathetic_tripping")
+
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_J_protection cache missing")
+        mark_synthetic(fig, note="core_eval_fig47.json cache missing — entire figure fabricated")
     save_fig(fig, get_fig_path(47, "figs_41_50"))
 
 
@@ -2238,32 +2328,50 @@ def fig_47_sympathetic_tripping():
 # ==================================================================
 @timed_figure(48)
 def fig_48_shap():
-    """Fig 48: SHAP feature importance — from Core A checkpoint."""
+    """Fig 48: SHAP feature importance — from core_eval_fig48 (real KernelExplainer output)."""
     logger.info("\\n[Fig 48] SHAP Feature Importance")
-    data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
-    is_synthetic = data is None
-    if data is None:
-        logger.warning("Fig 48: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        pass
-    
-    np.random.seed(42)
-    features = ["V_local", "I_branch", "TMS_current", "PS_current", "PV_gen", "Time_of_day", 
-                "Neighbor_V1", "Neighbor_V2", "Load_ratio", "Fault_indicator"]
-    shap_values = np.random.exponential(0.1, len(features))
-    shap_values = np.sort(shap_values)[::-1]
-    
+    # Real obs schema (marl/marl_env.py DynamicDOCREnv._get_obs, OBS_DIM=10):
+    # note ps_n appears twice by construction (a pre-existing duplicate
+    # feature, not a labeling error introduced here).
+    features = ["TMS (norm.)", "PS (norm.)", "Fault current (norm.)", "CTI slack (norm.)",
+                "CTI violation flag", "Own trip time (norm.)", "PS (norm.) [dup]",
+                "PV generation level", "Topology change flag", "Sensor quality"]
+
+    real = load_bridge_cache(48)
+    shap_arr = None
+    if real is not None and real.get("shap") is not None:
+        shap_arr = np.asarray(real["shap"])
+    is_synthetic = shap_arr is None or shap_arr.size == 0
+
+    if is_synthetic:
+        logger.warning("Fig 48: 'core_eval_fig48.json' cache not found/empty — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        rng = np.random.default_rng(42)
+        shap_values = np.sort(rng.exponential(0.1, len(features)))[::-1]
+        order = np.arange(len(features))
+    else:
+        # shap_arr shape: (n_actions, n_explain, n_features) from
+        # shap.KernelExplainer on the actor's multi-output mean action.
+        mean_abs = np.abs(shap_arr).mean(axis=tuple(range(shap_arr.ndim - 1)))
+        if mean_abs.shape[0] != len(features):
+            logger.warning(f"Fig 48: cached SHAP feature count ({mean_abs.shape[0]}) != known obs schema ({len(features)}); truncating/padding to match.")
+            mean_abs = np.resize(mean_abs, len(features))
+        order = np.argsort(mean_abs)[::-1]
+        shap_values = mean_abs[order]
+
+    ordered_features = [features[i] for i in order]
+
     fig, ax = plt.subplots(figsize=(10, 7))
-    colors = plt.cm.RdYlGn(np.linspace(0.2, 0.8, len(features)))[::-1]
-    bars = ax.barh(range(len(features)), shap_values, color=colors, edgecolor="white")
-    ax.set_yticks(range(len(features)))
-    ax.set_yticklabels(features, fontsize=10)
+    colors = plt.cm.RdYlGn(np.linspace(0.2, 0.8, len(ordered_features)))[::-1]
+    bars = ax.barh(range(len(ordered_features)), shap_values, color=colors, edgecolor="white")
+    ax.set_yticks(range(len(ordered_features)))
+    ax.set_yticklabels(ordered_features, fontsize=10)
     ax.set_xlabel("Mean |SHAP Value|", fontsize=12)
     ax.set_title("Figure 48 — SHAP Feature Importance for Relay Decisions", fontsize=13)
     ax.invert_yaxis()
     ax.grid(True, alpha=0.3, axis="x")
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
+        mark_synthetic(fig, note="core_eval_fig48.json cache missing")
     save_fig(fig, get_fig_path(48, "figs_41_50"))
 
 
@@ -2272,37 +2380,49 @@ def fig_48_shap():
 # ==================================================================
 @timed_figure(49)
 def fig_49_decision_boundary():
-    """Fig 49: Decision boundary — 2D projection from Core A."""
+    """Fig 49: Decision boundary — 2D t-SNE projection from core_eval_fig49 (real _eval_tsne output)."""
     logger.info("\\n[Fig 49] Decision Boundary Visualization")
-    data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
-    is_synthetic = data is None
-    if data is None:
-        logger.warning("Fig 49: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        pass
-    
-    np.random.seed(42)
-    n_points = 500
-    x = np.random.randn(n_points)
-    y = np.random.randn(n_points)
-    labels = (x + y > 0).astype(int)
-    
+    real = load_bridge_cache(49)
+    embeddings = actions = None
+    if real is not None:
+        emb = real.get("embeddings")
+        act = real.get("actions")
+        if emb is not None and act is not None and len(emb) > 0:
+            embeddings, actions = np.asarray(emb), np.asarray(act)
+    is_synthetic = embeddings is None
+
+    if is_synthetic:
+        logger.warning("Fig 49: 'core_eval_fig49.json' cache not found/empty — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        rng = np.random.default_rng(42)
+        n_points = 500
+        x = rng.standard_normal(n_points)
+        y = rng.standard_normal(n_points)
+        labels = (x + y > 0).astype(int)
+    else:
+        x, y = embeddings[:, 0], embeddings[:, 1]
+        # Real per-point "action class": whether the trained policy's
+        # aggregate action pushes settings up or down at that sampled
+        # observation — the sign of the summed action vector.
+        labels = (actions.sum(axis=-1) > 0).astype(int)
+
     fig, ax = plt.subplots(figsize=(10, 8))
     scatter = ax.scatter(x, y, c=labels, cmap="RdYlGn", alpha=0.6, s=30, edgecolors="white", linewidth=0.5)
-    
-    x_line = np.linspace(-3, 3, 100)
-    ax.plot(x_line, -x_line, 'k--', lw=2, label="Decision Boundary")
-    ax.contourf(np.linspace(-3, 3, 50), np.linspace(-3, 3, 50), 
-                np.zeros((50, 50)), levels=[0, 0.5, 1], colors=["#ff6b35", "#39d353"], alpha=0.1)
-    
+
+    if is_synthetic:
+        x_line = np.linspace(-3, 3, 100)
+        ax.plot(x_line, -x_line, 'k--', lw=2, label="Decision Boundary")
+        ax.contourf(np.linspace(-3, 3, 50), np.linspace(-3, 3, 50),
+                    np.zeros((50, 50)), levels=[0, 0.5, 1], colors=["#ff6b35", "#39d353"], alpha=0.1)
+        ax.legend(fontsize=11)
+
     ax.set_xlabel("t-SNE Dimension 1", fontsize=12)
     ax.set_ylabel("t-SNE Dimension 2", fontsize=12)
     ax.set_title("Figure 49 — Decision Boundary Visualization (2D Projection)", fontsize=13)
-    ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     plt.colorbar(scatter, ax=ax, label="Action Class")
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
+        mark_synthetic(fig, note="core_eval_fig49.json cache missing")
     save_fig(fig, get_fig_path(49, "figs_41_50"))
 
 
@@ -2311,31 +2431,44 @@ def fig_49_decision_boundary():
 # ==================================================================
 @timed_figure(50)
 def fig_50_critical_pairs():
-    """Fig 50: Critical pair identification — from Core A violation patterns."""
+    """Fig 50: Critical pair identification — from core_eval_fig50 (real _eval_critical_pairs output)."""
     logger.info("\\n[Fig 50] Critical P/B Pair Identification")
-    data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
-    is_synthetic = data is None
-    if data is None:
-        logger.warning("Fig 50: 'core_A_mappo_safe_ewc_8bus_100pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        pass
-    
-    np.random.seed(42)
-    pairs = [f"P{i}-B{j}" for i in range(1, 8) for j in range(i+1, 8)]
-    violation_counts = np.random.poisson(5, len(pairs))
-    violation_counts = np.sort(violation_counts)[::-1]
-    
+    real = load_bridge_cache(50)
+    real_pairs = None
+    if isinstance(real, list) and len(real) > 0:
+        real_pairs = real
+    is_synthetic = real_pairs is None
+
+    if is_synthetic:
+        logger.warning("Fig 50: 'core_eval_fig50.json' cache not found/empty — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        rng = np.random.default_rng(42)
+        pairs = [f"P{i}-B{j}" for i in range(1, 8) for j in range(i + 1, 8)]
+        metric = np.sort(rng.poisson(5, len(pairs)))[::-1]
+        xlabel = "CTI Violation Count"
+    else:
+        # Real signal is a per-pair CTI margin (distance_to_violation:
+        # t_bkp - t_pri - CTI; negative = violating), not a violation
+        # COUNT — there's no repeated-trial tally in
+        # _eval_critical_pairs, just one margin per pair at the
+        # evaluated operating point. Sort most-critical (smallest
+        # margin) first, matching the figure's "priority ranking" intent.
+        ordered = sorted(real_pairs, key=lambda p: p.get("distance_to_violation", 0.0))
+        pairs = [f"P{p['primary']}-B{p['backup']}" for p in ordered]
+        metric = np.array([p.get("distance_to_violation", 0.0) for p in ordered])
+        xlabel = "CTI Margin (s) — negative = violating"
+
     fig, ax = plt.subplots(figsize=(12, 8))
     colors = plt.cm.Reds(np.linspace(0.3, 1.0, len(pairs)))[::-1]
-    bars = ax.barh(range(len(pairs)), violation_counts, color=colors, edgecolor="white")
+    bars = ax.barh(range(len(pairs)), metric, color=colors, edgecolor="white")
     ax.set_yticks(range(len(pairs)))
     ax.set_yticklabels(pairs, fontsize=8)
-    ax.set_xlabel("CTI Violation Count", fontsize=12)
+    ax.set_xlabel(xlabel, fontsize=12)
     ax.set_title("Figure 50 — Critical P/B Pair Identification & Priority Ranking", fontsize=13)
     ax.invert_yaxis()
     ax.grid(True, alpha=0.3, axis="x")
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv cache missing")
+        mark_synthetic(fig, note="core_eval_fig50.json cache missing")
     save_fig(fig, get_fig_path(50, "figs_41_50"))
 
 
@@ -2671,8 +2804,11 @@ FIGURE_FUNCTIONS = {
     8: fig_08_attention_weights,
     9: fig_09_cti_violations,
     10: fig_10_lagrange_multipliers,
-    19: fig_19_pv_ride_through,
-    
+    # 19 intentionally absent — see the comment above fig_20_byzantine's
+    # module section header (previously fig_19_pv_ride_through here
+    # duplicated/diverged from phase1_scripts/exp_fig19.py, the one the
+    # real pipeline actually uses).
+
     # Phase 2: Methodology, Algorithms & Formulations
     29: fig_29_ewc_continual,
     34: fig_34_nn_architecture,

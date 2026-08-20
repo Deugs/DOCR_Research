@@ -542,7 +542,15 @@ class MAPPOMARLTrainer:
         return np.stack([mean_tms, mean_ps, std_tms, std_ps, max_viol, mean_slack], axis=1)
 
     def _update_actor_es(self, agent_idx, obs_batch, act_batch, adv_batch, old_lp, n_pert=10, sigma=0.02):
-        """OpenAI-ES surrogate policy gradient with PPO-clip."""
+        """OpenAI-ES surrogate policy gradient with PPO-clip.
+
+        `eps` below is already sigma-scaled (~N(0, sigma^2)), not unit
+        noise, so the antithetic ES gradient estimate's denominator
+        reduces to sigma**2, not plain sigma (all four ES update
+        methods in this class, and the two in single_agent_ppo.py, had
+        the same off-by-one-power-of-sigma bug — comm_graph.py's ES
+        update already used the correct sigma**2 form).
+        """
         if _GPU_AVAILABLE:
             return self._update_actor_es_gpu(agent_idx, obs_batch, act_batch, adv_batch, old_lp, n_pert, sigma)
         theta = self.actor.get_all_params()
@@ -563,7 +571,7 @@ class MAPPOMARLTrainer:
         r_arr = np.array(rewards)
         r_norm = (r_arr - r_arr.mean()) / (r_arr.std() + 1e-8)
         grad = sum(r * n for r, n in zip(r_norm, noises))
-        grad /= (2 * n_pert * sigma)
+        grad /= (2 * n_pert * sigma ** 2)
         self.actor.set_all_params(theta + self.lr_actor * grad)
 
     def _update_critic_es(self, obs_batch, ret_batch, n_pert=10, sigma=0.02):
@@ -601,7 +609,7 @@ class MAPPOMARLTrainer:
         l_arr = np.array(losses)
         l_norm = (l_arr - l_arr.mean()) / (l_arr.std() + 1e-8)
         grad = sum(l * n for l, n in zip(l_norm, noises))
-        grad /= (2 * n_pert * sigma)
+        grad /= (2 * n_pert * sigma ** 2)
         self.critic.set_params(theta + self.lr_critic * grad)
 
     def _update_actor_es_gpu(self, agent_idx, obs_batch, act_batch, adv_batch, old_lp, n_pert=10, sigma=0.02):
@@ -635,7 +643,7 @@ class MAPPOMARLTrainer:
         rewards = torch.minimum(ratio * adv_col, clip_r * adv_col).mean(dim=0)  # (2*n_pert,)
 
         r_norm = (rewards - rewards.mean()) / (rewards.std(unbiased=False) + 1e-8)
-        grad = (r_norm @ noise_t) / (2 * n_pert * sigma)
+        grad = (r_norm @ noise_t) / (2 * n_pert * sigma ** 2)
         self.actor.set_all_params(theta + self.lr_actor * grad.cpu().numpy())
 
     def _update_critic_es_gpu(self, obs_batch, ret_batch, n_pert=10, sigma=0.02):
@@ -669,7 +677,7 @@ class MAPPOMARLTrainer:
         losses = -(diff ** 2).mean(dim=(0, 1))  # (2*n_pert,)
 
         l_norm = (losses - losses.mean()) / (losses.std(unbiased=False) + 1e-8)
-        grad = (l_norm @ noise_t) / (2 * n_pert * sigma)
+        grad = (l_norm @ noise_t) / (2 * n_pert * sigma ** 2)
         self.critic.set_params(theta + self.lr_critic * grad.cpu().numpy())
 
     def _collect_rollout(self, obs):

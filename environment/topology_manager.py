@@ -229,11 +229,15 @@ class TopologyManager:
         """Reset to base topology."""
         self.current_state = self.base_state.copy()
 
-    def random_n1_contingency(self, rng: Optional[np.random.Generator] = None) -> TopologyState:
-        """Apply a random N-1 contingency."""
-        if rng is None:
-            rng = np.random.default_rng()
+    def random_n1_contingency(self, rng: np.random.Generator) -> TopologyState:
+        """Apply a random N-1 contingency.
 
+        `rng` is required (no unseeded default) — this class has no
+        `self.rng` of its own to fall back to, and the repo-wide
+        convention is that every stochastic component is driven by an
+        explicitly-seeded np.random.default_rng(seed) supplied by the
+        caller, not one silently seeded from OS entropy.
+        """
         if self.n_lines > 0 and (self.n_switches == 0 or rng.random() < 0.7):
             # 70% chance of line outage
             line_idx = rng.integers(0, self.n_lines)

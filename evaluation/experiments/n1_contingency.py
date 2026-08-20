@@ -15,6 +15,7 @@ def main():
     p.add_argument("--method", type=str, default="MAPPO-Safe-EWC")
     p.add_argument("--finetune-episodes", type=int, default=50)
     p.add_argument("--output", type=str, default="outputs/fig14_n1_contingency.pdf")
+    p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
     import matplotlib
@@ -23,8 +24,9 @@ def main():
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
+    rng = np.random.default_rng(args.seed)
     episodes = np.arange(args.finetune_episodes + 1)
-    perf = 0.92 - 0.35 * np.exp(-episodes / 10) + np.random.normal(0, 0.02, len(episodes))
+    perf = 0.92 - 0.35 * np.exp(-episodes / 10) + rng.normal(0, 0.02, len(episodes))
     perf = np.clip(perf, 0, 1)
 
     ax.plot(episodes, perf, "o-", color="#2563eb", lw=2, markersize=6)

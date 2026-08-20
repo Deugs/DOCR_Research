@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Import the unified experiment implementation
-from baselines.experiments.unified_exp_fig05 import main as fig05_main
+from baselines.experiments.unified_exp_fig05 import main as fig05_main, ALL_METHODS
 
 
 def main():
@@ -36,9 +36,15 @@ def main():
     )
     p.add_argument(
         "--methods", type=str, nargs="+",
-        default=["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO",
-                 "QMIX", "IQL", "GA-SQP", "HWOA", "HHO", "JAYA", "EEO",
-                 "Traditional"],
+        # Previously hardcoded a separate literal list that included
+        # "IPPO"/"QMIX"/"IQL" — none of which unified_exp_fig05.ALL_METHODS
+        # recognizes, so fig05_main silently dropped them (a
+        # logger.warning + filter) on every default run while this
+        # script's own final print still echoed args.methods unfiltered,
+        # making it look like all 12 methods had actually been
+        # evaluated. Importing ALL_METHODS directly means the default
+        # can't drift out of sync with what's actually supported again.
+        default=list(ALL_METHODS),
         help="List of methods to evaluate"
     )
     p.add_argument(
