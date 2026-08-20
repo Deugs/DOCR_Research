@@ -291,12 +291,11 @@ class CentralizedPPOEnvironment:
         Returns:
             next_obs, reward, done, info
         """
-        # Decode action
-        self.TMS, self.PS = self.actor.decode_action(action_norm, self.ps_min, self.ps_max) if hasattr(self, 'actor') else (self.TMS, self.PS)
-
-        # Actually we need the actor to decode - let me fix this
-        # For now, assume action_norm is already decoded by the trainer
-
+        # self.TMS/self.PS are already decoded and applied by the caller
+        # via set_relay_settings() before step() runs (see
+        # SinglePPOTrainer._collect_rollout: decode_action() +
+        # set_relay_settings() precede env.step()) — action_norm is
+        # accepted here only to match the env.step(action) interface.
         self.dist_net.set_relay_settings(self.TMS, self.PS)
 
         # Compute objective
@@ -378,9 +377,6 @@ class SinglePPOTrainer:
         self.val_buf = np.zeros(rollout_len)
         self.lp_buf = np.zeros(rollout_len)
         self.done_buf = np.zeros(rollout_len, dtype=bool)
-
-        # Attach actor to env for decoding
-        env.actor = self.actor
 
     def _update_actor_es(self, obs_batch, act_batch, adv_batch, old_lp, n_pert=10, sigma=0.02):
         """OpenAI-ES surrogate policy gradient with PPO-clip.

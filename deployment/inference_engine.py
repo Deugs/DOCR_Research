@@ -270,7 +270,7 @@ class ONNXExporter:
 
     def _verify_export(self, path: Path) -> dict:
         """Verify exported model produces finite outputs on a random input."""
-        test_input = np.random.randn(1, *self.input_shape).astype(np.float32)
+        test_input = np.random.default_rng(0).standard_normal((1, *self.input_shape)).astype(np.float32)
         original_output = self.model(test_input)
 
         if hasattr(original_output, "__len__"):
@@ -500,7 +500,7 @@ class InferenceEngine:
             self.initialize()
 
         n_runs = n_runs or self.config.benchmark_runs
-        dummy = np.random.randn(*self.config.input_shape).astype(np.float32)
+        dummy = np.random.default_rng(0).standard_normal(self.config.input_shape).astype(np.float32)
 
         # Warmup (JIT / cache priming)
         for _ in range(self.config.warmup_runs):
