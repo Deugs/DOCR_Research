@@ -2024,18 +2024,34 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             fig54 = bridge.run_evaluation(54, attack="FGSM", epsilon=0.01)
             results["adversarial"] = fig54.raw_data
             
+            is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")
             results = _generate_synthetic_core_G(seed)
+            is_synthetic = True
     else:
         results = _generate_synthetic_core_G(seed)
-    
-    cache.put(config, results)
+        is_synthetic = True
+
+    # config["real_eval"] reflects only whether the bridge IMPORTED
+    # successfully, computed before the try block ran — it stayed True
+    # even when a mid-run exception fell back to fully-fabricated
+    # synthetic data, so the fallback got cached under a config that
+    # still claimed "real_eval": True with no way for a caller to tell.
+    # Never cache a synthetic fallback under the real-eval config: this
+    # keeps load_cache()-based disclosure (run_post_processing.py's
+    # `is_synthetic = data is None`) honest by making the next run
+    # retry real evaluation instead of serving fabricated data forever.
+    if is_synthetic:
+        logger.warning("[Core G] Falling back to SYNTHETIC data — NOT cached, so the next "
+                        "run retries real evaluation instead of serving fabricated data forever.")
+    else:
+        cache.put(config, results)
     logger.info("[Core G] Complete.")
-    
+
     if progress:
         progress.finish_run(run_name, success=True,
-                           details={"stress_types": config["stress_types"], "real_eval": BRIDGE_AVAILABLE})
+                           details={"stress_types": config["stress_types"], "real_eval": not is_synthetic})
     return results
 
 
@@ -2114,18 +2130,29 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             fig25 = bridge.run_evaluation(25, eval_system="30bus")
             results["zero_shot"] = fig25.raw_data
             
+            is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")
             results = _generate_synthetic_core_H(seed)
+            is_synthetic = True
     else:
         results = _generate_synthetic_core_H(seed)
-    
-    cache.put(config, results)
+        is_synthetic = True
+
+    # See Core G's identical comment: never cache a synthetic fallback
+    # under the real-eval config, so the next run retries real
+    # evaluation instead of load_cache()-based disclosure being fooled
+    # into thinking this was a real (non-None) cache hit forever.
+    if is_synthetic:
+        logger.warning("[Core H] Falling back to SYNTHETIC data — NOT cached, so the next "
+                        "run retries real evaluation instead of serving fabricated data forever.")
+    else:
+        cache.put(config, results)
     logger.info("[Core H] Complete.")
-    
+
     if progress:
         progress.finish_run(run_name, success=True,
-                           details={"evaluations": config["evaluations"], "real_eval": BRIDGE_AVAILABLE})
+                           details={"evaluations": config["evaluations"], "real_eval": not is_synthetic})
     return results
 
 
@@ -2217,18 +2244,26 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             fig53 = bridge.run_evaluation(53, quantize_bits=8, prune_ratio=0.3)
             results["compression"] = fig53.raw_data
             
+            is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")
             results = _generate_synthetic_core_I(seed)
+            is_synthetic = True
     else:
         results = _generate_synthetic_core_I(seed)
-    
-    cache.put(config, results)
+        is_synthetic = True
+
+    # See Core G's identical comment.
+    if is_synthetic:
+        logger.warning("[Core I] Falling back to SYNTHETIC data — NOT cached, so the next "
+                        "run retries real evaluation instead of serving fabricated data forever.")
+    else:
+        cache.put(config, results)
     logger.info("[Core I] Complete.")
-    
+
     if progress:
         progress.finish_run(run_name, success=True,
-                           details={"benchmarks": config["benchmarks"], "real_eval": BRIDGE_AVAILABLE})
+                           details={"benchmarks": config["benchmarks"], "real_eval": not is_synthetic})
     return results
 
 
@@ -2324,18 +2359,26 @@ def run_core_J(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             fig47 = bridge.run_evaluation(47)
             results["sympathetic"] = fig47.raw_data
             
+            is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")
             results = _generate_synthetic_core_J(seed)
+            is_synthetic = True
     else:
         results = _generate_synthetic_core_J(seed)
-    
-    cache.put(config, results)
+        is_synthetic = True
+
+    # See Core G's identical comment.
+    if is_synthetic:
+        logger.warning("[Core J] Falling back to SYNTHETIC data — NOT cached, so the next "
+                        "run retries real evaluation instead of serving fabricated data forever.")
+    else:
+        cache.put(config, results)
     logger.info("[Core J] Complete.")
-    
+
     if progress:
         progress.finish_run(run_name, success=True,
-                           details={"analyses": config["analyses"], "real_eval": BRIDGE_AVAILABLE})
+                           details={"analyses": config["analyses"], "real_eval": not is_synthetic})
     return results
 
 
@@ -2393,19 +2436,27 @@ def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgres
                 logger.info(f"\n[Core K] Season: {season} (REAL)")
                 fig58 = bridge.run_evaluation(58, season=season)
                 results[season] = fig58.raw_data
-                
+
+            is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")
             results = _generate_synthetic_core_K(seed)
+            is_synthetic = True
     else:
         results = _generate_synthetic_core_K(seed)
-    
-    cache.put(config, results)
+        is_synthetic = True
+
+    # See Core G's identical comment.
+    if is_synthetic:
+        logger.warning("[Core K] Falling back to SYNTHETIC data — NOT cached, so the next "
+                        "run retries real evaluation instead of serving fabricated data forever.")
+    else:
+        cache.put(config, results)
     logger.info("[Core K] Complete.")
-    
+
     if progress:
         progress.finish_run(run_name, success=True,
-                           details={"seasons": config["seasons"], "real_eval": BRIDGE_AVAILABLE})
+                           details={"seasons": config["seasons"], "real_eval": not is_synthetic})
     return results
 
 

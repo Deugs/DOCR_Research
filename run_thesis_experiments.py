@@ -491,7 +491,22 @@ def timed_phase(phase_num: int, phase_name: str, progress: ExperimentProgress):
 
 @contextmanager
 def timed_figure(fig_num: int, phase: int, progress: ExperimentProgress):
-    """Context manager for timing a single figure generation."""
+    """Context manager for timing a single figure generation.
+
+    Re-raises after recording the failure — every caller
+    (generate_figure_direct, generate_manual_figure) wraps its call in
+    `with timed_figure(...): ...` inside its OWN try/except expecting to
+    catch a failure and return False. Previously this swallowed the
+    exception instead, so that outer except never fired and both
+    callers unconditionally returned True/incremented success counters
+    regardless of whether the figure actually generated — every crash
+    in figure generation (schema mismatches, missing cache fields, bad
+    data) was silently counted as success in phase summaries and the
+    saved JSON report. "Don't re-raise — allow other figures to
+    continue" is still honored: the caller's loop over figure numbers
+    catches this per-figure, so one failure doesn't abort the whole
+    batch — it just needs to be reported accurately as a failure.
+    """
     progress.start_figure(fig_num, phase)
     t0 = time.time()
     try:
@@ -499,8 +514,8 @@ def timed_figure(fig_num: int, phase: int, progress: ExperimentProgress):
         progress.finish_figure(fig_num, success=True)
     except Exception as e:
         progress.finish_figure(fig_num, success=False, error=str(e))
-        # Don't re-raise — allow other figures to continue
         log(colorize(f"Fig {fig_num} error: {e}", Colors.RED), level="error")
+        raise
 
 
 # ──────────────────────────────────────────────────────────────────
