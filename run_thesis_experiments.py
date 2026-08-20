@@ -806,9 +806,15 @@ def run_phase1(progress: ExperimentProgress):
 FIGURE_CORE_MAP = {
     8: "A", 9: "A", 10: "A", 12: "A", 21: "A", 37: "A", 38: "A", 41: "A",
     48: "A", 49: "A", 50: "A", 55: "A", 56: "A", 57: "A",
-    5: "B", 6: "B", 7: "B", 16: "B", 29: "B", 39: "B", 42: "B",
+    5: "B", 6: "B", 7: "B", 16: "B", 29: "B", 42: "B",
     11: "C", 31: "C", 32: "C", 33: "C",
-    39: "D", 40: "E", 15: "F",
+    # Fig 39 (EWC ablation) draws on both Core B (curriculum/EWC
+    # training) and Core D (ablation ON/OFF combinations) — it used to
+    # be listed under both "B" (run_core_B's own "Feeds:" log line) and
+    # "D" (run_core_D's), a duplicate dict key that silently dropped the
+    # first and made --list claim a single-source lineage that isn't
+    # accurate either way.
+    39: "B+D", 40: "E", 15: "F",
     13: "G", 14: "G", 20: "G", 22: "G", 24: "G", 54: "G",
     23: "H", 25: "H", 18: "I", 53: "I",
     43: "J", 44: "J", 45: "J", 46: "J", 47: "J",
@@ -858,7 +864,15 @@ def run_phase2(progress: ExperimentProgress):
         log("Running unified core training via run_core_training.py...")
         log(f"  System: {config.system.name.upper()} | PV: {config.system.pv_penetration:.0%} | Fault: {config.system.fault_type}")
         log(f"  Runs: {config.training.n_runs} | Episodes: {config.training.n_episodes}")
-        log(f"  Features: GNN={'✓' if config.training.use_comm else '✗'} | Safety={'✓' if config.training.use_safety else '✗'} | EWC={'✓' if config.training.use_ewc else '✗'}")
+        # config.training.use_comm/use_safety/use_ewc are NOT read by
+        # `run_core_training.py --all` — each of the 11 core runs (A-K)
+        # hardcodes or sweeps its own GNN/Safe-RL/EWC combination
+        # internally (e.g. Core A is always GNN+Safe+EWC on; Core C/D
+        # sweep ablation combinations; Core E sweeps EWC hyperparameters).
+        # A single "Features: x/y/z" line here would misrepresent an
+        # 11-run ablation/sweep suite as one fixed configuration.
+        log("  Features: each of the 11 core runs (A-K) fixes/sweeps its own "
+            "GNN/Safe-RL/EWC combination — see run_core_training.py per-core docs.")
 
         # Build command with config parameters
         fast_flag = " --fast" if config.experiment.fast_mode else ""
@@ -867,13 +881,22 @@ def run_phase2(progress: ExperimentProgress):
         runs_flag = f" --n-runs {config.training.n_runs}"
         episodes_flag = f" --episodes {config.training.n_episodes}"
         workers_flag = f" --n-workers {config.experiment.n_workers}" if config.experiment.n_workers > 1 else ""
+        fault_type_flag = f" --fault-type {config.system.fault_type}"
 
-        cmd = f"python run_core_training.py --all{fast_flag}{system_flag}{pv_flag}{runs_flag}{episodes_flag}{workers_flag}"
+        cmd = f"python run_core_training.py --all{fast_flag}{system_flag}{pv_flag}{runs_flag}{episodes_flag}{workers_flag}{fault_type_flag}"
 
         run_subprocess(
             cmd,
             "Phase 2: Unified Core Training (all 11 cores A-K)",
-            check=False,
+            # check=False previously meant a hard crash of the core
+            # training subprocess (the source of ALL Core A-K results
+            # that every later phase's figures depend on) was silently
+            # swallowed — the exit code was never even read — and the
+            # pipeline sailed on through post-processing against
+            # nonexistent/stale cached results. check=True lets a real
+            # failure raise and abort the run (run_subprocess still
+            # forgives known-benign placeholder/missing-module errors).
+            check=True,
             timeout=7200 if config.experiment.fast_mode else 86400
         )
 
@@ -908,9 +931,21 @@ def run_phase2(progress: ExperimentProgress):
                 if results_path.exists():
                     log(f"  PV level: {int(pv_level*100)}% — already computed, loading {results_path}")
                     import pickle
-                    with open(results_path, "rb") as f:
-                        all_pv_results[pv_level] = pickle.load(f)
-                    continue
+                    try:
+                        with open(results_path, "rb") as f:
+                            all_pv_results[pv_level] = pickle.load(f)
+                        continue
+                    except Exception as load_err:
+                        # A single truncated/corrupted cache file (e.g.
+                        # from a killed process) previously propagated
+                        # out of this loop entirely — the outer
+                        # try/except around the whole Obj4 section would
+                        # catch it, but that abandons every PV level
+                        # after this one too, not just the bad file.
+                        # Treat it the same as "not cached" instead and
+                        # keep going through the remaining PV levels.
+                        log(f"    Warning: cached {results_path} is corrupted/unreadable "
+                            f"({load_err}); re-running this PV level.")
 
                 log(f"  PV level: {int(pv_level*100)}%")
                 bc = BenchmarkConfig(

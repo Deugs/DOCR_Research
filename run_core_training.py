@@ -253,13 +253,14 @@ EPISODES_FAST = 500
 EPISODES_HPARAM = 2000
 EPISODES_HPARAM_FAST = 500
 SEED = 42
+FAULT_TYPE = "3ph"
 
 # Config object — set in main()
 CONFIG: Optional[DOCRConfig] = None
 
 def apply_config(config: DOCRConfig):
     """Apply DOCRConfig to global runtime parameters."""
-    global FAST_MODE, USE_SYNTHETIC, SEED, N_WORKERS_DEFAULT
+    global FAST_MODE, USE_SYNTHETIC, SEED, FAULT_TYPE, N_WORKERS_DEFAULT
     global N_RUNS_DEFAULT, N_RUNS_FAST, N_RUNS_BASELINE, N_RUNS_BASELINE_FAST
     global N_RUNS_HPARAM, N_RUNS_HPARAM_FAST
     global EPISODES_DEFAULT, EPISODES_FAST, EPISODES_HPARAM, EPISODES_HPARAM_FAST
@@ -267,6 +268,7 @@ def apply_config(config: DOCRConfig):
     FAST_MODE = config.experiment.fast_mode
     USE_SYNTHETIC = config.experiment.use_synthetic
     SEED = config.training.seed
+    FAULT_TYPE = config.system.fault_type
     N_WORKERS_DEFAULT = config.experiment.n_workers
     
     # Training parameters
@@ -578,7 +580,7 @@ def _train_and_collect(trainer, env, n_steps, rng, desc="train"):
 
         TMS, PS = env.get_state()
         try:
-            of_val, _, _ = objective_function(net, TMS, PS, fault_type="3ph")
+            of_val, _, _ = objective_function(net, TMS, PS, fault_type=FAULT_TYPE)
             if of_val < best_of:
                 best_of = of_val
                 best_tms, best_ps = TMS.copy(), PS.copy()
@@ -615,6 +617,7 @@ def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None,
         "n_runs": n_runs,
         "n_episodes": n_episodes,
         "seed": seed,
+        "fault_type": FAULT_TYPE,
         # Bumped: Safe RL / EWC were previously dead no-op attribute
         # guards (trainer.use_safety/use_ewc are not real attributes on
         # MAPPOMARLTrainer), so every prior cache entry under this name
@@ -677,7 +680,7 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
 
     net = get_8bus()
     # curriculum_stage=3 → 60% PV (active sweep max; was hardcoded to 5=100%)
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=3)
+    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=3)
 
     n_agents = n_agents or env.n_agents
     n_pairs = n_pairs or (env.net.n_pairs if hasattr(env.net, 'n_pairs') else 20)
@@ -908,6 +911,7 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
         "episodes_per_task": episodes_per_task,
         "n_runs": n_runs,
         "seed": seed,
+        "fault_type": FAULT_TYPE,
         # Bumped: Safe RL was previously a dead post-hoc attribute set;
         # now genuinely wraps the env (see _run_curriculum_single).
         "real_safety": True,
@@ -972,7 +976,7 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
     from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
     net = get_8bus()
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=0)
+    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=0)
     # Safe RL was previously a dead post-hoc attribute set (use_safety is
     # not a real MAPPOMARLTrainer attribute) — it's a real env wrapper and
     # must wrap env before the trainer is constructed. curriculum_stage
@@ -1138,6 +1142,7 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
         "n_runs": n_runs,
         "n_episodes": n_episodes,
         "seed": seed,
+        "fault_type": FAULT_TYPE,
         # Bumped: "Safe"/"EWC" methods previously trained identically to
         # plain "MAPPO" (dead post-hoc attribute guards). Now genuinely
         # differ — see _run_baseline_single.
@@ -1198,7 +1203,7 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int):
 
     net = get_8bus()
     # curriculum_stage=3 → 60% PV (active sweep max)
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=3)
+    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=3)
     if method == "Traditional":
         return _evaluate_traditional(env, net, n_episodes, seed)
 
@@ -1352,6 +1357,7 @@ def run_core_D(n_runs: int = None, n_episodes: int = None, seed: int = None,
         "n_runs": n_runs,
         "n_episodes": n_episodes,
         "seed": seed,
+        "fault_type": FAULT_TYPE,
         # Bumped: "Safe"/"EWC" arms previously trained identically to
         # "MAPPO+GNN" (dead post-hoc attribute guards, unused ewc_wrapper).
         # Now genuinely differ — see _run_ablation_single.
@@ -1415,7 +1421,7 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
 
     net = get_8bus()
     # curriculum_stage=3 → 60% PV; use 0 if curriculum training is enabled
-    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph",
+    env = DynamicDOCREnv(net, use_pandapower=False, fault_type=FAULT_TYPE,
                           curriculum_stage=0 if use_curr else 3, seed=seed)
     # "Safe" was previously a dead post-hoc attribute set (use_safety is
     # not a real MAPPOMARLTrainer attribute) — it's a real env wrapper.
@@ -1601,6 +1607,7 @@ def run_core_E(n_seeds: int = None, n_steps: int = None, seed: int = None,
         "n_seeds": n_seeds,
         "n_steps": n_steps,
         "seed": seed,
+        "fault_type": FAULT_TYPE,
         # Bumped: lambda_ewc/alpha_lambda were previously received but
         # never used at all (CTI was also hardcoded to 0). Now genuinely
         # wired — see _run_hparam_single.
@@ -1662,7 +1669,7 @@ def _run_hparam_single(lambda_ewc, alpha_lambda, hidden_dim, seed, n_steps):
     from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
     net = get_8bus()
-    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=0, seed=seed)
+    env = DynamicDOCREnv(net, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=0, seed=seed)
     # alpha_lambda is this grid's swept Lagrangian dual-ascent learning
     # rate — genuinely modulates how fast the constraint penalty adapts.
     # use_pid=False (unlike Core A-D's SafeRLConfig) is required here:
@@ -1773,7 +1780,7 @@ def run_core_F(systems: List[str] = None, seed: int = None,
             "3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"
         ]
         
-    config = {"name": "core_F_scalability", "systems": systems, "seed": seed}
+    config = {"name": "core_F_scalability", "systems": systems, "seed": seed, "fault_type": FAULT_TYPE}
     cached = cache.get(config)
     if cached is not None:
         logger.info("[Core F] Using cached results")
@@ -1832,7 +1839,7 @@ def _run_scalability_single(sys_name: str, seed: int):
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
     
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=3)
+    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=3)
     trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
     rng = np.random.default_rng(seed)
 
@@ -1902,6 +1909,7 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         "name": "core_G_robustness",
         "stress_types": ["communication", "byzantine", "bandwidth", "sensor", "adversarial"],
         "seed": seed,
+        "fault_type": FAULT_TYPE,
         "real_eval": BRIDGE_AVAILABLE,
         # Bumped: core_eval_bridge.py's base policy previously trained as
         # plain MAPPO+GNN despite being labeled MAPPO-Safe-EWC (dead
@@ -2009,6 +2017,7 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         "name": "core_H_transfer",
         "evaluations": ["unseen_faults", "zero_shot_8to30"],
         "seed": seed,
+        "fault_type": FAULT_TYPE,
         "real_eval": BRIDGE_AVAILABLE,
         "real_safety_ewc": True,
     }
@@ -2081,6 +2090,7 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         "name": "core_I_deployment",
         "benchmarks": ["inference_latency", "model_compression"],
         "seed": seed,
+        "fault_type": FAULT_TYPE,
         "real_eval": BRIDGE_AVAILABLE,
         "real_safety_ewc": True,
         # Bumped: the latency loop previously timed env.reset() + an
@@ -2117,7 +2127,7 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             from network.network_data import get_8bus
             from marl.marl_env import DynamicDOCREnv
             net = get_8bus()
-            env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph")
+            env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE)
             # Reconstruct the ACTUAL trained actor (and its GNN comm
             # module, if trained with use_comm=True) rather than timing
             # env.reset() + an unseeded np.random.randn() call ("simulate
@@ -2191,6 +2201,7 @@ def run_core_J(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         "name": "core_J_protection",
         "analyses": ["coordination", "fault_contribution", "daily_profile", "relay_curves", "sympathetic_tripping"],
         "seed": seed,
+        "fault_type": FAULT_TYPE,
         "real_eval": BRIDGE_AVAILABLE,
         "real_safety_ewc": True,
         # Bumped: coordination-diagram jitter previously drew from
@@ -2291,6 +2302,7 @@ def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         "name": "core_K_seasonal",
         "seasons": ["spring", "summer", "autumn", "winter"],
         "seed": seed,
+        "fault_type": FAULT_TYPE,
         "real_eval": BRIDGE_AVAILABLE,
         "real_safety_ewc": True,
     }
