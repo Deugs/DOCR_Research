@@ -383,7 +383,16 @@ class SinglePPOTrainer:
         env.actor = self.actor
 
     def _update_actor_es(self, obs_batch, act_batch, adv_batch, old_lp, n_pert=10, sigma=0.02):
-        """OpenAI-ES surrogate policy gradient with PPO-clip."""
+        """OpenAI-ES surrogate policy gradient with PPO-clip.
+
+        `eps` below is already sigma-scaled (~N(0, sigma^2)), not unit
+        noise, so the standard antithetic ES gradient estimate
+        (1/(2*n*sigma)) * sum[(r+ - r-) * unit_eps_i] normalizes to
+        sigma**2 in the denominator here, not sigma — dividing by plain
+        sigma left the gradient magnitude inflated by 1/sigma (50x at
+        the default sigma=0.02). marl/comm_graph.py's ES update already
+        uses the correct sigma**2 form; this now matches it.
+        """
         theta = self.actor.get_all_params()
         noises, rewards = [], []
 
@@ -401,7 +410,7 @@ class SinglePPOTrainer:
         r_arr = np.array(rewards)
         r_norm = (r_arr - r_arr.mean()) / (r_arr.std() + 1e-8)
         grad = sum(r * n for r, n in zip(r_norm, noises))
-        grad /= (2 * n_pert * sigma)
+        grad /= (2 * n_pert * sigma ** 2)
         self.actor.set_all_params(theta + self.lr_actor * grad)
 
     def _update_critic(self, obs_batch, ret_batch, n_pert=10, sigma=0.02):
@@ -421,7 +430,7 @@ class SinglePPOTrainer:
         l_arr = np.array(losses)
         l_norm = (l_arr - l_arr.mean()) / (l_arr.std() + 1e-8)
         grad = sum(l * n for l, n in zip(l_norm, noises))
-        grad /= (2 * n_pert * sigma)
+        grad /= (2 * n_pert * sigma ** 2)
         self.critic.set_params(theta + self.lr_critic * grad)
 
     def _collect_rollout(self, obs):

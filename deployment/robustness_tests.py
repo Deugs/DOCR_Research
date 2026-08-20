@@ -122,8 +122,17 @@ class CommunicationDelaySimulator:
             delay = self._rng.normal(cfg.mean_delay_ms, cfg.std_delay_ms)
             delay = max(0.0, min(delay, cfg.max_delay_ms))
         elif cfg.distribution == "lognormal":
-            mu = np.log(cfg.mean_delay_ms)
-            sigma = cfg.std_delay_ms / cfg.mean_delay_ms
+            # Exact moment matching for a lognormal: if X ~
+            # Lognormal(mu, sigma), E[X] = exp(mu + sigma^2/2) and
+            # Var[X] = (exp(sigma^2) - 1) * exp(2*mu + sigma^2). Setting
+            # mu = log(mean_delay_ms) directly (the previous code) makes
+            # E[X] = mean_delay_ms * exp(sigma^2/2) — a systematic
+            # upward bias, worse the larger std_delay_ms is relative to
+            # the mean. Solving both equations for the desired
+            # (mean_delay_ms, std_delay_ms) gives the below.
+            cv_sq = (cfg.std_delay_ms / cfg.mean_delay_ms) ** 2
+            sigma = np.sqrt(np.log(1.0 + cv_sq))
+            mu = np.log(cfg.mean_delay_ms) - sigma ** 2 / 2.0
             delay = self._rng.lognormal(mu, sigma)
             delay = min(delay, cfg.max_delay_ms)
         else:
