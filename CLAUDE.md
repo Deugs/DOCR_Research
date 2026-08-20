@@ -46,7 +46,7 @@ DOCR_Research/
 │   │                                   have since been re-run — populated with real
 │   │                                   results again, see EXPERIMENT_GUIDE §2.2.1)
 │   ├── figures/, logs/, reports/    ← generated output
-└── tests/                           ← pytest suite (138 tests as of 2026-08-08)
+└── tests/                           ← pytest suite (144 tests as of 2026-08-20)
 ```
 
 ---
