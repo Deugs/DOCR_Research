@@ -33,6 +33,7 @@ import matplotlib.pyplot as plt
 from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
 from network.relay_physics import check_constraints
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
@@ -66,13 +67,21 @@ def run_method_with_step_logging(method_name: str, config: dict, net,
         ofs = np.full_like(steps, of_final, dtype=float)
         return steps, ofs
 
-    # MARL methods
+    # MARL methods. Safe RL is a real env wrapper and must be applied
+    # BEFORE the trainer is constructed — `trainer.use_safety = True` was a
+    # dead attribute set (MAPPOMARLTrainer never defines `use_safety`), so
+    # every "Safe" method silently ran unconstrained.
+    if config.get("use_safe"):
+        env = create_safe_rl_env(env, SafeRLConfig(
+            project_actions=True, enforce_cti=True,
+            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+            use_pid=True, adaptive_rho=True,
+        ))
+
     trainer = MAPPOMARLTrainer(env, use_comm=config.get("use_comm", False),
                                 hidden_actor=64, hidden_critic=128, seed=seed)
 
-    # Configure safety and EWC
-    if config.get("use_safe") and hasattr(trainer, 'use_safety'):
-        trainer.use_safety = True
+    # Configure EWC
     if config.get("use_ewc") and hasattr(trainer, 'use_ewc'):
         trainer.use_ewc = True
 

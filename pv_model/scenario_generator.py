@@ -99,10 +99,16 @@ class ScenarioGenerator:
     - Topology changes (N-1 contingencies)
     """
 
-    def __init__(self, seed: int = 42):
+    def __init__(self, seed: int = 42, n_lines: int = 20):
         self.rng = np.random.default_rng(seed)
         self.cloud_model = MarkovCloudModel(seed)
         self.pv_levels = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        # Actual network line count for line-outage sampling below. Defaults
+        # to 20 (the previous hardcoded value) when the caller doesn't know
+        # the real network yet; DynamicNetwork passes its real topology's
+        # line count (max(1, n_lines)) — see the matching pattern in
+        # DynamicNetwork.get_curriculum_batch().
+        self.n_lines = max(1, n_lines)
 
     def generate_scenarios(
         self,
@@ -120,20 +126,35 @@ class ScenarioGenerator:
         scenarios = {"train": [], "val": [], "test": []}
 
         for split, n_scenarios in [("train", n_train), ("val", n_val), ("test", n_test)]:
-            for _ in range(n_scenarios):
-                scenario = self._generate_single_scenario(split)
+            for idx in range(n_scenarios):
+                scenario = self._generate_single_scenario(split, idx)
                 scenarios[split].append(scenario)
 
         return scenarios
 
-    def _generate_single_scenario(self, split: str) -> Dict:
-        """Generate one random scenario."""
-        # PV penetration level (stratified sampling)
-        if split == "train":
+    def _generate_single_scenario(self, split: str, index: Optional[int] = None) -> Dict:
+        """Generate one scenario.
+
+        Parameters:
+            split: "train", "val", or "test".
+            index: Sample index within the split. When given for a
+                val/test split, PV level is assigned by cycling
+                deterministically through ``self.pv_levels`` (real
+                stratification, guaranteeing every level is represented
+                roughly equally) instead of i.i.d. random sampling, which
+                the previous implementation claimed to do but did not
+                (train and val/test used the identical `rng.choice` call).
+                When index is omitted (e.g. ad-hoc calls), falls back to
+                random sampling for that scenario.
+        """
+        # PV penetration level.
+        if split == "train" or index is None:
             pv_level = self.rng.choice(self.pv_levels)
         else:
-            # Ensure all levels represented in val/test
-            pv_level = self.rng.choice(self.pv_levels)
+            # Real stratified sampling: cycle through pv_levels by index so
+            # all levels are genuinely represented in val/test, rather than
+            # relying on random chance.
+            pv_level = self.pv_levels[index % len(self.pv_levels)]
 
         # Daily profile
         profile = self.cloud_model.generate_daily_profile()
@@ -149,7 +170,7 @@ class ScenarioGenerator:
         if self.rng.random() < 0.1:
             n_outages = self.rng.integers(1, 3)
             topology["line_outages"] = [
-                int(self.rng.integers(0, 20)) for _ in range(n_outages)
+                int(self.rng.integers(0, self.n_lines)) for _ in range(n_outages)
             ]
 
         # Time of day for fault (affects irradiance and load)
@@ -188,7 +209,7 @@ class ScenarioGenerator:
                 # Add topology changes for later stages
                 if stage_idx >= 4 and self.rng.random() < 0.3:
                     scenario["topology"]["line_outages"] = [
-                        int(self.rng.integers(0, 20))
+                        int(self.rng.integers(0, self.n_lines))
                     ]
 
                 curriculum.append(scenario)

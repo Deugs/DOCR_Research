@@ -414,9 +414,20 @@ class ContinualMAPPOTrainer:
         # EWC components
         self.fisher_estimator = FisherInformationEstimator(self.ewc_config)
         self.ewc_regularizer = EWCRegularizer(self.ewc_config)
+        # Feeds EWCRegularizer.adapt_lambda() with a real task-similarity
+        # score when self.ewc_config.adaptive_lambda is set (see
+        # on_task_transition) — previously constructed but never wired to
+        # any caller, so adapt_lambda() had zero callers despite
+        # adaptive_lambda defaulting to True.
+        self.task_similarity_estimator = TaskSimilarityEstimator()
 
         # Task tracking
         self.current_task_conditions: Dict = {}
+        # Conditions of the task being left at the most recent transition —
+        # captured in detect_task_change() before current_task_conditions
+        # is overwritten with the new task's conditions, so
+        # on_task_transition() can still compute old-vs-new similarity.
+        self._prev_task_conditions: Dict = {}
         self.task_history: List[Dict] = []
         self.task_transitions: List[Tuple[str, str]] = []
 
@@ -465,6 +476,9 @@ class ContinualMAPPOTrainer:
             # Record transition
             old_task = self._task_name_from_conditions(self.current_task_conditions)
             self.task_transitions.append((old_task, task_name))
+            # Preserve the outgoing task's conditions for on_task_transition()
+            # to compute similarity against, before we overwrite them below.
+            self._prev_task_conditions = self.current_task_conditions.copy()
             self.current_task_conditions = env_conditions.copy()
 
         return is_new_task, task_name
@@ -494,6 +508,20 @@ class ContinualMAPPOTrainer:
         # Estimate Fisher Information for old task (async or batched)
         # In practice, this would use collected trajectories
         # For now, we'll estimate during training
+
+        # Adaptive λ: scale the EWC penalty by how similar the new task is
+        # to the one just finished (higher similarity → lower λ). Skipped
+        # when there is no real outgoing task to compare against (e.g. the
+        # very first task transition, where _prev_task_conditions is still
+        # empty). New-task params aren't known yet at this point, so both
+        # sides of the comparison use current_params — similarity is then
+        # driven by the env-condition component of the task embedding.
+        if self.ewc_config.adaptive_lambda and self._prev_task_conditions:
+            similarity = self.task_similarity_estimator.estimate_similarity(
+                self._prev_task_conditions, current_params,
+                self.current_task_conditions, current_params,
+            )
+            self.ewc_regularizer.adapt_lambda(similarity)
 
         # Log transition
         self.task_history.append({

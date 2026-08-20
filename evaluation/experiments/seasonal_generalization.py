@@ -24,8 +24,12 @@ def main():
     fig, ax = plt.subplots(figsize=(10, 6))
 
     seasons = args.seasons or ["spring", "summer", "autumn", "winter"]
-    performance = [0.90, 0.88, 0.91, 0.85]
-    colors = ["#39d353", "#f59e0b", "#a371f7", "#2563eb"]
+    # Keyed by season name so an arbitrary --seasons list (any length/order)
+    # never runs off the end of a fixed-length literal.
+    PERF_BY_SEASON = {"spring": 0.90, "summer": 0.88, "autumn": 0.91, "winter": 0.85}
+    COLOR_BY_SEASON = {"spring": "#39d353", "summer": "#f59e0b", "autumn": "#a371f7", "winter": "#2563eb"}
+    performance = [PERF_BY_SEASON.get(s, 0.85) for s in seasons]
+    colors = [COLOR_BY_SEASON.get(s, "#8b949e") for s in seasons]
 
     bars = ax.bar(seasons, performance, color=colors, edgecolor="white", width=0.6)
     ax.axhline(y=0.92, color="green", linestyle="--", alpha=0.7, label="Training season (summer)")

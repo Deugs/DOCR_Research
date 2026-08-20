@@ -504,6 +504,12 @@ class CoreEvalBridge:
             fault_impedance_ohm=kwargs.get("impedance", 1.0),
             evolving_fault=kwargs.get("evolving", False),
             unseen_fault_eval=True,
+            # The env's actual generalization axis (see _eval_unseen_faults'
+            # docstring) — defaults to None, which falls back to
+            # config.fault_type (i.e. no distribution shift at all) unless
+            # a genuinely different, unseen-at-training fault type is
+            # requested here.
+            unseen_fault_type=kwargs.get("unseen_fault_type"),
         )
 
     def _build_config_fig24(self, **kwargs) -> TrainingConfig:
@@ -511,8 +517,9 @@ class CoreEvalBridge:
         return TrainingConfig(
             method="MAPPO-Safe-EWC", system=self.system, pv_level=self.pv_level,
             fault_type=self.fault_type,
-            sensor_noise_std=kwargs.get("noise_std", 0.05),
-            missing_sensor_rate=kwargs.get("missing_rate", 0.1),
+            sensor_noise_std=kwargs.get("noise_std", 0.0),
+            missing_sensor_rate=kwargs.get("missing_rate", 0.0),
+            sensor_bias=kwargs.get("bias", 0.0),
         )
 
     def _build_config_fig25(self, **kwargs) -> TrainingConfig:

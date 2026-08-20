@@ -136,19 +136,48 @@ def nemenyi_test(
     """
     k = n_algorithms
     N = n_datasets
-    
-    # Critical value q_alpha for Studentized range distribution
-    # Approximate values for alpha = 0.05 and 0.10
-    q_alpha_table = {
-        2: 1.960, 3: 2.343, 4: 2.569, 5: 2.728, 6: 2.850,
-        7: 2.949, 8: 3.031, 9: 3.102, 10: 3.164
+
+    # Critical values q_alpha for the Studentized range distribution used by
+    # the Nemenyi test, from Demsar (2006) "Statistical Comparisons of
+    # Classifiers over Multiple Data Sets", Table 5(b). Keyed by alpha so
+    # the `alpha` argument actually selects a table instead of always using
+    # the alpha=0.05 values regardless of what was requested.
+    Q_ALPHA_TABLES = {
+        0.05: {
+            2: 1.960, 3: 2.343, 4: 2.569, 5: 2.728, 6: 2.850,
+            7: 2.949, 8: 3.031, 9: 3.102, 10: 3.164,
+        },
+        0.10: {
+            2: 1.645, 3: 2.052, 4: 2.291, 5: 2.459, 6: 2.589,
+            7: 2.693, 8: 2.780, 9: 2.855, 10: 2.920,
+        },
     }
-    
+
+    # Match the requested alpha to a table, tolerant of float noise
+    # (e.g. 0.1 vs 0.10) but otherwise exact -- an alpha with no tabulated
+    # critical values must fail loudly rather than silently fall back to
+    # the alpha=0.05 table.
+    table_alpha = next((a for a in Q_ALPHA_TABLES if np.isclose(a, alpha)), None)
+    if table_alpha is None:
+        raise ValueError(
+            f"nemenyi_test: no q_alpha critical-value table for alpha={alpha}. "
+            f"Supported values: {sorted(Q_ALPHA_TABLES.keys())}. Add a table "
+            f"(Demsar 2006 Table 5(b) or equivalent) before using this alpha."
+        )
+    q_alpha_table = Q_ALPHA_TABLES[table_alpha]
+
     if k in q_alpha_table:
         q_alpha = q_alpha_table[k]
     else:
-        # Approximation for k > 10
-        q_alpha = 2.0 + 0.3 * np.log(k)
+        # k > 10: no tabulated value at this alpha. Extrapolate log-linearly
+        # from the table's last two points (the studentized range grows
+        # roughly linearly in ln(k) in this regime) rather than using a
+        # single hardcoded slope that was only ever fit for alpha=0.05.
+        ks = sorted(q_alpha_table.keys())
+        k1, k2 = ks[-2], ks[-1]
+        q1, q2 = q_alpha_table[k1], q_alpha_table[k2]
+        slope = (q2 - q1) / (np.log(k2) - np.log(k1))
+        q_alpha = q2 + slope * (np.log(k) - np.log(k2))
     
     # Critical Difference
     CD = q_alpha * np.sqrt(k * (k + 1) / (6.0 * N))

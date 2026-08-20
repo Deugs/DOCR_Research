@@ -36,6 +36,25 @@ def test_network_data():
         print(f"  {net.name}: {net.n_relays} relays, {net.n_pairs} pairs, {len(net.dg_buses)} DG buses")
 
 
+def test_get_14bus_full_topology():
+    """Round-5 regression: get_14bus() force-overrode n_relays to 20 after
+    already computing it correctly as 2*n_lines=40, so every
+    "if r_from/r_to < n_relays" guard in the relay-array construction
+    silently dropped lines 10-19 (half the 20-line topology) from
+    Iload_max, If_min, relay_bus, and every P/B pair — those relays kept
+    their zero-initialized defaults instead of real per-line values."""
+    net = get_14bus()
+    assert net.n_relays == 40, f"expected 40 relays (2 per line x 20 lines), got {net.n_relays}"
+    assert net.n_pairs > 0
+    assert len(net.relay_bus) == net.n_relays
+    # No relay should be left at its zero-initialized default — every
+    # relay must have a real (non-zero) load rating and fault-current
+    # estimate from its own line.
+    assert np.all(net.Iload_max > 0), "some relays have zero Iload_max (dropped by the n_relays bug)"
+    assert np.all(net.If_min > 0), "some relays have zero If_min (dropped by the n_relays bug)"
+    print(f"  14bus: {net.n_relays} relays, {net.n_pairs} pairs, all relays populated")
+
+
 def test_relay_bus_mapping():
     """get_relay_bus() must return the authoritative relay_bus array
     (captured from each line's from/to bus at construction time) for
@@ -114,11 +133,31 @@ def test_idmt_relay():
     t = idmt_time(If=2000, PS=500, TMS=0.5)
     assert t > 0
     assert t < 10.0
-    
+
     # No trip if If <= PS
     t_no_trip = idmt_time(If=400, PS=500, TMS=0.5)
     assert t_no_trip >= 10.0 - 1e-6
     print(f"  IDMT: t={t:.4f}s (If=2000, PS=500, TMS=0.5)")
+
+
+def test_idmt_relay_enforces_floor_and_ceiling():
+    """Round-5 regression: idmt_time()'s scalar path previously enforced
+    no TOP_MIN/TOP_MAX clamp at all (only its unused vectorized twin
+    idmt_time_vec() did), so legal boundary TMS/PS values could compute a
+    physically-unrealistic sub-floor operating time — e.g. a large
+    fault-current ratio at TMS_MIN drove t well below TOP_MIN=0.05s."""
+    from network.relay_physics import TOP_MIN, TOP_MAX, TMS_MIN, TMS_MAX
+
+    # Large ratio + minimum TMS: unclamped formula gives ~0.007s, far
+    # below the standard's floor.
+    t_low = idmt_time(If=100000, PS=10, TMS=TMS_MIN)
+    assert t_low == TOP_MIN, f"expected floor {TOP_MIN}, got {t_low}"
+
+    # Ratio just above 1.0 + maximum TMS: unclamped formula gives
+    # thousands of seconds, far above the standard's ceiling.
+    t_high = idmt_time(If=501, PS=500, TMS=TMS_MAX)
+    assert t_high == TOP_MAX, f"expected ceiling {TOP_MAX}, got {t_high}"
+    print(f"  IDMT floor/ceiling: t_low={t_low}, t_high={t_high}")
 
 
 def test_objective_function():
@@ -161,11 +200,50 @@ def test_scenario_generator():
     scenarios = gen.generate_scenarios(n_train=10, n_val=2, n_test=2)
     assert len(scenarios["train"]) == 10
     assert len(scenarios["val"]) == 2
-    
+
     # Check PV levels
     pv_levels = [s["pv_level"] for s in scenarios["train"]]
     assert all(0 <= p <= 1.0 for p in pv_levels)
     print(f"  Generated {len(scenarios['train'])} train, {len(scenarios['val'])} val scenarios")
+
+
+def test_pv_inverter_trip_latches():
+    """Round-5 regression: calculate_output() cleared fault_active on trip
+    but never latched a "stayed tripped" state. The very next call (with
+    fault_triggered still True) re-entered `if fault_triggered and not
+    self.fault_active:`, restarting the ride-through clock and resuming
+    real fault-current injection instead of remaining latched at zero
+    output for the rest of the fault."""
+    from pv_model.pv_inverter import PVRideThroughCurve
+
+    inv = PVInverter(
+        rated_power_mw=1.0, rated_voltage_kv=0.4,
+        frt_curve=PVRideThroughCurve(v_low=0.3, v_high=1.1, t_ride=0.1),
+    )
+    # Fault starts: within ride-through window, still injecting current.
+    _, _, i0 = inv.calculate_output(irradiance=800, temperature=25,
+                                     v_terminal_pu=0.1, fault_triggered=True, time=0.0)
+    assert i0 > 0
+    assert not inv.tripped
+
+    # Ride-through exceeded with voltage still below v_low: trips.
+    p1, q1, i1 = inv.calculate_output(irradiance=800, temperature=25,
+                                       v_terminal_pu=0.1, fault_triggered=True, time=0.2)
+    assert (p1, q1, i1) == (0.0, 0.0, 0.0)
+    assert inv.tripped
+
+    # Fault condition still present on the NEXT call: must stay latched
+    # at zero output, not re-inject fault current.
+    p2, q2, i2 = inv.calculate_output(irradiance=800, temperature=25,
+                                       v_terminal_pu=0.1, fault_triggered=True, time=0.3)
+    assert (p2, q2, i2) == (0.0, 0.0, 0.0), "inverter re-armed instead of staying latched tripped"
+    assert inv.tripped
+
+    # Fault genuinely clears: latch releases into post-fault recovery.
+    inv.calculate_output(irradiance=800, temperature=25,
+                          v_terminal_pu=1.0, fault_triggered=False, time=0.5)
+    assert not inv.tripped
+    print("  PV trip latch: stays tripped while fault persists, clears once fault_triggered=False")
 
 
 def test_topology_manager():
@@ -245,12 +323,15 @@ def run_all_tests():
     
     tests = [
         test_network_data,
+        test_get_14bus_full_topology,
         test_relay_bus_mapping,
         test_relay_bus_mapping_fallback_paths,
         test_ensure_feasible_ps_bounds,
         test_idmt_relay,
+        test_idmt_relay_enforces_floor_and_ceiling,
         test_objective_function,
         test_pv_inverter,
+        test_pv_inverter_trip_latches,
         test_scenario_generator,
         test_topology_manager,
         test_relay_sensor,

@@ -100,7 +100,8 @@ class DistributionNetwork:
                 self.pp_available = self.pp_net is not None and hasattr(self.pp_net, 'pp_net')
                 if self.pp_available:
                     self.pp_available = self.pp_net.pp_net is not None
-            except Exception:
+            except Exception as e:
+                print(f"Warning: pandapower network build failed ({e}); falling back to flat 1.0pu voltages.")
                 self.pp_available = False
                 self.pp_net = None
         else:
@@ -134,7 +135,9 @@ class DistributionNetwork:
 
         # ── Scenario generator ────────────────────────────────────────────────
         # Was hardcoded to seed=42, ignoring the caller-supplied seed entirely.
-        self.scenario_gen = ScenarioGenerator(seed=sensor_seed)
+        # n_lines is passed through so line-outage sampling reflects this
+        # network's actual line count instead of a hardcoded range(0, 20).
+        self.scenario_gen = ScenarioGenerator(seed=sensor_seed, n_lines=n_lines)
 
         # ── Sensor array ──────────────────────────────────────────────────────
         self.sensors = SensorArray(net_data.n_relays, seed=sensor_seed)

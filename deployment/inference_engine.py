@@ -137,7 +137,16 @@ class ONNXExporter:
         Parameters
         ----------
         model : Callable
-            Callable that takes a NumPy array and returns a NumPy array.
+            The trained actor to export. Expected to be either:
+            - a ``SharedGaussianActor`` (marl/marl_agents.py) instance,
+              exposing ``.net`` (an ``MLP`` with real ``W1/b1/W2/b2/W3/b3``
+              weight matrices) and a ``get_mean(obs)`` method (which applies
+              a final ``tanh`` on top of the raw MLP output), or
+            - a raw ``MLP`` instance itself (``W1/b1/W2/b2/W3/b3`` directly,
+              no final ``tanh``), or
+            - any other object exposing ``W1/b1/W2/b2/W3/b3`` attributes.
+            The object must also be callable, or expose ``get_mean``/
+            ``forward``, so a forward pass can be run for verification.
         input_shape : tuple
             Expected input shape (excluding batch dimension).
         """
@@ -149,6 +158,67 @@ class ONNXExporter:
             "input_shape": input_shape,
             "output_description": "[delta_TMS, delta_PS] per relay",
         }
+
+    # ── Real-weight introspection ───────────────────────────────────────────
+
+    def _get_architecture(self) -> dict:
+        """Extract the real trained weight matrices from ``self.model``.
+
+        Returns a dict with keys ``W1, b1, W2, b2, W3, b3, apply_tanh`` —
+        the actual learned parameters, never fabricated/random ones. Raises
+        ``TypeError`` if ``self.model`` doesn't expose a recognizable
+        network structure (a ``SharedGaussianActor``-like wrapper with a
+        ``.net``, or a raw MLP-like object with ``W1..b3`` directly).
+        """
+        model = self.model
+        # A SharedGaussianActor-style wrapper stores the real MLP on `.net`
+        # and applies tanh() on top of the raw output in get_mean().
+        if hasattr(model, "net") and all(
+            hasattr(model.net, attr) for attr in ("W1", "b1", "W2", "b2", "W3", "b3")
+        ):
+            net = model.net
+            apply_tanh = hasattr(model, "get_mean")
+        elif all(hasattr(model, attr) for attr in ("W1", "b1", "W2", "b2", "W3", "b3")):
+            # A raw MLP (or MLP-compatible) object passed directly.
+            net = model
+            apply_tanh = False
+        else:
+            raise TypeError(
+                "ONNXExporter requires a model exposing real weight matrices "
+                "(a SharedGaussianActor with a `.net` MLP, or an MLP-like "
+                "object with W1/b1/W2/b2/W3/b3 attributes directly). Got "
+                f"{type(model)!r} which has neither."
+            )
+
+        return {
+            "W1": np.asarray(net.W1, dtype=np.float32),
+            "b1": np.asarray(net.b1, dtype=np.float32),
+            "W2": np.asarray(net.W2, dtype=np.float32),
+            "b2": np.asarray(net.b2, dtype=np.float32),
+            "W3": np.asarray(net.W3, dtype=np.float32),
+            "b3": np.asarray(net.b3, dtype=np.float32),
+            "apply_tanh": apply_tanh,
+        }
+
+    def _forward(self, x: np.ndarray) -> np.ndarray:
+        """Run a real forward pass through ``self.model`` for a single input.
+
+        Prefers calling the model directly (it may be a plain callable);
+        falls back to ``get_mean``/``forward`` for objects that aren't
+        directly callable (e.g. a bare ``SharedGaussianActor``, which has
+        no ``__call__``).
+        """
+        model = self.model
+        if callable(model):
+            return model(x)
+        if hasattr(model, "get_mean"):
+            return model.get_mean(x)
+        if hasattr(model, "forward"):
+            return model.forward(x)
+        raise TypeError(
+            f"Model {type(model)!r} is not callable and has neither "
+            "`get_mean` nor `forward`; cannot run a verification pass."
+        )
 
     def export(
         self,
@@ -175,6 +245,13 @@ class ONNXExporter:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Pull the model's REAL trained weights (never fabricated/random ones).
+        arch = self._get_architecture()
+        W1, b1 = arch["W1"], arch["b1"]
+        W2, b2 = arch["W2"], arch["b2"]
+        W3, b3 = arch["W3"], arch["b3"]
+        apply_tanh = arch["apply_tanh"]
+
         # ── Attempt real ONNX export if library is available ───────────────
         try:
             import onnx  # noqa: F401
@@ -182,25 +259,31 @@ class ONNXExporter:
             import onnx.numpy_helper as onh
             from onnx import TensorProto as tp
 
-            in_features = int(np.prod(self.input_shape))
-            out_features = 2  # [delta_TMS, delta_PS]
-
-            rng = np.random.default_rng(0)
-            W = rng.standard_normal((out_features, in_features)).astype(np.float32)
-            b = np.zeros(out_features, dtype=np.float32)
+            out_features = int(W3.shape[0])
 
             flat_node = oh.make_node(
                 "Flatten", inputs=["obs"], outputs=["obs_flat"]
             )
-            node_mm = oh.make_node(
-                "Gemm",
-                inputs=["obs_flat", "W", "b"],
-                outputs=["action"],
-                transB=1,
+            node_gemm1 = oh.make_node(
+                "Gemm", inputs=["obs_flat", "W1", "b1"], outputs=["h1_pre"], transB=1
             )
+            node_relu1 = oh.make_node("Relu", inputs=["h1_pre"], outputs=["h1"])
+            node_gemm2 = oh.make_node(
+                "Gemm", inputs=["h1", "W2", "b2"], outputs=["h2_pre"], transB=1
+            )
+            node_relu2 = oh.make_node("Relu", inputs=["h2_pre"], outputs=["h2"])
+            final_output_name = "action_pre" if apply_tanh else "action"
+            node_gemm3 = oh.make_node(
+                "Gemm", inputs=["h2", "W3", "b3"], outputs=[final_output_name], transB=1
+            )
+            nodes = [flat_node, node_gemm1, node_relu1, node_gemm2, node_relu2, node_gemm3]
+            if apply_tanh:
+                nodes.append(
+                    oh.make_node("Tanh", inputs=["action_pre"], outputs=["action"])
+                )
 
             graph = oh.make_graph(
-                nodes=[flat_node, node_mm],
+                nodes=nodes,
                 name="docr_marl_actor",
                 inputs=[
                     oh.make_tensor_value_info(
@@ -213,8 +296,12 @@ class ONNXExporter:
                     )
                 ],
                 initializer=[
-                    onh.from_array(W, name="W"),
-                    onh.from_array(b, name="b"),
+                    onh.from_array(W1, name="W1"),
+                    onh.from_array(b1, name="b1"),
+                    onh.from_array(W2, name="W2"),
+                    onh.from_array(b2, name="b2"),
+                    onh.from_array(W3, name="W3"),
+                    onh.from_array(b3, name="b3"),
                 ],
             )
             model_proto = oh.make_model(
@@ -236,19 +323,19 @@ class ONNXExporter:
 
         except ImportError:
             # ── Fallback: portable numpy .npz archive ──────────────────────
-            rng = np.random.default_rng(0)
-            in_features = int(np.prod(self.input_shape))
-            out_features = 2
-            W = rng.standard_normal((out_features, in_features)).astype(np.float32)
-            b = np.zeros(out_features, dtype=np.float32)
-
+            # np.savez() silently appends a ".npz" suffix when the given
+            # path doesn't already end in one (e.g. "model.onnx" is actually
+            # written to "model.onnx.npz") — normalize output_path up front
+            # so what we report/verify is the file that was actually written.
+            npz_path = output_path if output_path.suffix == ".npz" else output_path.with_suffix(output_path.suffix + ".npz")
             np.savez(
-                str(output_path),
-                W=W,
-                b=b,
+                str(npz_path),
+                W1=W1, b1=b1, W2=W2, b2=b2, W3=W3, b3=b3,
+                apply_tanh=np.array(apply_tanh),
                 input_shape=np.array(self.input_shape),
                 metadata=np.array([str(self.metadata)]),
             )
+            output_path = npz_path
             export_info = {
                 "path": str(output_path),
                 "opset_version": opset_version,
@@ -269,31 +356,88 @@ class ONNXExporter:
         return export_info
 
     def _verify_export(self, path: Path) -> dict:
-        """Verify exported model produces finite outputs on a random input."""
+        """Verify the exported artifact's output matches the real model's.
+
+        Runs the same test input through (a) ``self.model`` directly and
+        (b) the just-exported artifact (ONNX via onnxruntime, or the npz
+        fallback reconstructed by hand), and confirms they agree — this is
+        what would have caught weights being replaced by random noise.
+        """
         test_input = np.random.default_rng(0).standard_normal((1, *self.input_shape)).astype(np.float32)
-        original_output = self.model(test_input)
+        original_output = np.asarray(self._forward(test_input[0])).astype(np.float64).ravel()
 
-        if hasattr(original_output, "__len__"):
-            finite = bool(np.all(np.isfinite(original_output)))
-            out_val = original_output.tolist()
-        else:
-            finite = bool(np.isfinite(original_output))
-            out_val = str(original_output)
+        finite = bool(np.all(np.isfinite(original_output)))
 
-        return {
+        exported_output = None
+        matches_exported = None
+        compare_error = None
+        try:
+            exported_output = self._run_exported_artifact(path, test_input[0])
+            matches_exported = bool(
+                np.allclose(original_output, exported_output, rtol=1e-4, atol=1e-5)
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            compare_error = str(exc)
+
+        status = "verified" if (finite and matches_exported) else "verification_failed"
+        if compare_error is not None:
+            status = "verification_error"
+
+        result = {
             "test_input_shape": test_input.shape,
-            "original_output": out_val,
+            "original_output": original_output.tolist(),
             "outputs_finite": finite,
-            "status": "verified" if finite else "non_finite_output",
+            "exported_output": (
+                exported_output.tolist() if exported_output is not None else None
+            ),
+            "matches_exported_artifact": matches_exported,
+            "status": status,
         }
+        if compare_error is not None:
+            result["compare_error"] = compare_error
+        return result
+
+    def _run_exported_artifact(self, path: Path, x: np.ndarray) -> np.ndarray:
+        """Load back the just-written artifact and run it on ``x``."""
+        path = Path(path)
+        try:
+            import onnxruntime as ort
+
+            sess = ort.InferenceSession(str(path))
+            in_name = sess.get_inputs()[0].name
+            out_name = sess.get_outputs()[0].name
+            x_in = np.asarray(x, dtype=np.float32).reshape(1, -1)
+            out = sess.run([out_name], {in_name: x_in})[0][0]
+            return np.asarray(out, dtype=np.float64).ravel()
+        except ImportError:
+            pass
+
+        # npz fallback artifact: reconstruct the forward pass by hand.
+        data = np.load(str(path), allow_pickle=True)
+        W1, b1 = data["W1"].astype(np.float64), data["b1"].astype(np.float64)
+        W2, b2 = data["W2"].astype(np.float64), data["b2"].astype(np.float64)
+        W3, b3 = data["W3"].astype(np.float64), data["b3"].astype(np.float64)
+        apply_tanh = bool(data["apply_tanh"])
+
+        xv = np.asarray(x, dtype=np.float64).ravel()
+        h1 = np.maximum(0.0, W1 @ xv + b1)
+        h2 = np.maximum(0.0, W2 @ h1 + b2)
+        out = W3 @ h2 + b3
+        if apply_tanh:
+            out = np.tanh(out)
+        return out
 
     def get_model_summary(self) -> dict:
-        """Return model architecture summary."""
-        in_features = int(np.prod(self.input_shape))
+        """Return the real model's architecture summary."""
+        arch = self._get_architecture()
+        n_parameters = sum(
+            arch[k].size for k in ("W1", "b1", "W2", "b2", "W3", "b3")
+        )
         return {
             "input_shape": self.input_shape,
-            "output_shape": (2,),
-            "n_parameters": in_features * 2 + 2,
+            "output_shape": (int(arch["W3"].shape[0]),),
+            "hidden_sizes": (int(arch["W1"].shape[0]), int(arch["W2"].shape[0])),
+            "n_parameters": int(n_parameters),
             "metadata": self.metadata,
             "export_backend": "onnx (if installed) or numpy-npz",
         }
@@ -375,19 +519,31 @@ class InferenceEngine:
         except Exception as exc:
             logger.debug("onnxruntime load failed: %s", exc)
 
-        # 2. Try numpy npz (fallback export format)
+        # 2. Try numpy npz (fallback export format: real 2-hidden-layer MLP
+        #    weights W1/b1/W2/b2/W3/b3, as written by ONNXExporter.export()).
         try:
             data = np.load(path, allow_pickle=True)
-            W = data["W"].astype(np.float64)  # (out, in)
-            b = data["b"].astype(np.float64)  # (out,)
+            W1 = data["W1"].astype(np.float64)
+            b1 = data["b1"].astype(np.float64)
+            W2 = data["W2"].astype(np.float64)
+            b2 = data["b2"].astype(np.float64)
+            W3 = data["W3"].astype(np.float64)
+            b3 = data["b3"].astype(np.float64)
+            apply_tanh = bool(data["apply_tanh"]) if "apply_tanh" in data else False
 
             if quantize:
-                W = fake_quantize(W, bits)
-                b = fake_quantize(b, bits)
+                W1, b1 = fake_quantize(W1, bits), fake_quantize(b1, bits)
+                W2, b2 = fake_quantize(W2, bits), fake_quantize(b2, bits)
+                W3, b3 = fake_quantize(W3, bits), fake_quantize(b3, bits)
 
             def _npz_infer(obs: np.ndarray) -> np.ndarray:
                 x = obs.ravel().astype(np.float64)
-                return (W @ x + b).astype(np.float32)
+                h1 = np.maximum(0.0, W1 @ x + b1)
+                h2 = np.maximum(0.0, W2 @ h1 + b2)
+                out = W3 @ h2 + b3
+                if apply_tanh:
+                    out = np.tanh(out)
+                return out.astype(np.float32)
 
             self._quantization_applied = bool(quantize)
             return _npz_infer, "numpy-npz"

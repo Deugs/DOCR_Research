@@ -1,13 +1,13 @@
 {
   "fig_num": 24,
   "data": {
-    "noisy_of": 143.59705727473866,
+    "noisy_of": 143.16725249755262,
     "cti_ok": true,
-    "snr": 23.412497065952632
+    "snr": 97.38396028476758
   },
   "metadata": {
     "method": "_eval_sensor_robustness",
-    "duration": 1.365300178527832,
+    "duration": 1.5735774040222168,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -41,8 +41,9 @@
       "evolving_fault": false,
       "unseen_fault_eval": false,
       "unseen_fault_type": null,
-      "sensor_noise_std": 0.05,
-      "missing_sensor_rate": 0.1,
+      "sensor_noise_std": 0.0,
+      "missing_sensor_rate": 0.2,
+      "sensor_bias": 0.0,
       "train_system": null,
       "eval_system": null,
       "freeze_transfer_weights": false,
@@ -79,7 +80,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 109.24167185091324
+    "base_of": 77.84522844468644
   },
-  "timestamp": 1787222985.6151845
+  "timestamp": 1787245891.4782364
 }

@@ -15,6 +15,7 @@ def main():
     p.add_argument("--pv", type=float, default=1.0)
     p.add_argument("--n_obs", type=int, default=5000)
     p.add_argument("--method", type=str, default="tsne")
+    p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", type=str, default="outputs/fig49_decision_boundary.pdf")
     args = p.parse_args()
 
@@ -24,10 +25,10 @@ def main():
 
     fig, ax = plt.subplots(figsize=(10, 8))
 
-    np.random.seed(42)
+    rng = np.random.default_rng(args.seed)
     n = min(args.n_obs, 5000)
 
-    x = np.random.randn(n, 2)
+    x = rng.standard_normal((n, 2))
     labels = (x[:, 0] + x[:, 1] > 0).astype(int)
 
     safe = x[labels == 1]

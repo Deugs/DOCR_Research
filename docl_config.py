@@ -66,7 +66,7 @@ SYSTEM_METADATA = {
     # suspected stale again.
     "3bus":   {"n_relays": 6,   "n_pairs": 6,   "fast_episodes": 100,  "full_episodes": 1000},
     "8bus":   {"n_relays": 14,  "n_pairs": 20,  "fast_episodes": 500,  "full_episodes": 5000},
-    "14bus":  {"n_relays": 20,  "n_pairs": 26,  "fast_episodes": 500,  "full_episodes": 5000},
+    "14bus":  {"n_relays": 40,  "n_pairs": 52,  "fast_episodes": 500,  "full_episodes": 5000},
     "30bus":  {"n_relays": 42,  "n_pairs": 70,  "fast_episodes": 500,  "full_episodes": 5000},
     "39bus":  {"n_relays": 46,  "n_pairs": 42,  "fast_episodes": 500,  "full_episodes": 5000},
     "57bus":  {"n_relays": 156, "n_pairs": 192, "fast_episodes": 500,  "full_episodes": 5000},

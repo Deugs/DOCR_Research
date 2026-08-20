@@ -706,7 +706,7 @@ def get_39bus() -> NetworkData:
 def get_14bus() -> NetworkData:
     """
     IEEE 14-Bus Test System.
-    20 directional relays (2 per line), 38 primary/backup pairs.
+    40 directional relays (2 per line, one at each end of all 20 lines).
 
     Line data from standard IEEE 14-bus CDF format.
     Relay pairs derived from meshed topology protection principles.
@@ -735,9 +735,7 @@ def get_14bus() -> NetworkData:
         (13, 14, 0.17093, 0.34802, 0.0000,  100),   # 19 R38,R39
     ]
     n_lines = len(lines)
-    n_relays = 2 * n_lines  # = 40, but some transformer branches may not need relays
-    # Actual relay count: 20 (one per line end, excluding transformer tap changers)
-    n_relays = 20
+    n_relays = 2 * n_lines  # one relay at each end of every line = 40
 
     V_base_kv = 13.8  # Distribution voltage
     S_base_mva = 100.0
@@ -1305,7 +1303,7 @@ _NETWORK_DESCRIPTIONS = {
     # which read the live values) rather than trusting this dict alone.
     "3bus":   "IEEE 3-Bus Radial (6 relays, 6 P/B pairs) — toy validation",
     "8bus":   "IEEE 8-Bus Distribution (14 relays, 20 P/B pairs) — small-scale MARL",
-    "14bus":  "IEEE 14-Bus Meshed (20 relays, 26 P/B pairs) — standard benchmark",
+    "14bus":  "IEEE 14-Bus Meshed (40 relays, 52 P/B pairs) — standard benchmark",
     "30bus":  "IEEE 30-Bus Meshed (42 relays, 70 P/B pairs) — medium-scale MARL",
     "39bus":  "IEEE 39-Bus New England (46 relays, 42 P/B pairs) — stability studies",
     "57bus":  "IEEE 57-Bus Meshed (156 relays, 192 P/B pairs) — large-scale MARL",

@@ -166,6 +166,32 @@ def test_nemenyi_test():
     print("  ✓ test_nemenyi_test")
 
 
+def test_nemenyi_test_alpha_selects_correct_table():
+    """Round-5 regression: nemenyi_test's q_alpha table was hardcoded to
+    the alpha=0.05 critical values regardless of the `alpha` argument, so
+    requesting alpha=0.10 silently used the alpha=0.05 critical
+    difference. Different alphas must now genuinely produce different
+    (and correctly-ordered: q_0.10 < q_0.05) critical values, and an
+    untabulated alpha must raise rather than silently defaulting."""
+    from evaluation.stat_analysis import nemenyi_test
+
+    mean_ranks = np.array([1.5, 2.5, 3.0])
+    _, _, _, details_05 = nemenyi_test(mean_ranks, 5, 3, alpha=0.05)
+    _, _, _, details_10 = nemenyi_test(mean_ranks, 5, 3, alpha=0.10)
+
+    assert details_05["q_alpha"] != details_10["q_alpha"], \
+        "alpha=0.05 and alpha=0.10 produced identical q_alpha (alpha argument ignored)"
+    # Studentized range critical value decreases as alpha increases.
+    assert details_10["q_alpha"] < details_05["q_alpha"]
+
+    try:
+        nemenyi_test(mean_ranks, 5, 3, alpha=0.42)
+        assert False, "untabulated alpha should have raised ValueError"
+    except ValueError:
+        pass
+    print("  ✓ test_nemenyi_test_alpha_selects_correct_table")
+
+
 # ── Test 8: Cliff's delta ────────────────────────────────────────────────────
 
 def test_cliffs_delta():
@@ -260,6 +286,26 @@ def test_benchmark_suite_run():
     assert "JAYA" in results["3bus"][0]
     assert "OF" in results["3bus"][0]["JAYA"]
     print("  ✓ test_benchmark_suite_run")
+
+
+def test_benchmark_suite_pv_level_affects_result():
+    """Round-5 regression: BenchmarkConfig.pv_level was threaded through
+    every run_* call only for logging/result-dict bookkeeping — never
+    actually applied to the network's fault currents — so every PV level
+    gave an identical result for a given seed. Same seed, different
+    pv_level must now give a different OF."""
+    from evaluation.benchmark_suite import BenchmarkSuite, BenchmarkConfig
+
+    def run_of(pv_level):
+        cfg = BenchmarkConfig(systems=["3bus"], methods=["JAYA"], n_runs=1,
+                               pop_size=10, max_iter=20, verbose=False, pv_level=pv_level)
+        results = BenchmarkSuite(cfg).run_all()
+        return results["3bus"][0]["JAYA"]["OF"]
+
+    of_0 = run_of(0.0)
+    of_1 = run_of(1.0)
+    assert of_0 != of_1, "pv_level had no effect on the benchmark result"
+    print(f"  ✓ test_benchmark_suite_pv_level_affects_result (OF@0%={of_0:.4f}, OF@100%={of_1:.4f})")
 
 
 # ── Test 12: Statistical analysis integration ────────────────────────────────
@@ -409,10 +455,12 @@ def run_all_tests():
         test_metaheuristic_sqp_refinement,
         test_friedman_test,
         test_nemenyi_test,
+        test_nemenyi_test_alpha_selects_correct_table,
         test_cliffs_delta,
         test_wilcoxon_test,
         test_benchmark_suite_init,
         test_benchmark_suite_run,
+        test_benchmark_suite_pv_level_affects_result,
         test_statistical_analysis,
         test_backward_compatibility,
         test_convergence_history,

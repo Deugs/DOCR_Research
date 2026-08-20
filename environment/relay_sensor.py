@@ -86,6 +86,13 @@ class RelaySensor:
         # successive measure_current() calls; reset when the offset is absent)
         self.dc_offset_elapsed_time = 0.0
 
+        # Running count of measure_current() calls, used to track real
+        # elapsed simulation time (self.dt * self._sample_count) for the
+        # harmonic-distortion phase below, so the injected harmonics form
+        # an actually-oscillating waveform across successive samples
+        # instead of a fixed per-call phase (self.dt alone never advances).
+        self._sample_count = 0
+
         # Measurement history for filtering
         self.current_history = []
         self.voltage_history = []
@@ -156,11 +163,17 @@ class RelaySensor:
         noise = self.rng.normal(0, abs(measured) * self.ct.noise_std + 0.1)
         measured += noise
 
-        # Add harmonic distortion
+        # Add harmonic distortion. Uses real elapsed simulation time
+        # (self.dt * self._sample_count) rather than self.dt alone, which
+        # never advances and collapsed sin(2*pi*harmonic*50*self.dt) into a
+        # fixed per-call constant instead of an oscillating waveform.
+        elapsed_time = self.dt * self._sample_count
         if self.ct.harmonic_distortion > 0:
             for harmonic in [3, 5, 7]:
                 harmonic_amp = abs(measured) * self.ct.harmonic_distortion / harmonic
-                measured += harmonic_amp * np.sin(2 * np.pi * harmonic * 50 * self.dt)
+                measured += harmonic_amp * np.sin(2 * np.pi * harmonic * 50 * elapsed_time)
+
+        self._sample_count += 1
 
         # Update history
         self.current_history.append(measured)

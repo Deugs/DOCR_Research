@@ -1,13 +1,13 @@
 {
   "fig_num": 54,
   "data": {
-    "of": 358.8367915237869,
+    "of": 653.5293040849795,
     "success": 1.0,
     "norm": 0.0
   },
   "metadata": {
     "method": "_eval_adversarial",
-    "duration": 0.08060669898986816,
+    "duration": 0.17740559577941895,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -43,6 +43,7 @@
       "unseen_fault_type": null,
       "sensor_noise_std": 0.0,
       "missing_sensor_rate": 0.0,
+      "sensor_bias": 0.0,
       "train_system": null,
       "eval_system": null,
       "freeze_transfer_weights": false,
@@ -73,13 +74,13 @@
       "quantize_bits": null,
       "prune_ratio": 0.0,
       "compression_eval": false,
-      "adversarial_attack": "FGSM",
-      "attack_epsilon": 0.01,
+      "adversarial_attack": "PGD",
+      "attack_epsilon": 0.2,
       "adversarial_eval": true,
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 109.24167185091324
+    "base_of": 77.84522844468644
   },
-  "timestamp": 1787222985.6966496
+  "timestamp": 1787245892.6416497
 }

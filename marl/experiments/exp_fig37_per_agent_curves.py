@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt
 from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -102,11 +103,17 @@ def main(n_episodes: int = 1000, seed: int = 42, output_dir: str = "outputs", sy
         net = get_39bus()
     else:
         net = get_8bus()
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
-                          fault_type="3ph", curriculum_stage=5)
+    raw_env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
+                              fault_type="3ph", curriculum_stage=5)
+    # This run is "MAPPO-Safe-EWC" — wrap with the real Safe RL layer
+    # BEFORE building the trainer. `trainer.use_safety = True` was a dead
+    # attribute set (MAPPOMARLTrainer never defines `use_safety`).
+    env = create_safe_rl_env(raw_env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
     trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
-    if hasattr(trainer, 'use_safety'):
-        trainer.use_safety = True
     if hasattr(trainer, 'use_ewc'):
         trainer.use_ewc = True
     

@@ -73,6 +73,13 @@ class PVInverter:
         self.fault_start_time = 0.0
         self.post_fault_recovery = False
         self.recovery_start_time = 0.0
+        # Latched trip state: once the ride-through window is exceeded and
+        # the inverter trips, it must STAY tripped (output pinned to zero)
+        # for as long as the underlying fault condition persists — it must
+        # not re-arm on the very next call just because fault_triggered is
+        # still True. It only clears via the post_fault_recovery path once
+        # fault_triggered genuinely goes False (see calculate_output()).
+        self.tripped = False
 
     def calculate_output(
         self,
@@ -91,6 +98,21 @@ class PVInverter:
         # Normal power output from irradiance and temperature
         p_available = self._mppt_power(irradiance, temperature)
 
+        # If already tripped, stay tripped (output pinned to zero) for as
+        # long as the underlying fault condition persists. Do NOT re-arm
+        # fault_active / restart the ride-through clock just because
+        # fault_triggered is still True on this call — that was the bug:
+        # it caused the inverter to re-inject fault current every call
+        # instead of remaining latched off. The tripped state only clears
+        # once the fault condition genuinely ends (fault_triggered=False),
+        # at which point normal post-fault recovery begins.
+        if self.tripped:
+            if fault_triggered:
+                return 0.0, 0.0, 0.0
+            self.tripped = False
+            self.post_fault_recovery = True
+            self.recovery_start_time = time
+
         # Check fault condition
         if fault_triggered and not self.fault_active:
             self.fault_active = True
@@ -100,10 +122,11 @@ class PVInverter:
             # Check if ride-through time exceeded
             if time - self.fault_start_time > self.frt.t_ride:
                 if v_terminal_pu < self.frt.v_low or v_terminal_pu > self.frt.v_high:
-                    # Trip — zero output
+                    # Trip — latch tripped state and zero output. Stays
+                    # latched (see the `self.tripped` check above) until
+                    # fault_triggered genuinely goes False.
                     self.fault_active = False
-                    self.post_fault_recovery = True
-                    self.recovery_start_time = time
+                    self.tripped = True
                     return 0.0, 0.0, 0.0
 
             # During fault: inject current with reactive support
@@ -187,6 +210,7 @@ class PVInverter:
         self.fault_start_time = 0.0
         self.post_fault_recovery = False
         self.recovery_start_time = 0.0
+        self.tripped = False
 
 
 class PVPlant:

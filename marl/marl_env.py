@@ -109,12 +109,16 @@ class DynamicDOCREnv:
                     neighbor_set.add(pair.backup)
                 else:
                     neighbor_set.add(pair.primary)
-            # Also add relays at same bus
-            for pair in self.net.pairs:
-                if pair.primary == i:
-                    for other in self.net.pairs:
-                        if other.bus_pri == pair.bus_pri and other.primary != i:
-                            neighbor_set.add(other.primary)
+            # Also add relays at same bus. Use net.get_relay_bus(), which
+            # resolves the authoritative relay_bus array (falling back to
+            # checking both primary AND backup roles in pairs) — the
+            # previous primary-only pair scan silently missed relay i's
+            # same-bus neighbors whenever i (or the candidate neighbor)
+            # only ever appeared as a backup.
+            bus_i = self.net.get_relay_bus(i)
+            for j in range(self.n_agents):
+                if j != i and self.net.get_relay_bus(j) == bus_i:
+                    neighbor_set.add(j)
             self.neighbors[i] = sorted(list(neighbor_set))
 
     def reset(

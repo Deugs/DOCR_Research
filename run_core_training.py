@@ -1977,6 +1977,20 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # plain MAPPO+GNN despite being labeled MAPPO-Safe-EWC (dead
         # hasattr guards). Now genuinely Safe RL + EWC wrapped.
         "real_safety_ewc": True,
+        # Bumped: figs 13/20/22/24/54 each need a multi-point sweep
+        # (packet loss curve, 3 named Byzantine strategies, GNN-depth
+        # curve, 3 sensor-corruption curves, 2 attack-type epsilon
+        # curves) to plot anything meaningful, but this previously
+        # called bridge.run_evaluation() exactly ONCE per figure with a
+        # single fixed configuration — a scalar masquerading as a
+        # sweep. Also: CommGraph never actually implemented
+        # packet_loss_rate/latency_steps/quantization_bits (Fig 13's
+        # stress knobs were dead hasattr guards against attributes that
+        # never existed), and _eval_byzantine's "collusion"/"fdi"
+        # strategy names silently fell through to the same random-noise
+        # branch as "random" (only "colluding", misspelled relative to
+        # what this sweep passes, and "reverse" were ever recognized).
+        "real_sweep_v2": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1998,44 +2012,114 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     if BRIDGE_AVAILABLE:
         try:
             bridge = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE)
-            
-            # Fig 13: Communication Stress
+            # The trained base policy is cached on the bridge instance
+            # (_get_base_result trains once, on first access) — every
+            # run_evaluation() call below re-runs only a cheap eval
+            # rollout against it, so sweeping many points here is fast,
+            # not N independent retrains.
+            base_of = bridge._get_base_result().best_of
+
+            def _rel_perf(of_value):
+                # "Relative performance" = baseline objective / observed
+                # objective (lower OF is better in this codebase; 1.0 =
+                # matches unstressed baseline). Same convention as Fig
+                # 14's real-data path.
+                return float(base_of / max(of_value, 1e-9))
+
+            # Fig 13: Communication Stress — sweep packet loss (latency
+            # held at 0) and latency (packet loss held at 0) separately,
+            # matching the two panels fig_13_communication_stress plots.
             logger.info("\n[Core G] Fig 13: Communication Stress (REAL)")
-            fig13 = bridge.run_evaluation(13, stress_level=0.5, packet_loss=0.1, latency_ms=100)
-            results["communication"] = fig13.raw_data
-            
-            # Fig 20: Byzantine Resilience
+            packet_loss_sweep = {}
+            for pl in [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]:
+                r = bridge.run_evaluation(13, stress_level=pl, packet_loss=pl, latency_ms=0)
+                packet_loss_sweep[pl] = _rel_perf(r.raw_data["packet_loss"])
+            latency_sweep = {}
+            for lat in [0, 100, 200, 300, 400, 500]:
+                r = bridge.run_evaluation(13, stress_level=lat / 500.0, packet_loss=0.0, latency_ms=lat)
+                latency_sweep[lat] = _rel_perf(r.raw_data["packet_loss"])
+            results["communication"] = {"packet_loss": packet_loss_sweep, "latency": latency_sweep}
+
+            # Fig 20: Byzantine Resilience — one real evaluation per
+            # named attack strategy.
             logger.info("[Core G] Fig 20: Byzantine Resilience (REAL)")
-            fig20 = bridge.run_evaluation(20, byzantine_agents=[1], strategy="random")
-            results["byzantine"] = fig20.raw_data
-            
-            # Fig 22: Bandwidth Tradeoff
+            byzantine_sweep = {}
+            for strategy in ["random", "collusion", "fdi"]:
+                r = bridge.run_evaluation(20, byzantine_agents=[1], strategy=strategy)
+                byzantine_sweep[strategy] = _rel_perf(r.raw_data["byzantine_of"])
+            results["byzantine"] = byzantine_sweep
+
+            # Fig 22: Bandwidth Tradeoff — sweep GNN depth; bandwidth_kbps
+            # is the real quantity _eval_bandwidth computes (message size
+            # x agent count x compression), not the fabricated fallback's
+            # invented "MB/episode" scale — fig_22 is updated to plot and
+            # label it honestly as kbps.
             logger.info("[Core G] Fig 22: Bandwidth Tradeoff (REAL)")
-            fig22 = bridge.run_evaluation(22, gnn_depth=2, compression=1.0, message_dim=8)
-            results["bandwidth"] = fig22.raw_data
-            
-            # Fig 24: Sensor Robustness
+            bandwidth_sweep = {}
+            for depth in [1, 2, 3, 4]:
+                compression = min(1.0, depth / 4.0)
+                r = bridge.run_evaluation(22, gnn_depth=depth, compression=compression, message_dim=8)
+                bandwidth_sweep[depth] = {
+                    "performance": _rel_perf(r.raw_data["of"]),
+                    "bandwidth_kbps": float(r.raw_data["bandwidth"]),
+                }
+            results["bandwidth"] = bandwidth_sweep
+
+            # Fig 24: Sensor Robustness — three independent sweeps
+            # (noise, systematic bias, missing-measurement rate), each
+            # holding the other two corruption knobs at zero.
             logger.info("[Core G] Fig 24: Sensor Robustness (REAL)")
-            fig24 = bridge.run_evaluation(24, noise_std=0.05, missing_rate=0.1)
-            results["sensor"] = fig24.raw_data
-            
-            # Fig 54: Adversarial Robustness
+            noise_sweep, bias_sweep, missing_sweep = {}, {}, {}
+            for sigma in [0.0, 0.05, 0.1, 0.15, 0.2]:
+                r = bridge.run_evaluation(24, noise_std=sigma, missing_rate=0.0, bias=0.0)
+                noise_sweep[sigma] = _rel_perf(r.raw_data["noisy_of"])
+            for bias_level in [0.0, 0.05, 0.1]:
+                r = bridge.run_evaluation(24, noise_std=0.0, missing_rate=0.0, bias=bias_level)
+                bias_sweep[bias_level] = _rel_perf(r.raw_data["noisy_of"])
+            for missing_rate in [0.0, 0.1, 0.2]:
+                r = bridge.run_evaluation(24, noise_std=0.0, missing_rate=missing_rate, bias=0.0)
+                missing_sweep[missing_rate] = _rel_perf(r.raw_data["noisy_of"])
+            results["sensor"] = {"noise": noise_sweep, "bias": bias_sweep, "missing": missing_sweep}
+
+            # Fig 54: Adversarial Robustness — FGSM/PGD epsilon sweeps.
             logger.info("[Core G] Fig 54: Adversarial Robustness (REAL)")
-            fig54 = bridge.run_evaluation(54, attack="FGSM", epsilon=0.01)
-            results["adversarial"] = fig54.raw_data
-            
+            fgsm_sweep, pgd_sweep = {}, {}
+            for eps in [0.01, 0.05, 0.1, 0.2]:
+                r = bridge.run_evaluation(54, attack="FGSM", epsilon=eps)
+                fgsm_sweep[eps] = _rel_perf(r.raw_data["of"])
+            for eps in [0.01, 0.05, 0.1, 0.2]:
+                r = bridge.run_evaluation(54, attack="PGD", epsilon=eps)
+                pgd_sweep[eps] = _rel_perf(r.raw_data["of"])
+            results["adversarial"] = {"fgsm": fgsm_sweep, "pgd": pgd_sweep}
+
+            is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")
             results = _generate_synthetic_core_G(seed)
+            is_synthetic = True
     else:
         results = _generate_synthetic_core_G(seed)
-    
-    cache.put(config, results)
+        is_synthetic = True
+
+    # config["real_eval"] reflects only whether the bridge IMPORTED
+    # successfully, computed before the try block ran — it stayed True
+    # even when a mid-run exception fell back to fully-fabricated
+    # synthetic data, so the fallback got cached under a config that
+    # still claimed "real_eval": True with no way for a caller to tell.
+    # Never cache a synthetic fallback under the real-eval config: this
+    # keeps load_cache()-based disclosure (run_post_processing.py's
+    # `is_synthetic = data is None`) honest by making the next run
+    # retry real evaluation instead of serving fabricated data forever.
+    if is_synthetic:
+        logger.warning("[Core G] Falling back to SYNTHETIC data — NOT cached, so the next "
+                        "run retries real evaluation instead of serving fabricated data forever.")
+    else:
+        cache.put(config, results)
     logger.info("[Core G] Complete.")
-    
+
     if progress:
         progress.finish_run(run_name, success=True,
-                           details={"stress_types": config["stress_types"], "real_eval": BRIDGE_AVAILABLE})
+                           details={"stress_types": config["stress_types"], "real_eval": not is_synthetic})
     return results
 
 
@@ -2082,12 +2166,26 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         "fault_type": FAULT_TYPE,
         "real_eval": BRIDGE_AVAILABLE,
         "real_safety_ewc": True,
+        # Bumped: Fig 23 previously called bridge.run_evaluation(23) ONCE
+        # with fault_impedance_ohm=1.0, a config field _eval_unseen_faults
+        # doesn't actually consume (the real generalization axis is
+        # unseen_fault_type) — so it silently re-evaluated on the SAME
+        # fault_type used in training, then stored the result under a key
+        # ("unseen_faults") that run_post_processing.py's fig_23 expected
+        # to be a {fault_type_name: relative_performance} sweep. Now a
+        # genuine 3-point sweep over the other IEEE fault types, plus
+        # base_of added to Fig 25's payload so it can report a real
+        # relative-performance number instead of undisclosed
+        # warm_start/cold_start placeholders (fig_25 never actually had
+        # that shape from a real eval).
+        "real_unseen_sweep_v2": True,
     }
     cached = cache.get(config)
     if cached is not None:
         logger.info("[Core H] Using cached results")
         return cached
-        
+
+    from network.relay_physics import FAULT_TYPES
     run_name = "Core H"
     if progress:
         progress.start_run(run_name, total_steps=2,
@@ -2105,27 +2203,50 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             bridge = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE)
             
             # Fig 23: Unseen Fault Types
+            # Real sweep over the env's actual generalization axis (fault
+            # TYPE — see _eval_unseen_faults' docstring) rather than a
+            # single point: "3ph" is the training-time fault_type, so the
+            # genuinely unseen conditions are the other 3 IEEE fault types.
             logger.info("\n[Core H] Fig 23: Unseen Fault Types (REAL)")
-            fig23 = bridge.run_evaluation(23, impedance=1.0, evolving=False)
-            results["unseen_faults"] = fig23.raw_data
-            
-            # Fig 25: Zero-Shot Transfer 8->30 Bus
+            unseen_types = [ft for ft in FAULT_TYPES if ft != FAULT_TYPE]
+            unseen_faults = {}
+            for ft in unseen_types:
+                fig23 = bridge.run_evaluation(23, unseen_fault_type=ft)
+                base_of = bridge._get_base_result().best_of
+                unseen_faults[ft] = float(base_of / max(fig23.raw_data["unseen_of"], 1e-9))
+            results["unseen_faults"] = unseen_faults
+
+            # Fig 25: Zero-Shot Transfer 8->30 Bus (REAL)
             logger.info("[Core H] Fig 25: Zero-Shot Transfer 8->30 Bus (REAL)")
             fig25 = bridge.run_evaluation(25, eval_system="30bus")
-            results["zero_shot"] = fig25.raw_data
+            results["zero_shot"] = {
+                **fig25.raw_data,
+                "base_of": bridge._get_base_result().best_of,
+            }
             
+            is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")
             results = _generate_synthetic_core_H(seed)
+            is_synthetic = True
     else:
         results = _generate_synthetic_core_H(seed)
-    
-    cache.put(config, results)
+        is_synthetic = True
+
+    # See Core G's identical comment: never cache a synthetic fallback
+    # under the real-eval config, so the next run retries real
+    # evaluation instead of load_cache()-based disclosure being fooled
+    # into thinking this was a real (non-None) cache hit forever.
+    if is_synthetic:
+        logger.warning("[Core H] Falling back to SYNTHETIC data — NOT cached, so the next "
+                        "run retries real evaluation instead of serving fabricated data forever.")
+    else:
+        cache.put(config, results)
     logger.info("[Core H] Complete.")
-    
+
     if progress:
         progress.finish_run(run_name, success=True,
-                           details={"evaluations": config["evaluations"], "real_eval": BRIDGE_AVAILABLE})
+                           details={"evaluations": config["evaluations"], "real_eval": not is_synthetic})
     return results
 
 
@@ -2217,18 +2338,26 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             fig53 = bridge.run_evaluation(53, quantize_bits=8, prune_ratio=0.3)
             results["compression"] = fig53.raw_data
             
+            is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")
             results = _generate_synthetic_core_I(seed)
+            is_synthetic = True
     else:
         results = _generate_synthetic_core_I(seed)
-    
-    cache.put(config, results)
+        is_synthetic = True
+
+    # See Core G's identical comment.
+    if is_synthetic:
+        logger.warning("[Core I] Falling back to SYNTHETIC data — NOT cached, so the next "
+                        "run retries real evaluation instead of serving fabricated data forever.")
+    else:
+        cache.put(config, results)
     logger.info("[Core I] Complete.")
-    
+
     if progress:
         progress.finish_run(run_name, success=True,
-                           details={"benchmarks": config["benchmarks"], "real_eval": BRIDGE_AVAILABLE})
+                           details={"benchmarks": config["benchmarks"], "real_eval": not is_synthetic})
     return results
 
 
@@ -2324,18 +2453,26 @@ def run_core_J(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             fig47 = bridge.run_evaluation(47)
             results["sympathetic"] = fig47.raw_data
             
+            is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")
             results = _generate_synthetic_core_J(seed)
+            is_synthetic = True
     else:
         results = _generate_synthetic_core_J(seed)
-    
-    cache.put(config, results)
+        is_synthetic = True
+
+    # See Core G's identical comment.
+    if is_synthetic:
+        logger.warning("[Core J] Falling back to SYNTHETIC data — NOT cached, so the next "
+                        "run retries real evaluation instead of serving fabricated data forever.")
+    else:
+        cache.put(config, results)
     logger.info("[Core J] Complete.")
-    
+
     if progress:
         progress.finish_run(run_name, success=True,
-                           details={"analyses": config["analyses"], "real_eval": BRIDGE_AVAILABLE})
+                           details={"analyses": config["analyses"], "real_eval": not is_synthetic})
     return results
 
 
@@ -2393,19 +2530,27 @@ def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgres
                 logger.info(f"\n[Core K] Season: {season} (REAL)")
                 fig58 = bridge.run_evaluation(58, season=season)
                 results[season] = fig58.raw_data
-                
+
+            is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")
             results = _generate_synthetic_core_K(seed)
+            is_synthetic = True
     else:
         results = _generate_synthetic_core_K(seed)
-    
-    cache.put(config, results)
+        is_synthetic = True
+
+    # See Core G's identical comment.
+    if is_synthetic:
+        logger.warning("[Core K] Falling back to SYNTHETIC data — NOT cached, so the next "
+                        "run retries real evaluation instead of serving fabricated data forever.")
+    else:
+        cache.put(config, results)
     logger.info("[Core K] Complete.")
-    
+
     if progress:
         progress.finish_run(run_name, success=True,
-                           details={"seasons": config["seasons"], "real_eval": BRIDGE_AVAILABLE})
+                           details={"seasons": config["seasons"], "real_eval": not is_synthetic})
     return results
 
 

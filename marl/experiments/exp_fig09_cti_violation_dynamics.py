@@ -31,66 +31,71 @@ import matplotlib.pyplot as plt
 from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
 from network.relay_physics import check_constraints
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
 
 
-def run_training_with_logging(env, trainer, n_episodes: int = 2000, seed: int = 42):
-    """Run training and log CTI dynamics."""
+def run_training_with_logging(env, trainer, n_episodes: int = 2000, seed: int = 42,
+                               is_safe: bool = False):
+    """Run training and log CTI dynamics.
+
+    `env` must already be the fully-formed environment for this condition —
+    a `SafeRLWrapper` (from `create_safe_rl_env`) when `is_safe=True`, or the
+    raw `DynamicDOCREnv` when `is_safe=False`. Projection and the Lagrange
+    multiplier norm are read from the wrapper's real state, not a dead
+    `trainer.safety_layer`/`trainer.lagrange_multipliers` attribute that
+    `MAPPOMARLTrainer` never defines.
+    """
     rng = np.random.default_rng(seed)
     log = {
         "episode": [], "cti_violation_rate": [], "lagrange_norm": [],
         "safety_activations": [], "cumulative_violations": [],
         "mean_reward": [],
     }
-    
+
     cum_viol = 0
     total_pairs = env.net.n_pairs
-    
+
     for ep in range(n_episodes):
         obs = env.reset(seed=seed + ep)
         done = False
         ep_reward = 0.0
         ep_violations = 0
         ep_safety_acts = 0
-        
+
         while not done:
             actions_raw = np.zeros((env.n_agents, env.ACT_DIM))
-            actions_safe = np.zeros((env.n_agents, env.ACT_DIM))
-            
             for i in range(env.n_agents):
                 a_raw, _ = trainer.actor.sample(obs[i], rng)
                 actions_raw[i] = a_raw
-                
-                # Safety projection if available
-                if hasattr(trainer, 'safety_layer') and trainer.safety_layer is not None:
-                    a_safe = trainer.safety_layer.project(a_raw, obs[i])
-                    if not np.allclose(a_raw, a_safe):
-                        ep_safety_acts += 1
-                    actions_safe[i] = a_safe
-                else:
-                    actions_safe[i] = a_raw
-            
-            obs, reward, done, info = env.step(actions_safe)
+
+            # `env.step` performs real action projection internally when
+            # this is the Safe RL wrapper; the raw env applies none.
+            obs, reward, done, info = env.step(actions_raw)
+            if is_safe:
+                safe_info = info["safe_rl"]
+                if safe_info.get("projected_actions"):
+                    # Approximate count of individual agent actions altered
+                    # this step from the real projection ratio.
+                    ep_safety_acts += int(round(
+                        safe_info.get("action_projection_ratio", 0.0) * env.n_agents))
             # FIX: reward may be a per-agent array; collapse to scalar
             ep_reward += float(np.mean(reward))
-        
+
         # Check CTI violations
         TMS, PS = env.get_state()
         c = check_constraints(env.net, TMS, PS)
         viol_count = c["cti_violations"]
         viol_rate = viol_count / max(total_pairs, 1)
         cum_viol += viol_count
-        
-        # Lagrange multiplier norm
-        lag_norm = 0.0
-        if hasattr(trainer, 'lagrange_multipliers'):
-            lag_norm = float(np.linalg.norm(trainer.lagrange_multipliers))
-        elif hasattr(trainer, 'safety_layer') and hasattr(trainer.safety_layer, 'lambdas'):
-            lag_norm = float(np.linalg.norm(trainer.safety_layer.lambdas))
-        
+
+        # Lagrange multiplier norm — real dual variables from the wrapper's
+        # AugmentedLagrangian, updated via genuine dual-ascent each episode.
+        lag_norm = float(np.linalg.norm(env.lagrangian.lambdas)) if is_safe else 0.0
+
         log["episode"].append(ep)
         log["cti_violation_rate"].append(viol_rate * 100)
         log["lagrange_norm"].append(lag_norm)
@@ -127,23 +132,25 @@ def main(n_episodes: int = 2000, seed: int = 42, output_dir: str = "outputs", sy
     else:
         net = get_8bus()
     
-    # Run MAPPO-Safe
+    # Run MAPPO-Safe — wrap the env with the real Safe RL layer BEFORE
+    # building the trainer, so projection and the Lagrangian are genuine.
     logger.info("\n[1/2] Training MAPPO-Safe...")
-    env_safe = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
-                                 fault_type="3ph", curriculum_stage=5)
+    raw_env_safe = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
+                                   fault_type="3ph", curriculum_stage=5)
+    env_safe = create_safe_rl_env(raw_env_safe, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
     trainer_safe = MAPPOMARLTrainer(env_safe, use_comm=False, seed=seed)
-    if hasattr(trainer_safe, 'use_safety'):
-        trainer_safe.use_safety = True
-    log_safe = run_training_with_logging(env_safe, trainer_safe, n_episodes, seed)
-    
-    # Run unconstrained MAPPO
+    log_safe = run_training_with_logging(env_safe, trainer_safe, n_episodes, seed, is_safe=True)
+
+    # Run unconstrained MAPPO — genuinely raw env, no projection/Lagrangian.
     logger.info("\n[2/2] Training unconstrained MAPPO...")
     env_unsafe = DynamicDOCREnv(net, seed=seed+1000, use_pandapower=False,
                                  fault_type="3ph", curriculum_stage=5)
     trainer_unsafe = MAPPOMARLTrainer(env_unsafe, use_comm=False, seed=seed+1000)
-    if hasattr(trainer_unsafe, 'use_safety'):
-        trainer_unsafe.use_safety = False
-    log_unsafe = run_training_with_logging(env_unsafe, trainer_unsafe, n_episodes, seed+1000)
+    log_unsafe = run_training_with_logging(env_unsafe, trainer_unsafe, n_episodes, seed+1000, is_safe=False)
     
     # Save
     np.savez(

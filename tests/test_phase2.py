@@ -137,6 +137,60 @@ def test_comm_graph():
     print(f"  CommGraph: enhanced={enhanced_obs.shape}, msg={messages.shape}, bw={bw['kbps']:.3f}kbps")
 
 
+def test_comm_graph_stress_mechanics():
+    """Round-5 regression: experiments/training_pipeline.py's
+    _eval_comm_stress set comm_graph.packet_loss_rate/latency_steps/
+    quantization_bits via hasattr() guards, but CommGraph never defined
+    those attributes — every guard was permanently False, so Fig 13's
+    "communication stress" evaluation always ran the identical
+    unperturbed rollout regardless of the requested stress level. Verify
+    each knob now genuinely changes forward()'s output."""
+    from marl.comm_graph import CommGraph, CommConfig, build_relay_adjacency
+
+    net = get_8bus()
+    adj = build_relay_adjacency(net)
+    config = CommConfig(message_dim=8, hidden_dim=32, use_attention=True)
+
+    def make_comm():
+        return CommGraph(n_agents=net.n_relays, obs_dim=10, enhanced_dim=18,
+                          adjacency=adj, config=config, seed=42)
+
+    observations = np.random.default_rng(0).standard_normal((net.n_relays, 10))
+    rng = np.random.default_rng(1)
+
+    # Attributes must exist with sane defaults (no-op stress).
+    comm = make_comm()
+    assert comm.packet_loss_rate == 0.0
+    assert comm.latency_steps == 0
+    assert comm.quantization_bits == 32
+
+    # packet_loss_rate=1.0 must zero every agent's message before
+    # aggregation, changing the enhanced observation vs. no loss.
+    comm_lossy = make_comm()
+    comm_lossy.packet_loss_rate = 1.0
+    enhanced_base, _, _ = make_comm().forward(observations, rng=np.random.default_rng(1))
+    enhanced_lossy, _, _ = comm_lossy.forward(observations, rng=np.random.default_rng(1))
+    assert not np.allclose(enhanced_base, enhanced_lossy), \
+        "packet_loss_rate=1.0 had no effect on forward() output"
+
+    # quantization_bits must change the aggregated output.
+    comm_quant = make_comm()
+    comm_quant.quantization_bits = 2
+    enhanced_quant, _, _ = comm_quant.forward(observations, rng=np.random.default_rng(1))
+    assert not np.allclose(enhanced_base, enhanced_quant), \
+        "quantization_bits had no effect on forward() output"
+
+    # latency_steps: first call(s) see zero history (no message received
+    # yet), which must differ from the immediate (latency_steps=0) result.
+    comm_latent = make_comm()
+    comm_latent.latency_steps = 2
+    enhanced_latent, _, _ = comm_latent.forward(observations, rng=np.random.default_rng(1))
+    assert not np.allclose(enhanced_base, enhanced_latent), \
+        "latency_steps had no effect on forward() output"
+
+    print("  CommGraph stress mechanics: packet_loss/quantization/latency all alter forward()")
+
+
 def test_relay_adjacency():
     """Test relay adjacency matrix for different systems."""
     from marl.comm_graph import build_relay_adjacency
@@ -393,6 +447,7 @@ def run_all_tests():
         test_gnn_attention,
         test_gnn_decoder,
         test_comm_graph,
+        test_comm_graph_stress_mechanics,
         test_relay_adjacency,
         test_neighbor_observations,
         test_shared_gaussian_actor,

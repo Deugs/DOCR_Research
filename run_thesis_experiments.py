@@ -33,6 +33,7 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 import io
 import time
@@ -108,6 +109,13 @@ PROGRESS_DIR: Path = OUTPUT_DIR / "progress"
 LOG_DIR: Path = OUTPUT_DIR / "logs"
 
 FAST_MODE = False
+# Set from --use-subprocess in main() (see the `global USE_SUBPROCESS`
+# assignment there). Previously argparse defined this flag but nothing
+# ever read args.use_subprocess afterward — generate_figures_batch()'s
+# use_subprocess parameter was never passed by any of its 7 call sites,
+# so the flag had zero effect regardless of whether it was passed on the
+# CLI.
+USE_SUBPROCESS = False
 
 # ──────────────────────────────────────────────────────────────────
 # Directory Setup
@@ -491,7 +499,22 @@ def timed_phase(phase_num: int, phase_name: str, progress: ExperimentProgress):
 
 @contextmanager
 def timed_figure(fig_num: int, phase: int, progress: ExperimentProgress):
-    """Context manager for timing a single figure generation."""
+    """Context manager for timing a single figure generation.
+
+    Re-raises after recording the failure — every caller
+    (generate_figure_direct, generate_manual_figure) wraps its call in
+    `with timed_figure(...): ...` inside its OWN try/except expecting to
+    catch a failure and return False. Previously this swallowed the
+    exception instead, so that outer except never fired and both
+    callers unconditionally returned True/incremented success counters
+    regardless of whether the figure actually generated — every crash
+    in figure generation (schema mismatches, missing cache fields, bad
+    data) was silently counted as success in phase summaries and the
+    saved JSON report. "Don't re-raise — allow other figures to
+    continue" is still honored: the caller's loop over figure numbers
+    catches this per-figure, so one failure doesn't abort the whole
+    batch — it just needs to be reported accurately as a failure.
+    """
     progress.start_figure(fig_num, phase)
     t0 = time.time()
     try:
@@ -499,8 +522,8 @@ def timed_figure(fig_num: int, phase: int, progress: ExperimentProgress):
         progress.finish_figure(fig_num, success=True)
     except Exception as e:
         progress.finish_figure(fig_num, success=False, error=str(e))
-        # Don't re-raise — allow other figures to continue
         log(colorize(f"Fig {fig_num} error: {e}", Colors.RED), level="error")
+        raise
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -547,10 +570,19 @@ def run_subprocess(cmd: str, description: str, check: bool = True,
         else:
             log(colorize(f"  ✗ FAILED after {elapsed:.1f}s (exit {process.returncode})", Colors.RED), level="error")
             if check:
+                # Forgive ONLY a genuinely missing optional dependency —
+                # matched as an actual raised-exception line (the class
+                # name followed by ':'), not a bare substring search.
+                # The previous substring list ("not found", "cannot find",
+                # "No such file") matches countless legitimate error
+                # messages too (FileNotFoundError tracebacks, a KeyError
+                # whose message happens to say "X not found", assertion
+                # text, etc.) — any of those got silently downgraded to a
+                # warning and treated as success instead of surfacing a
+                # real bug.
                 output_text = '\n'.join(output_lines)
-                if any(x in output_text for x in ["Placeholder", "No such file", "cannot find",
-                                                   "not found", "ModuleNotFoundError", "ImportError"]):
-                    log(colorize("  ⚠ Continuing despite error (placeholder/missing module)", Colors.YELLOW), level="warning")
+                if re.search(r"^(ModuleNotFoundError|ImportError):", output_text, re.MULTILINE):
+                    log(colorize("  ⚠ Continuing despite error (missing optional module)", Colors.YELLOW), level="warning")
                     return process.returncode
                 raise subprocess.CalledProcessError(process.returncode, cmd)
 
@@ -609,7 +641,7 @@ def generate_figure_direct(fig_num: int, pp_module: Any, progress: ExperimentPro
 
 
 def generate_figures_batch(fig_nums: List[int], phase: int, progress: ExperimentProgress,
-                         use_subprocess: bool = False) -> Tuple[int, int]:
+                         use_subprocess: bool = None) -> Tuple[int, int]:
     """
     Generate multiple figures with progress tracking.
     Returns (success_count, fail_count).
@@ -617,6 +649,8 @@ def generate_figures_batch(fig_nums: List[int], phase: int, progress: Experiment
     if not fig_nums:
         return 0, 0
 
+    if use_subprocess is None:
+        use_subprocess = USE_SUBPROCESS
     pp_module = None if use_subprocess else load_post_processing_module()
     success_count = 0
     fail_count = 0
@@ -715,7 +749,6 @@ MANUAL_FIGURE_SCRIPTS: Dict[Union[int, str], Path] = {
     26:  BASE_DIR / "phase1_scripts" / "exp_fig26.py",
     27:  BASE_DIR / "phase1_scripts" / "exp_fig27.py",
     28:  BASE_DIR / "phase1_scripts" / "exp_fig28.py",
-    29:  BASE_DIR / "phase1_scripts" / "exp_fig29.py",
     30:  BASE_DIR / "phase1_scripts" / "exp_fig30.py",
     34:  BASE_DIR / "phase1_scripts" / "exp_fig34.py",
     35:  BASE_DIR / "phase1_scripts" / "exp_fig35.py",
@@ -723,7 +756,7 @@ MANUAL_FIGURE_SCRIPTS: Dict[Union[int, str], Path] = {
     52:  BASE_DIR / "phase1_scripts" / "exp_fig52.py",
 }
 
-TRULY_MANUAL_FIGURES: Set[Union[int, str]] = {"26a", 36}
+TRULY_MANUAL_FIGURES: Set[Union[int, str]] = {"26a"}
 
 
 def generate_manual_figure(fig_num: Union[int, str], output_dir: Path,
@@ -831,7 +864,18 @@ PHASE_FIGURES = {
     # dispatch table in this file (PHASE_FIGURES, MANUAL_FIGURE_SCRIPTS,
     # TRULY_MANUAL_FIGURES) — meaning a full pipeline run computed the
     # underlying training data but never actually rendered these plots.
-    3: [5, 6, 7, 8, 9, 10, 12, 16, 21, 37, 38, 41],
+    # Fig 29 was even named in this very comment yet never actually added
+    # here — it was left dual-registered as BOTH a real Core-B-fed
+    # run_post_processing.py figure AND a "manual" Phase-1 standalone
+    # script (phase1_scripts/exp_fig29.py, a conceptual mechanism diagram
+    # unrelated to the real Fisher-information/task-performance data) —
+    # so a full pipeline run only ever produced the conceptual version,
+    # never the real one. Fig 36 (real fig_36_action_space_geometry())
+    # was similarly misfiled as TRULY_MANUAL_FIGURES ("no script
+    # available") despite already having working generation code. Both
+    # removed from MANUAL_FIGURES/MANUAL_FIGURE_SCRIPTS/
+    # TRULY_MANUAL_FIGURES and added here instead.
+    3: [5, 6, 7, 8, 9, 10, 12, 16, 21, 29, 36, 37, 38, 41],
     4: [13, 14, 20, 22, 24, 54],
     5: [15, 23, 25],
     6: [18, 53],
@@ -854,7 +898,7 @@ PHASE_FIGURES = {
     9: [],
 }
 
-MANUAL_FIGURES = {1, 2, 3, 4, 17, 19, 26, "26a", 27, 28, 29, 30, 34, 35, 36, 51, 52}
+MANUAL_FIGURES = {1, 2, 3, 4, 17, 19, 26, "26a", 27, 28, 30, 34, 35, 51, 52}
 
 def run_phase2(progress: ExperimentProgress):
     """Phase 2: Core Training Runs with real evaluations."""
@@ -1303,7 +1347,8 @@ def list_all_figures():
     for fig in sorted(MANUAL_FIGURES, key=lambda x: (isinstance(x, str), x)):
         print(f"  Fig {fig:<4} → Manual diagram / LaTeX / draw.io")
 
-    print(f"\nTotal: {len(all_post_figs)} auto-generated + {len(MANUAL_FIGURES)} manual = 58 figures")
+    print(f"\nTotal: {len(all_post_figs)} auto-generated + {len(MANUAL_FIGURES)} manual "
+          f"= {len(all_post_figs) + len(MANUAL_FIGURES)} figures")
     print(f"\nCache directory: {CACHE_DIR}")
 
     cache_status = check_cache_status()
@@ -1384,11 +1429,12 @@ def main():
     if CONFIG_SYSTEM_AVAILABLE:
         print_config_summary(config)
 
-    global FAST_MODE
+    global FAST_MODE, USE_SUBPROCESS
     FAST_MODE = config.experiment.fast_mode
     if FAST_MODE:
         os.environ["DOCR_FAST"] = "1"
         log(colorize("[FAST MODE] Using reduced iterations for testing.", Colors.YELLOW))
+    USE_SUBPROCESS = bool(getattr(args, "use_subprocess", False))
 
     if args.clear_cache:
         clear_all_caches()

@@ -32,12 +32,23 @@ FAULT_TYPE_WEIGHTS = {"3ph": 1.0, "LL": 0.87, "1ph": 0.58, "2ph-g": 0.75}
 def idmt_time(If: float, PS: float, TMS: float) -> float:
     """
     t = A * TMS / ((If/PS)^B - 1)
-    Returns TOP_MAX when relay would not trip (If <= PS).
+    Returns TOP_MAX when relay would not trip (If <= PS), and never
+    returns a value outside [TOP_MIN, TOP_MAX] — the standard's floor
+    on realistic operate time. This scalar version previously enforced
+    no floor at all (only its unused vectorized twin idmt_time_vec()
+    did, via np.clip), so unconstrained TMS/PS at their legal
+    RL-action-space boundary values could — and empirically did, on
+    100% of pairs at TMS_MIN/ps_min on 8bus and 39bus — drive computed
+    operating times below what IEC 60255-151/IEEE C37.112 permits,
+    letting training/optimization chase infeasible sub-floor "operating
+    times" through every objective_function/CTI-margin computation that
+    calls this.
     """
     ratio = If / PS
     if ratio <= 1.0:
         return TOP_MAX
-    return A_COEFF * TMS / (ratio ** B_COEFF - 1.0)
+    t = A_COEFF * TMS / (ratio ** B_COEFF - 1.0)
+    return min(max(t, TOP_MIN), TOP_MAX)
 
 
 def idmt_time_vec(If: np.ndarray, PS: np.ndarray,

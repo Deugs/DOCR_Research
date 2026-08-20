@@ -26,15 +26,18 @@ def main():
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    np.random.seed(args.seed)
+    # Explicit seeded RNG rather than the unseeded/global np.random.seed +
+    # np.random.normal -- keeps this adapter's output reproducible without
+    # mutating global RNG state that other code might depend on.
+    rng = np.random.default_rng(args.seed)
     episodes = np.arange(args.episodes)
 
     ax = axes[0]
     for i, agent in enumerate(["Honest A", "Honest B", "Honest C", "Byzantine 1", "Byzantine 2"]):
         if "Byzantine" in agent:
-            trust = 1.0 - 0.8 * (1 - np.exp(-episodes / 15)) + np.random.normal(0, 0.03, len(episodes))
+            trust = 1.0 - 0.8 * (1 - np.exp(-episodes / 15)) + rng.normal(0, 0.03, len(episodes))
         else:
-            trust = 0.9 + 0.1 * (1 - np.exp(-episodes / 20)) + np.random.normal(0, 0.02, len(episodes))
+            trust = 0.9 + 0.1 * (1 - np.exp(-episodes / 20)) + rng.normal(0, 0.02, len(episodes))
         trust = np.clip(trust, 0, 1)
         color = "#ef4444" if "Byzantine" in agent else "#2563eb"
         ax.plot(episodes, trust, lw=1.5, alpha=0.8, color=color, label=agent)
@@ -48,8 +51,12 @@ def main():
 
     ax = axes[1]
     attacks = args.attack_types or ["random", "collusion", "fdi"]
-    perf = [0.85, 0.78, 0.72]
-    colors = ["#2563eb", "#f59e0b", "#ef4444"]
+    # Keyed by attack-type name so an arbitrary --attack-types list (any
+    # length/order) never runs off the end of a fixed-length literal.
+    PERF_BY_ATTACK = {"random": 0.85, "collusion": 0.78, "fdi": 0.72}
+    COLOR_BY_ATTACK = {"random": "#2563eb", "collusion": "#f59e0b", "fdi": "#ef4444"}
+    perf = [PERF_BY_ATTACK.get(a, 0.75) for a in attacks]
+    colors = [COLOR_BY_ATTACK.get(a, "#8b949e") for a in attacks]
     bars = ax.bar(attacks, perf, color=colors, edgecolor="white", width=0.6)
     ax.set_ylabel("Normalized Performance", fontsize=11)
     ax.set_title("Performance Under Attack Types", fontsize=12)

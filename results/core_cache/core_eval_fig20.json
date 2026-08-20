@@ -1,7 +1,7 @@
 {
   "fig_num": 20,
   "data": {
-    "byzantine_of": 139.61107193355915,
+    "byzantine_of": 143.52392169661445,
     "detected": false,
     "trust": [
       1.0,
@@ -22,7 +22,7 @@
   },
   "metadata": {
     "method": "_eval_byzantine",
-    "duration": 1.3101279735565186,
+    "duration": 1.2353599071502686,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -50,7 +50,7 @@
       "byzantine_agents": [
         1
       ],
-      "byzantine_strategy": "random",
+      "byzantine_strategy": "fdi",
       "gnn_depth": 2,
       "compression_ratio": 1.0,
       "message_dim": 8,
@@ -60,6 +60,7 @@
       "unseen_fault_type": null,
       "sensor_noise_std": 0.0,
       "missing_sensor_rate": 0.0,
+      "sensor_bias": 0.0,
       "train_system": null,
       "eval_system": null,
       "freeze_transfer_weights": false,
@@ -96,7 +97,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 109.24167185091324
+    "base_of": 77.84522844468644
   },
-  "timestamp": 1787222982.937772
+  "timestamp": 1787245870.3365743
 }

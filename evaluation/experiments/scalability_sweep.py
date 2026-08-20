@@ -23,8 +23,21 @@ def main():
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     systems = args.systems or ["8bus", "14bus", "30bus"]
-    n_relays = [7, 14, 28]
-    train_time = [2.5, 8.2, 35.0]
+
+    # Per-system placeholder values, looked up by name so an arbitrary
+    # --systems list (any length, any order) never runs off the end of a
+    # hardcoded fixed-length array (previously n_relays/train_time/
+    # performance were literal length-3 lists that only matched the
+    # 3-system default).
+    N_RELAYS = {"8bus": 7, "14bus": 14, "30bus": 28, "39bus": 39, "57bus": 57, "118bus": 118}
+    TRAIN_TIME_HOURS = {"8bus": 2.5, "14bus": 8.2, "30bus": 35.0, "39bus": 55.0,
+                         "57bus": 90.0, "118bus": 180.0}
+    FINAL_PERFORMANCE = {"8bus": 0.92, "14bus": 0.88, "30bus": 0.82, "39bus": 0.80,
+                          "57bus": 0.75, "118bus": 0.70}
+
+    n_relays = [N_RELAYS.get(s, 14) for s in systems]
+    train_time = [TRAIN_TIME_HOURS.get(s, 10.0) for s in systems]
+    performance = [FINAL_PERFORMANCE.get(s, 0.85) for s in systems]
 
     ax = axes[0]
     x = np.arange(len(systems))
@@ -41,7 +54,6 @@ def main():
                ha="center", fontsize=9, fontweight="bold")
 
     ax = axes[1]
-    performance = [0.92, 0.88, 0.82]
     ax.plot(n_relays, performance, "o-", color="#39d353", lw=2, markersize=10)
     for i, sys_name in enumerate(systems):
         ax.annotate(sys_name, (n_relays[i], performance[i]), 
