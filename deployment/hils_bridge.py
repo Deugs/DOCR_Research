@@ -120,12 +120,17 @@ class IEC61850Bridge:
        ``subscribe_measurements()`` methods with libiec61850 calls.
     """
 
-    def __init__(self, config: HILSConfig | None = None) -> None:
+    def __init__(self, config: HILSConfig | None = None, seed: int = 42) -> None:
         self.config: HILSConfig = config or HILSConfig()
         self.connected: bool = False
         self._settings_log: list[RelaySetting] = []
         self._measurement_log: list[MeasurementSample] = []
         self._latency_history: list[float] = []
+        # Seeded once at construction (rather than reseeding from wall-clock
+        # time on every subscribe_measurements() call) so simulated SV
+        # measurements are reproducible, matching the project convention of
+        # explicit np.random.default_rng(seed) everywhere.
+        self.rng: np.random.Generator = np.random.default_rng(seed)
 
     # ── Connection management ───────────────────────────────────────────────
 
@@ -214,17 +219,16 @@ class IEC61850Bridge:
         if not self.connected:
             return []
 
-        rng = np.random.default_rng(int(time.time() * 1000) % 2**31)
         samples: list[MeasurementSample] = []
         for _ in range(n_samples):
             sample = MeasurementSample(
                 relay_id=0,
-                ia=float(rng.normal(1000.0, 50.0)),
-                ib=float(rng.normal(1000.0, 50.0)),
-                ic=float(rng.normal(1000.0, 50.0)),
-                va=float(rng.normal(11000.0, 100.0)),
-                vb=float(rng.normal(11000.0, 100.0)),
-                vc=float(rng.normal(11000.0, 100.0)),
+                ia=float(self.rng.normal(1000.0, 50.0)),
+                ib=float(self.rng.normal(1000.0, 50.0)),
+                ic=float(self.rng.normal(1000.0, 50.0)),
+                va=float(self.rng.normal(11000.0, 100.0)),
+                vb=float(self.rng.normal(11000.0, 100.0)),
+                vc=float(self.rng.normal(11000.0, 100.0)),
                 timestamp=time.time(),
                 sample_count=len(self._measurement_log),
             )
@@ -292,9 +296,9 @@ class HILSBridge:
     :class:`IEC61850Bridge` for integration notes.
     """
 
-    def __init__(self, config: HILSConfig | None = None) -> None:
+    def __init__(self, config: HILSConfig | None = None, seed: int = 42) -> None:
         self.config: HILSConfig = config or HILSConfig()
-        self.iec_bridge: IEC61850Bridge = IEC61850Bridge(config)
+        self.iec_bridge: IEC61850Bridge = IEC61850Bridge(config, seed=seed)
         self.running: bool = False
         self.cycle_count: int = 0
         self.error_count: int = 0
