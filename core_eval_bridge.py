@@ -63,6 +63,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-8s | 
 logger = logging.getLogger(__name__)
 
 
+def _json_fallback(obj):
+    """json.dump default= hook for values TrainingResult attaches (numpy
+    arrays/scalars). `default=str` on an ndarray previously called
+    numpy's own str(), which whitespace-separates rows and truncates
+    large arrays with '...' — the cached JSON looked fine but the array
+    data (e.g. fig48 SHAP values, fig49 t-SNE embeddings) was silently
+    unusable/lossy on reload. tolist()/item() round-trip exactly."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.floating, np.integer, np.bool_)):
+        return obj.item()
+    return str(obj)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  BRIDGE RESULT WRAPPER
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -669,7 +683,8 @@ class CoreEvalBridge:
                  "TDS": 0.5, "PSM": 2.0},
             47: {"cases_prevented": 15, "cases_total": 20, "prevention_rate": 0.75},
             48: {"features": ["V_local", "I_branch", "TMS", "PS", "PV_gen"], "shap": [0.1, 0.08, 0.05, 0.03, 0.02]},
-            49: {"x": rng.randn(500), "y": rng.randn(500), "labels": (rng.randn(500) > 0).astype(int)},
+            49: {"x": rng.standard_normal(500), "y": rng.standard_normal(500),
+                 "labels": (rng.standard_normal(500) > 0).astype(int)},
             50: [{"primary": i, "backup": j, "lambda": 0.5, "violation_rate": 0.1} for i in range(1, 8) for j in range(i + 1, 8)],
             53: {"original": {"size_mb": 45, "performance": 0.85}, "int8": {"size_mb": 12, "performance": 0.84},
                  "pruning": {"size_mb": 22, "performance": 0.83}, "distillation": {"size_mb": 18, "performance": 0.82}},
@@ -691,7 +706,7 @@ class CoreEvalBridge:
         """Cache result for post-processing."""
         cache_file = self.cache_dir / f"core_eval_fig{fig_num:02d}.json"
         with open(cache_file, 'w') as f:
-            json.dump(result.to_core_format(), f, indent=2, default=str)
+            json.dump(result.to_core_format(), f, indent=2, default=_json_fallback)
         logger.info(f"  Cached to {cache_file}")
 
     def load_cached_result(self, fig_num: int) -> Optional[BridgeResult]:
