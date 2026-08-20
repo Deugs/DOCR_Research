@@ -1,16 +1,28 @@
 {
-  "timestamp": "2026-06-19T09:21:05.930393",
-  "fast_mode": false,
+  "timestamp": "2026-08-15T09:08:44.158493",
+  "fast_mode": true,
   "output_dir": "results",
   "figures_expected": 58,
   "figures_generated": 33,
   "figures_manual": 17,
   "training_strategy": "11 core runs (A-K) + post-processing",
-  "estimated_gpu_days": "8-10 (full)",
+  "estimated_gpu_days": "~1-2 (fast)",
   "cache_status": {
     "exists": true,
-    "entries": 0,
-    "cores_present": []
+    "entries": 12,
+    "cores_present": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "H",
+      "I",
+      "J",
+      "K"
+    ]
   },
   "phases": [
     1,
@@ -38,10 +50,10 @@
   ],
   "config": {
     "system": "8bus",
-    "pv_penetration": 1.0,
+    "pv_penetration": 0.6,
     "fault_type": "3ph",
-    "n_runs": 50,
-    "n_episodes": 5000,
+    "n_runs": 2,
+    "n_episodes": 500,
     "use_comm": false,
     "use_safety": true,
     "use_ewc": true

@@ -13,7 +13,7 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import matplotlib
 matplotlib.use("Agg")

@@ -23,10 +23,20 @@ import sys
 import time
 import logging
 import argparse
+import multiprocessing as mp
+import zlib
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-sys.path.insert(0, os.path.dirname(__file__))
+import threadpoolctl
+
+# Repo root, not this script's own directory — needed for `from network...`/
+# `from marl...` imports below. Was previously os.path.dirname(__file__)
+# (this directory), which meant the script could never actually be run
+# standalone (only worked when something else, e.g.
+# marl/experiments/batch_runs.py, had already put the repo root on
+# sys.path before importing this module).
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
@@ -151,7 +161,7 @@ def evaluate_traditional(env, net, n_episodes: int, seed: int) -> np.ndarray:
     
     for ep in range(n_episodes):
         obs = env.reset(seed=seed + ep)
-        env.set_relay_settings(fixed_TDS, fixed_PSM)
+        env.set_state(fixed_TDS, fixed_PSM)
         done = False
         ep_return = 0.0
         
@@ -190,13 +200,21 @@ def compute_convergence_time(returns: np.ndarray, threshold: float = 0.95,
 
 
 def bootstrap_ci(data: np.ndarray, n_bootstrap: int = 1000,
-                 confidence: float = 0.95) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute bootstrap confidence intervals."""
+                 confidence: float = 0.95, seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute bootstrap confidence intervals.
+
+    Uses a seeded np.random.default_rng instead of the module-global
+    np.random.choice — every other stochastic step in this file (see
+    run_single_training's `rng`, evaluate_traditional's `rng`) already goes
+    through a seeded Generator, so the CI band this feeds into fig12's
+    shaded region was the one unseeded, non-reproducible exception.
+    """
+    rng = np.random.default_rng(seed)
     n_runs, n_episodes = data.shape
     boot_means = np.zeros((n_bootstrap, n_episodes))
-    
+
     for b in range(n_bootstrap):
-        idx = np.random.choice(n_runs, size=n_runs, replace=True)
+        idx = rng.choice(n_runs, size=n_runs, replace=True)
         boot_means[b] = data[idx].mean(axis=0)
     
     alpha = (1 - confidence) / 2
@@ -206,37 +224,83 @@ def bootstrap_ci(data: np.ndarray, n_bootstrap: int = 1000,
     return ci_lower, ci_upper
 
 
+def _method_seed_offset(method: str) -> int:
+    """Deterministic replacement for the old `hash(method) % 10000`.
+
+    Python's built-in hash() is randomized per-process by default (PEP 456
+    hash randomization) — hash('MAPPO') % 10000 gives a DIFFERENT value on
+    every fresh interpreter invocation, meaning every re-run of this script
+    used different per-method seeds despite seed_base being fixed. zlib.crc32
+    is a plain deterministic checksum, stable across processes and runs.
+    """
+    return zlib.crc32(method.encode()) % 10000
+
+
+def _pool_worker_init():
+    threadpoolctl.threadpool_limits(1)
+
+
+def _run_job(args):
+    method, run_idx, seed, n_episodes, system = args
+    returns, wall_time = run_single_training(method, seed, n_episodes, system=system)
+    return method, run_idx, returns, wall_time
+
+
 def main(n_runs: int = 50, n_episodes: int = 2000, seed_base: int = 0,
-         output_dir: str = "outputs", system: str = "8bus"):
+         output_dir: str = "outputs", system: str = "8bus", n_workers: int = 1):
+    # Applied unconditionally, not just in worker processes — see
+    # baselines/experiments/unified_exp_fig05.py for why: OPENBLAS_NUM_THREADS
+    # is unset by default, so n_workers processes each trying to use every
+    # core for their own NumPy calls oversubscribes the machine and can make
+    # parallel execution SLOWER than sequential. Also makes single-run
+    # results reproducible independent of the machine's ambient BLAS config.
+    threadpoolctl.threadpool_limits(1)
+
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("Figure 12 — Convergence Curves with 95%% CI (IMPROVED)")
     logger.info("  System: %s", system)
     logger.info("  Methods: %s", METHODS)
     logger.info("  Runs per method: %d, Episodes per run: %d", n_runs, n_episodes)
-    
+
+    jobs = [
+        (method, run_idx, seed_base + run_idx + _method_seed_offset(method), n_episodes, system)
+        for method in METHODS for run_idx in range(n_runs)
+    ]
+    logger.info("Dispatching %d jobs across %d worker(s)", len(jobs), n_workers)
+
+    # Pre-allocated by (method, run_idx) rather than appended in completion
+    # order: harmless for this file's order-independent aggregate statistics
+    # (mean/std/bootstrap over the run axis), but kept for consistency with
+    # unified_exp_fig05.py, where the equivalent ordering DOES matter for its
+    # paired significance test — cheap insurance against a future edit here
+    # adding a paired comparison without noticing the ordering assumption.
+    raw_returns = {method: [None] * n_runs for method in METHODS}
+    raw_wall_times = {method: [None] * n_runs for method in METHODS}
+
+    if n_workers > 1:
+        with mp.Pool(n_workers, initializer=_pool_worker_init) as pool:
+            for method, run_idx, returns, wall_time in pool.imap_unordered(_run_job, jobs):
+                raw_returns[method][run_idx] = returns
+                raw_wall_times[method][run_idx] = wall_time
+                logger.info("  [done] %s run %d/%d", method, run_idx + 1, n_runs)
+    else:
+        for job in jobs:
+            method, run_idx, returns, wall_time = _run_job(job)
+            raw_returns[method][run_idx] = returns
+            raw_wall_times[method][run_idx] = wall_time
+            logger.info("  [done] %s run %d/%d", method, run_idx + 1, n_runs)
+
     all_results = {}
-    
+
     for method in METHODS:
-        logger.info("\n=== Method: %s ===", method)
-        all_returns = []
-        convergence_times = []
-        wall_times = []
-        
-        for run_idx in range(n_runs):
-            seed = seed_base + run_idx + hash(method) % 10000
-            logger.info("  Run %d/%d (seed=%d)...", run_idx + 1, n_runs, seed)
-            returns, wall_time = run_single_training(method, seed, n_episodes, system=system)
-            all_returns.append(returns)
-            
-            if method != "Traditional":
-                conv_time = compute_convergence_time(returns)
-                convergence_times.append(conv_time)
-                logger.info("    Convergence @ episode %d, wall-time: %.1fs", conv_time, wall_time)
-            
-            wall_times.append(wall_time)
-        
+        all_returns = raw_returns[method]
+        wall_times = raw_wall_times[method]
+        convergence_times = (
+            [compute_convergence_time(r) for r in all_returns] if method != "Traditional" else []
+        )
+
         all_returns = np.stack(all_returns)  # (n_runs, n_episodes)
         
         # Statistics
@@ -244,8 +308,13 @@ def main(n_runs: int = 50, n_episodes: int = 2000, seed_base: int = 0,
         std_returns = all_returns.std(axis=0)
         se_returns = std_returns / np.sqrt(n_runs)
         
-        # Bootstrap CI (more robust than normal approximation)
-        ci_lower, ci_upper = bootstrap_ci(all_returns, n_bootstrap=1000, confidence=0.95)
+        # Bootstrap CI (more robust than normal approximation). Seeded
+        # per-method (deterministic, distinct from the training seeds) so
+        # re-running with the same seed_base reproduces identical CI bands.
+        ci_lower, ci_upper = bootstrap_ci(
+            all_returns, n_bootstrap=1000, confidence=0.95,
+            seed=seed_base + _method_seed_offset(method),
+        )
         
         all_results[method] = {
             "returns": all_returns,
@@ -361,7 +430,7 @@ def main(n_runs: int = 50, n_episodes: int = 2000, seed_base: int = 0,
     # Panel 6: Final performance distribution
     ax6 = fig.add_subplot(gs[1, 2])
     final_returns = [all_results[m]["returns"][:, -50:].mean(axis=1) for m in METHODS]
-    bp = ax6.boxplot(final_returns, labels=METHODS, patch_artist=True)
+    bp = ax6.boxplot(final_returns, tick_labels=METHODS, patch_artist=True)
     for patch, method in zip(bp["boxes"], METHODS):
         patch.set_facecolor(METHOD_COLORS[method])
         patch.set_alpha(0.7)
@@ -399,5 +468,8 @@ if __name__ == "__main__":
     p.add_argument("--output_dir", type=str, default="outputs")
     p.add_argument("--system", type=str, default="8bus",
                    help="Test system: 8bus, 14bus, 39bus, etc.")
+    p.add_argument("--n_workers", type=int, default=1,
+                   help="Parallel worker processes for the (method, run_idx) job grid. "
+                        "1 = sequential. Results are identical regardless of n_workers.")
     args = p.parse_args()
-    main(args.n_runs, args.n_episodes, args.seed_base, args.output_dir, args.system)
+    main(args.n_runs, args.n_episodes, args.seed_base, args.output_dir, args.system, args.n_workers)

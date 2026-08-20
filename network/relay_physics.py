@@ -175,8 +175,13 @@ def compute_fault_currents_dynamic(
     fc = {}
     ft_scale = FAULT_TYPE_WEIGHTS.get(fault_type, 1.0)
 
-    # PV inverter fault current contribution model
-    # IEC 61427-1: PV inverters contribute 1.2-1.5x rated current during fault
+    # PV inverter fault current contribution model.
+    # This is a simplified linear approximation of PV fault-current contribution
+    # during low-voltage ride-through (LVRT), loosely informed by the general
+    # shape of grid-code fault ride-through requirements (see e.g. IEEE 1547 /
+    # IEC 61727 for the standards that actually govern grid-connected PV fault
+    # behavior). It is NOT a literal implementation of any single standard's
+    # current-injection formula.
     pv_contribution_factor = 1.0 + 0.3 * pv_penetration  # 1.0 to 1.3
 
     for i, p in enumerate(net.pairs):

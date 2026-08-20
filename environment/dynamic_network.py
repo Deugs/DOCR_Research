@@ -67,7 +67,7 @@ class DistributionNetwork:
 
     Integrates:
     1. Pandapower network (power flow, short-circuit)
-    2. PV plants with IEC 61427-1 ride-through
+    2. PV plants with simplified linear fault-ride-through (LVRT) approximation
     3. Topology manager (N-1, reconfiguration)
     4. Scenario generator (profiles, fault scenarios)
     5. Sensor array (CT/PT with noise)
@@ -133,10 +133,15 @@ class DistributionNetwork:
         )
 
         # ── Scenario generator ────────────────────────────────────────────────
-        self.scenario_gen = ScenarioGenerator(seed=42)
+        # Was hardcoded to seed=42, ignoring the caller-supplied seed entirely.
+        self.scenario_gen = ScenarioGenerator(seed=sensor_seed)
 
         # ── Sensor array ──────────────────────────────────────────────────────
         self.sensors = SensorArray(net_data.n_relays, seed=sensor_seed)
+
+        # ── Instance RNG (for anything in this class not delegated to a
+        #    sub-component's own seeded Generator) ─────────────────────────────
+        self.rng = np.random.default_rng(sensor_seed)
 
         # ── Current state ───────────────────────────────────────────────────────
         self.current_state = None
@@ -173,7 +178,9 @@ class DistributionNetwork:
             DynamicState with full network state
         """
         if seed is not None:
-            np.random.seed(seed)
+            # Re-seed this instance's own Generator instead of mutating the
+            # legacy global numpy RNG (which would affect unrelated code).
+            self.rng = np.random.default_rng(seed)
 
         # Reset topology
         self.topology.reset()
@@ -190,16 +197,13 @@ class DistributionNetwork:
         profile = self.scenario_gen.cloud_model.generate_daily_profile()
 
         if time_of_day is None:
-            time_of_day = np.random.uniform(0, 24)
+            time_of_day = self.rng.uniform(0, 24)
 
         # Interpolate profile values at time_of_day
         idx = int(time_of_day * 4) % len(profile.hours)  # 15-min resolution
         irradiance = profile.irradiance[idx]
         temperature = profile.temperature[idx]
         load_pu = profile.load_pu[idx]
-
-        # Update PV plant outputs
-        self._update_pv_output(pv_level, irradiance, temperature)
 
         # Update pandapower if available
         if self.pp_available:
@@ -274,13 +278,6 @@ class DistributionNetwork:
                 switch_outages=topology_changes.get("switch_outages", []),
             )
             self.current_state.topology_state = self.topology.current_state.copy()
-
-        # Update PV output (simplified: assume irradiance changes slowly)
-        self._update_pv_output(
-            self.current_state.pv_penetration,
-            self.current_state.irradiance,
-            self.current_state.temperature,
-        )
 
         # Recompute fault currents
         self.current_state.fault_currents = self._compute_fault_currents(
@@ -362,7 +359,11 @@ class DistributionNetwork:
         true_voltages = np.zeros(self.net_data.n_relays)
 
         for i in range(self.net_data.n_relays):
-            bus_idx = min(i, self.net_data.n_buses - 1)
+            # Real bus this relay is located at (from its RelayPair's
+            # bus_pri/bus_bkp) — the previous placeholder min(i, n_buses-1)
+            # ignored real topology, reading voltage for the wrong bus and
+            # matching this relay against the wrong DG bus below.
+            bus_idx = self.net_data.get_relay_bus(i)
             true_voltages[i] = self.current_state.bus_voltages.get(bus_idx, 1.0)
 
             # Approximate current from load and PV
@@ -410,9 +411,9 @@ class DistributionNetwork:
         scenarios = []
         for _ in range(n_scenarios):
             topology = {"line_outages": [], "switch_outages": []}
-            if stage >= 4 and np.random.random() < 0.3:
+            if stage >= 4 and self.rng.random() < 0.3:
                 max_line = max(1, self.topology.n_lines)
-                topology["line_outages"] = [int(np.random.randint(0, max_line))]
+                topology["line_outages"] = [int(self.rng.integers(0, max_line))]
 
             state = self.reset(
                 pv_level=pv_level,
@@ -425,21 +426,6 @@ class DistributionNetwork:
     # ═══════════════════════════════════════════════════════════════════════
     #  Internal helpers
     # ═══════════════════════════════════════════════════════════════════════
-
-    def _update_pv_output(self, pv_level: float, irradiance: float, temperature: float):
-        """Update all PV plant outputs."""
-        for bus_idx, plant in self.pv_plants.items():
-            # Get bus voltage (approximate)
-            v_pu = 1.0
-            if self.current_state and bus_idx in self.current_state.bus_voltages:
-                v_pu = self.current_state.bus_voltages[bus_idx]
-
-            p, q, i = plant.get_total_output(
-                irradiance=irradiance,
-                temperature=temperature,
-                v_terminal_pu=v_pu,
-            )
-            # Note: In full implementation, this would update pandapower sgen values
 
     def _compute_fault_currents(
         self,

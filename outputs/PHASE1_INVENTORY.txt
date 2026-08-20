@@ -103,8 +103,9 @@ FILES FROM UPLOADS (4 scripts)
    - Usage: python plot_topology.py --system {8bus,30bus} --pv 0.0 --output fig.png
 
 5. data/standards/frt_curves.py
-   - Generates PV Inverter Fault Ride-Through curves per IEC 61427-1 / IEEE 1547-2018
-   - Usage: python frt_curves.py --standards iec61427 ieee1547 --output fig.pdf
+   - Generates PV Inverter Fault Ride-Through curves (simplified approximation,
+     loosely informed by the general shape of IEEE 1547-2018 / IEC 61727 requirements)
+   - Usage: python frt_curves.py --standards generic ieee1547 --output fig.pdf
 
 6. marl/experiments/ewc_visualization.py
    - Visualizes Elastic Weight Consolidation for continual adaptation

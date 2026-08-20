@@ -18,18 +18,21 @@ import numpy as np
 import os
 import sys
 import time
+import zlib
 import logging
 import argparse
+import multiprocessing as mp
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy import stats
+import threadpoolctl
 
 from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
@@ -173,7 +176,7 @@ def evaluate_method(method: str, system: str, seed: int, n_eval_episodes: int = 
     else:
         # Metaheuristic: optimize once, evaluate fixed settings
         TDS_opt, PSM_opt = run_metaheuristic(method, net, env.n_agents, seed)
-        env.set_relay_settings(TDS_opt, PSM_opt)
+        env.set_state(TDS_opt, PSM_opt)
 
         returns = []
         cti_violations = []
@@ -203,9 +206,34 @@ def evaluate_method(method: str, system: str, seed: int, n_eval_episodes: int = 
     }
 
 
-def main(systems: List[str] = None, n_runs: int = 10, output_dir: str = "outputs"):
+def _seed_offset(method: str, system: str) -> int:
+    # zlib.crc32 instead of hash(): Python's hash() is randomized per
+    # process by default (PEP 456), so seeds would differ across worker
+    # processes and break reproducibility.
+    return zlib.crc32((method + system).encode()) % 10000
+
+
+def _pool_worker_init():
+    threadpoolctl.threadpool_limits(1)
+
+
+def _run_job(args):
+    system, method, run_idx = args
+    seed = run_idx + _seed_offset(method, system)
+    res = evaluate_method(method, system, seed)
+    return system, method, run_idx, res
+
+
+def main(systems: List[str] = None, n_runs: int = 10, output_dir: str = "outputs", n_workers: int = 1):
     if systems is None:
         systems = SYSTEMS
+
+    # Applied unconditionally — see baselines/experiments/unified_exp_fig05.py
+    # for why: unpinned BLAS threads oversubscribe the machine under
+    # multiprocessing and can make n_workers>1 slower than sequential, and
+    # this also makes single-process results reproducible regardless of the
+    # machine's ambient BLAS thread configuration.
+    threadpoolctl.threadpool_limits(1)
 
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -215,21 +243,40 @@ def main(systems: List[str] = None, n_runs: int = 10, output_dir: str = "outputs
     logger.info("  Methods: %s", METHODS)
     logger.info("  Runs per config: %d", n_runs)
 
+    jobs = [
+        (system, method, run_idx)
+        for system in systems for method in METHODS for run_idx in range(n_runs)
+    ]
+    logger.info("Dispatching %d jobs across %d worker(s)", len(jobs), n_workers)
+
+    # Pre-allocated by run index rather than appended in completion order —
+    # required for reproducible aggregation regardless of which worker
+    # finishes first.
+    raw_results = {
+        system: {method: [None] * n_runs for method in METHODS}
+        for system in systems
+    }
+
+    if n_workers > 1:
+        with mp.Pool(n_workers, initializer=_pool_worker_init) as pool:
+            for system, method, run_idx, res in pool.imap_unordered(_run_job, jobs):
+                raw_results[system][method][run_idx] = res
+                logger.info("  [done] %s / %s run=%d  wall=%.1fs",
+                            system, method, run_idx, res["wall_time"])
+    else:
+        for job in jobs:
+            system, method, run_idx, res = _run_job(job)
+            raw_results[system][method][run_idx] = res
+            logger.info("  [done] %s / %s run=%d  wall=%.1fs",
+                        system, method, run_idx, res["wall_time"])
+
     all_results = {}
 
     for system in systems:
-        logger.info("=== System: %s ===", system)
         all_results[system] = {}
 
         for method in METHODS:
-            logger.info("  Method: %s", method)
-            method_results = []
-
-            for run_idx in range(n_runs):
-                seed = run_idx + hash(method + system) % 10000
-                logger.info("    Run %d/%d (seed=%d)...", run_idx + 1, n_runs, seed)
-                res = evaluate_method(method, system, seed)
-                method_results.append(res)
+            method_results = raw_results[system][method]
 
             # Aggregate
             all_returns = np.stack([r["returns"] for r in method_results])
@@ -366,5 +413,7 @@ if __name__ == "__main__":
                    help="Systems to evaluate (8bus 14bus 30bus 39bus)")
     p.add_argument("--n_runs", type=int, default=10)
     p.add_argument("--output_dir", type=str, default="outputs")
+    p.add_argument("--n_workers", type=int, default=1,
+                   help="Parallel worker processes (default: 1 = sequential)")
     args = p.parse_args()
-    main(args.systems, args.n_runs, args.output_dir)
+    main(args.systems, args.n_runs, args.output_dir, args.n_workers)

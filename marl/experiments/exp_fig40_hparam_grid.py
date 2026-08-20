@@ -26,15 +26,17 @@ import os
 import sys
 import argparse
 import logging
+import multiprocessing as mp
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy import stats
+import threadpoolctl
 
 from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
@@ -55,9 +57,25 @@ ALPHA_LAMBDA_VALUES = [1e-5, 1e-4, 1e-3, 1e-2]
 HIDDEN_DIM_VALUES = [16, 32, 64, 128]
 
 
-def run_with_params(lambda_ewc, alpha_lambda, hidden_dim, seed=42):
+def _get_network(system):
+    if system == "8bus":
+        return get_8bus()
+    elif system == "14bus":
+        from network.network_data import get_14bus
+        return get_14bus()
+    elif system == "30bus":
+        from network.network_data import get_30bus
+        return get_30bus()
+    elif system == "39bus":
+        from network.network_data import get_39bus
+        return get_39bus()
+    else:
+        return get_8bus()
+
+
+def run_with_params(lambda_ewc, alpha_lambda, hidden_dim, seed=42, system="8bus"):
     """Run one hyperparameter configuration."""
-    net = get_8bus()
+    net = _get_network(system)
     env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph",
                           curriculum_stage=5, seed=seed)
     
@@ -118,31 +136,60 @@ def identify_robust_region(grid_results, metric="mean_OF", threshold_pct=10):
     return robust_mask
 
 
-def main(n_seeds=3, output_dir="outputs"):
+def _pool_worker_init():
+    threadpoolctl.threadpool_limits(1)
+
+
+def _run_job(args):
+    seed, cfg_idx, lamb, alpha, hid, system = args
+    res = run_with_params(lamb, alpha, hid, seed=seed, system=system)
+    return seed, cfg_idx, res
+
+
+def main(n_seeds=3, output_dir="outputs", system="8bus", n_workers=1):
+    # Applied unconditionally — see baselines/experiments/unified_exp_fig05.py
+    # for why: unpinned BLAS threads oversubscribe the machine under
+    # multiprocessing and can make n_workers>1 slower than sequential, and
+    # this also makes single-process results reproducible regardless of the
+    # machine's ambient BLAS thread configuration.
+    threadpoolctl.threadpool_limits(1)
+
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("Figure 40 (v2) — Hyperparameter Sensitivity Heatmap")
-    logger.info("  Grid: %d × %d × %d = %d configs", 
-                len(LAMBDA_EWC_VALUES), len(ALPHA_LAMBDA_VALUES), 
+    logger.info("  Grid: %d × %d × %d = %d configs",
+                len(LAMBDA_EWC_VALUES), len(ALPHA_LAMBDA_VALUES),
                 len(HIDDEN_DIM_VALUES),
                 len(LAMBDA_EWC_VALUES) * len(ALPHA_LAMBDA_VALUES) * len(HIDDEN_DIM_VALUES))
     logger.info("  Seeds: %d  Steps per config: %d", n_seeds, TRAIN_STEPS)
-    
+
     grid = list(itertools.product(LAMBDA_EWC_VALUES, ALPHA_LAMBDA_VALUES, HIDDEN_DIM_VALUES))
-    all_results = []
-    
-    for seed in range(n_seeds):
-        logger.info("\\nSeed %d/%d", seed + 1, n_seeds)
-        seed_results = []
-        for idx, (lamb, alpha, hid) in enumerate(grid):
-            logger.info("  [%3d/%d] λ_EWC=%.0e, α_λ=%.0e, d_h=%d", 
-                       idx + 1, len(grid), lamb, alpha, hid)
-            res = run_with_params(lamb, alpha, hid, seed=seed, system=system)
-            seed_results.append(res)
-            logger.info("      OF=%.4f±%.4f  CTI=%.2f±%.2f", 
-                       res["mean_OF"], res["std_OF"], res["mean_CTI"], res["std_CTI"])
-        all_results.append(seed_results)
+
+    jobs = [
+        (seed, cfg_idx, lamb, alpha, hid, system)
+        for seed in range(n_seeds)
+        for cfg_idx, (lamb, alpha, hid) in enumerate(grid)
+    ]
+    logger.info("Dispatching %d jobs across %d worker(s)", len(jobs), n_workers)
+
+    # Pre-allocated by (seed, cfg_idx) rather than appended in completion
+    # order — required for reproducible aggregation regardless of which
+    # worker finishes first.
+    all_results = [[None] * len(grid) for _ in range(n_seeds)]
+
+    if n_workers > 1:
+        with mp.Pool(n_workers, initializer=_pool_worker_init) as pool:
+            for seed, cfg_idx, res in pool.imap_unordered(_run_job, jobs):
+                all_results[seed][cfg_idx] = res
+                logger.info("  [done] seed=%d cfg=%d  OF=%.4f±%.4f  CTI=%.2f±%.2f",
+                            seed, cfg_idx, res["mean_OF"], res["std_OF"], res["mean_CTI"], res["std_CTI"])
+    else:
+        for job in jobs:
+            seed, cfg_idx, res = _run_job(job)
+            all_results[seed][cfg_idx] = res
+            logger.info("  [done] seed=%d cfg=%d  OF=%.4f±%.4f  CTI=%.2f±%.2f",
+                        seed, cfg_idx, res["mean_OF"], res["std_OF"], res["mean_CTI"], res["std_CTI"])
     
     # Aggregate across seeds
     aggregated = []
@@ -249,5 +296,7 @@ if __name__ == "__main__":
     p.add_argument("--n_seeds", type=int, default=3)
     p.add_argument("--output_dir", type=str, default="outputs")
     p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
+    p.add_argument("--n_workers", type=int, default=1,
+                   help="Parallel worker processes (default: 1 = sequential)")
     args = p.parse_args()
-    main(args.n_seeds, args.output_dir, args.system)
+    main(args.n_seeds, args.output_dir, args.system, args.n_workers)

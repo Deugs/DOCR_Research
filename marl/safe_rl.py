@@ -181,7 +181,14 @@ class ActionProjector:
         t_pri, t_bkp = compute_operating_times(self.net, proposed_TMS, proposed_PS)
         delta_cti = t_bkp - t_pri
 
-        if np.any(delta_cti < CTI - cti_margin):
+        # cti_margin is an EXTRA safety margin on top of the CTI requirement
+        # (per the docstring, "0.05 = 0.35s effective") — the threshold must
+        # be CTI + cti_margin, not CTI - cti_margin, or this check silently
+        # accepts actions that only just clear the bare 0.3s requirement
+        # with none of the intended margin, and even lets some genuine
+        # violations (delta_cti in (CTI - cti_margin, CTI)) through
+        # unactioned.
+        if np.any(delta_cti < CTI + cti_margin):
             # CTI would be violated - scale actions down
             scale = 1.0
             for _ in range(10):  # Binary search for feasible scale
@@ -192,7 +199,7 @@ class ActionProjector:
                 test_PS = np.clip(test_PS, self.ps_min, self.ps_max)
 
                 t_pri_test, t_bkp_test = compute_operating_times(self.net, test_TMS, test_PS)
-                if np.all(t_bkp_test - t_pri_test >= CTI - cti_margin):
+                if np.all(t_bkp_test - t_pri_test >= CTI + cti_margin):
                     break
 
             proj_dt *= scale
@@ -528,8 +535,12 @@ class SafeRLWrapper:
                 "rho":                   self.lagrangian.rho,
                 "projected_actions":     proj_applied,
                 "projection_magnitude":  proj_delta_l2,                      # Fig 21
+                # Fraction of action COMPONENTS actually altered by
+                # projection — was inverted (measuring the unchanged
+                # fraction instead) despite the name; unused by any
+                # current consumer, but fixed so it means what it says.
                 "action_projection_ratio": float(
-                    np.mean(np.abs(safe_actions - actions) < 1e-6)
+                    np.mean(np.abs(safe_actions - actions) >= 1e-6)
                 ),
             }
         else:
@@ -540,6 +551,17 @@ class SafeRLWrapper:
         self.PS = getattr(self.env, 'PS', None)
         self.step_count = getattr(self.env, 'step_count', 0)
         self.current_state = getattr(self.env, 'current_state', None)
+
+        # Dual-ascent update at episode boundaries. This used to require an
+        # external caller to invoke update_lagrangian() explicitly — no
+        # real training path (Core A-D, mains/main3-6.py) ever did, so
+        # lambda/rho stayed frozen at their init values for the whole run
+        # despite lambda_lr/adaptive_rho being configured. Triggering it
+        # here makes the wrapper self-contained, matching its own
+        # docstring ("Use wrapper like regular env but with safe actions")
+        # — no calling code needs Safe-RL-specific awareness.
+        if done and self.config.enforce_cti:
+            self.update_lagrangian()
 
         return obs, rewards, done, info
 
@@ -583,6 +605,19 @@ class SafeRLWrapper:
     def set_curriculum_stage(self, stage):
         if hasattr(self.env, 'set_curriculum_stage'):
             self.env.set_curriculum_stage(stage)
+
+    @property
+    def curriculum_stage(self):
+        # Callers (Core B/D's curriculum loops) read/write this directly
+        # as a plain attribute rather than through set_curriculum_stage() —
+        # without this property, `wrapped_env.curriculum_stage = x` would
+        # silently shadow-set an attribute on the wrapper instead of
+        # reaching the real environment the wrapper actually steps.
+        return self.env.curriculum_stage
+
+    @curriculum_stage.setter
+    def curriculum_stage(self, stage):
+        self.env.curriculum_stage = stage
 
     def get_safe_rl_stats(self) -> Dict:
         """Get comprehensive safe RL statistics."""

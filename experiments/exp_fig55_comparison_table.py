@@ -23,14 +23,17 @@ import sys
 import logging
 import argparse
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+from evaluation.experiments._synthetic_label import mark_synthetic
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -45,27 +48,69 @@ METRICS = [
 ]
 
 
-def load_or_synthesize_results() -> Dict[str, Dict[str, float]]:
-    """Load results from previous experiments or synthesize realistic values."""
-    results = {}
+def _read_npz(path: Path) -> Optional[dict]:
+    """Best-effort load of a result .npz written by another figure script.
+    Returns None (and logs why) instead of raising, so a missing/corrupt
+    upstream file just means those metrics fall back to the synthetic path."""
+    if not path.exists():
+        return None
+    try:
+        with np.load(path, allow_pickle=True) as d:
+            return dict(d)
+    except Exception as exc:
+        logger.warning("Could not read %s (%s); skipping", path, exc)
+        return None
 
-    # Try to load from previous experiment outputs
-    result_files = {
-        "fig05_pv_sweep.npz": ["objective_mean", "objective_std"],
-        "fig06_cti_violations.npz": ["cti_violations"],
-        "fig12_convergence.npz": ["convergence_episodes"],
-        "fig18_inference_latency.npz": ["inference_latency_ms"],
-        "fig13_robustness.npz": ["robustness_score"],
-        "fig14_n1_contingency.npz": ["n1_recovery_time"],
-        "fig41_sample_efficiency.npz": ["sample_efficiency_auc"],
-    }
+
+def load_or_synthesize_results(output_dir: str = "outputs",
+                                seed: int = 42) -> Tuple[Dict[str, Dict[str, float]], bool]:
+    """Load results from previous experiments where available; synthesize the rest.
+
+    Returns (results, any_synthetic) — any_synthetic is True iff at least one
+    method/metric had to be fabricated because no real upstream result file
+    (or the expected key inside it) was found, so callers can honestly label
+    the output when that happens.
+    """
+    out_path = Path(output_dir)
+    results = {method: {} for method in METHODS}
+
+    # These are written by their own generator scripts into the same outputs/
+    # directory this script writes to (see each script's own --output_dir).
+    fig05 = _read_npz(out_path / "fig05_pv_sweep.npz")
+    fig06 = _read_npz(out_path / "fig06_cti_violations.npz")
+    fig12 = _read_npz(out_path / "fig12_convergence.npz")
+    fig41 = _read_npz(out_path / "fig41_sample_efficiency.npz")
 
     for method in METHODS:
-        results[method] = {}
-        for metric in METRICS:
-            results[method][metric] = 0.0
+        if fig05 is not None and f"{method}_mean_OF" in fig05 and f"{method}_std_OF" in fig05:
+            # fig05 stores one value per PV level (PV_LEVELS); last entry = 100% PV,
+            # matching this table's "IEEE 8-Bus, 100% PV" caption.
+            results[method]["objective_mean"] = float(np.asarray(fig05[f"{method}_mean_OF"])[-1])
+            results[method]["objective_std"] = float(np.asarray(fig05[f"{method}_std_OF"])[-1])
 
-    # Synthesize realistic values based on method characteristics
+        if fig06 is not None and f"{method}_violation_rate" in fig06:
+            results[method]["cti_violations"] = float(np.asarray(fig06[f"{method}_violation_rate"])[-1])
+            std_key = f"{method}_violation_rate_std"
+            if std_key in fig06:
+                results[method]["cti_violations_std"] = float(np.asarray(fig06[std_key])[-1])
+
+        if fig12 is not None and f"{method}_convergence_times" in fig12:
+            ct = np.asarray(fig12[f"{method}_convergence_times"])
+            if ct.size and np.any(ct):
+                results[method]["convergence_episodes"] = float(np.mean(ct))
+
+        if fig41 is not None and f"{method}_auc" in fig41:
+            results[method]["sample_efficiency_auc"] = float(np.asarray(fig41[f"{method}_auc"]).reshape(-1)[0])
+
+    if any(f is not None for f in (fig05, fig06, fig12, fig41)):
+        loaded_methods = sorted({m for m in METHODS if results[m]})
+        logger.info("Loaded real values for %d/%d methods from prior figure outputs: %s",
+                    len(loaded_methods), len(METHODS), loaded_methods)
+    else:
+        logger.warning("No prior figure output .npz files found under %s; "
+                        "all metrics will be synthetic", out_path)
+
+    # Fallback characteristics used ONLY for whatever wasn't actually loaded above.
     base_of = {"Traditional": 12.5, "GA-SQP": 10.2, "IPPO": 9.8, "MAPPO": 8.5,
                "MAPPO-Comm": 7.8, "MAPPO-Safe": 7.2, "MAPPO-Safe-EWC": 6.8,
                "HWOA": 9.5, "HHO": 9.3, "JAYA": 9.7, "EEO": 9.4}
@@ -74,24 +119,56 @@ def load_or_synthesize_results() -> Dict[str, Dict[str, float]]:
                 "MAPPO-Comm": 2.1, "MAPPO-Safe": 0.5, "MAPPO-Safe-EWC": 0.3,
                 "HWOA": 3.8, "HHO": 3.5, "JAYA": 4.0, "EEO": 3.7}
 
+    rng = np.random.default_rng(seed)
+    any_synthetic = False
+    synthetic_metrics = set()
+
     for method in METHODS:
-        results[method]["objective_mean"] = base_of[method]
-        results[method]["objective_std"] = base_of[method] * 0.05
-        results[method]["cti_violations"] = base_cti[method]
-        results[method]["cti_violations_std"] = base_cti[method] * 0.2
-        results[method]["convergence_episodes"] = np.random.uniform(2000, 8000)
-        results[method]["inference_latency_ms"] = np.random.uniform(5, 50)
-        results[method]["memory_mb"] = np.random.uniform(50, 500)
-        results[method]["robustness_score"] = np.random.uniform(0.6, 0.95)
-        results[method]["n1_recovery_time"] = np.random.uniform(1, 10)
-        results[method]["sample_efficiency_auc"] = np.random.uniform(1000, 5000)
+        r = results[method]
+        if "objective_mean" not in r:
+            r["objective_mean"] = base_of[method]
+            r["objective_std"] = base_of[method] * 0.05
+            any_synthetic = True
+            synthetic_metrics.add("objective_mean/std")
+        elif "objective_std" not in r:
+            r["objective_std"] = r["objective_mean"] * 0.05
 
-    return results
+        if "cti_violations" not in r:
+            r["cti_violations"] = base_cti[method]
+            r["cti_violations_std"] = base_cti[method] * 0.2
+            any_synthetic = True
+            synthetic_metrics.add("cti_violations")
+        elif "cti_violations_std" not in r:
+            r["cti_violations_std"] = r["cti_violations"] * 0.2
+
+        for metric, lo, hi in [
+            ("convergence_episodes", 2000, 8000),
+            ("inference_latency_ms", 5, 50),
+            ("memory_mb", 50, 500),
+            ("robustness_score", 0.6, 0.95),
+            ("n1_recovery_time", 1, 10),
+            ("sample_efficiency_auc", 1000, 5000),
+        ]:
+            if metric not in r:
+                r[metric] = float(rng.uniform(lo, hi))
+                any_synthetic = True
+                synthetic_metrics.add(metric)
+
+    if any_synthetic:
+        logger.warning("[WARNING] SYNTHETIC DATA used for: %s (seed=%d)",
+                        ", ".join(sorted(synthetic_metrics)), seed)
+
+    return results, any_synthetic
 
 
-def generate_latex_table(results: Dict, output_path: Path):
+def generate_latex_table(results: Dict, output_path: Path, is_synthetic: bool = False):
     """Generate publication-ready LaTeX table."""
-    latex = r"""\begin{table*}[t]
+    synthetic_note = (
+        r"\% SYNTHETIC DATA WARNING: one or more columns below were not found in a real"
+        "\n" r"\% experiment output and were fabricated for illustration only." "\n"
+        if is_synthetic else ""
+    )
+    latex = synthetic_note + r"""\begin{table*}[t]
 \centering
 \caption{Comprehensive Method Comparison (IEEE 8-Bus, 100\% PV)}
 \label{tab:comparison}
@@ -126,11 +203,18 @@ def generate_latex_table(results: Dict, output_path: Path):
     logger.info("Saved LaTeX table: %s", output_path)
 
 
-def generate_markdown_table(results: Dict, output_path: Path):
+def generate_markdown_table(results: Dict, output_path: Path, is_synthetic: bool = False):
     """Generate markdown table for README/documentation."""
-    lines = [
-        "# Comprehensive Method Comparison",
-        "",
+    lines = ["# Comprehensive Method Comparison", ""]
+    if is_synthetic:
+        lines += [
+            "**[WARNING] SYNTHETIC DATA** — one or more columns below were not found "
+            "in a real experiment output (`outputs/fig05_pv_sweep.npz`, "
+            "`fig06_cti_violations.npz`, `fig12_convergence.npz`, `fig41_sample_efficiency.npz`) "
+            "and were fabricated for illustration only. Do not cite as experimental evidence.",
+            "",
+        ]
+    lines += [
         "| Method | OF (s) | CTI Viol. | Conv. Ep. | Lat. (ms) | Mem. (MB) | Robust. | N-1 Rec. | AUC |",
         "|--------|--------|-----------|-----------|-----------|-----------|---------|----------|-----|",
     ]
@@ -149,7 +233,7 @@ def generate_markdown_table(results: Dict, output_path: Path):
     logger.info("Saved Markdown table: %s", output_path)
 
 
-def generate_heatmap(results: Dict, output_path: Path):
+def generate_heatmap(results: Dict, output_path: Path, is_synthetic: bool = False):
     """Generate heatmap visualization of the comparison table."""
     fig, ax = plt.subplots(figsize=(14, 8))
 
@@ -193,23 +277,25 @@ def generate_heatmap(results: Dict, output_path: Path):
     plt.colorbar(im, ax=ax, shrink=0.6, label="Normalized Score (green = better)")
 
     fig.tight_layout()
+    if is_synthetic:
+        mark_synthetic(fig, note="one or more columns fabricated; no real result file found")
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     logger.info("Saved heatmap: %s", output_path)
 
 
-def main(output_dir: str = "outputs"):
+def main(output_dir: str = "outputs", seed: int = 42):
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
     logger.info("Figure 55 — Comprehensive Comparison Table")
 
-    results = load_or_synthesize_results()
+    results, any_synthetic = load_or_synthesize_results(output_dir, seed)
 
     # Generate outputs
-    generate_latex_table(results, out_path / "fig55_comparison_table.tex")
-    generate_markdown_table(results, out_path / "fig55_comparison_table.md")
-    generate_heatmap(results, out_path / "fig55_comparison_table.png")
+    generate_latex_table(results, out_path / "fig55_comparison_table.tex", any_synthetic)
+    generate_markdown_table(results, out_path / "fig55_comparison_table.md", any_synthetic)
+    generate_heatmap(results, out_path / "fig55_comparison_table.png", any_synthetic)
 
     # Also save as NPZ
     save_dict = {}
@@ -235,5 +321,8 @@ def main(output_dir: str = "outputs"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Figure 55 — Comparison Table")
     parser.add_argument("--output_dir", type=str, default="outputs")
+    parser.add_argument("--seed", type=int, default=42,
+                         help="Seed for the synthetic fallback RNG (used only for metrics "
+                              "not found in a real prior figure output)")
     args = parser.parse_args()
-    main(args.output_dir)
+    main(args.output_dir, args.seed)

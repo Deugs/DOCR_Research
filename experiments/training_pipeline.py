@@ -1019,10 +1019,16 @@ class TrainingPipeline:
 
             # Seed the policy from its pre-outage settings, then let it
             # actually act under the new topology rather than freezing at
-            # the pre-outage operating point.
-            env_n1.TMS = result.best_tms.copy()
-            env_n1.PS = result.best_ps.copy()
+            # the pre-outage operating point. reset() unconditionally
+            # re-randomizes TMS/PS, so set_state() must come AFTER it
+            # (setting the attributes directly before reset(), as a
+            # previous version of this method did, gets silently
+            # discarded) — and obs must be recomputed post-set_state()
+            # since the obs reset() returned reflects the now-stale
+            # randomized TMS/PS, not the just-restored best_tms/best_ps.
             obs = env_n1.reset(seed=config.seed_offset + 500)
+            env_n1.set_state(result.best_tms.copy(), result.best_ps.copy())
+            obs = env_n1._get_obs()
             done = False
             steps = 0
             while not done and steps < env_n1.max_steps:
@@ -1047,8 +1053,16 @@ class TrainingPipeline:
                 # outaged network/env (not a fresh copy) for additional
                 # steps so the policy has more interaction to settle
                 # into a better post-contingency operating point.
+                # reset() is needed to clear step_count/done, but it
+                # unconditionally re-randomizes TMS/PS too — restore the
+                # settled (TMS, PS) captured just above right after, or
+                # "recovery" would silently restart from a fresh random
+                # point instead of continuing from where the first
+                # rollout left off.
                 recovery_steps = 100
                 obs = env_n1.reset(seed=config.seed_offset + 600)
+                env_n1.set_state(TMS, PS)
+                obs = env_n1._get_obs()
                 done = False
                 steps = 0
                 while not done and steps < recovery_steps:
@@ -1103,14 +1117,14 @@ class TrainingPipeline:
 
             for i in config.byzantine_agents:
                 if config.byzantine_strategy == "random":
-                    actions[i] = np.random.uniform(-1, 1, env.ACT_DIM)
+                    actions[i] = rng.uniform(-1, 1, env.ACT_DIM)
                 elif config.byzantine_strategy == "reverse":
                     honest_a, _ = act_fn(obs, i, rng)
                     actions[i] = -honest_a
                 elif config.byzantine_strategy == "colluding":
                     actions[i] = np.ones(env.ACT_DIM) * 0.9
                 else:
-                    actions[i] = np.random.uniform(-1, 1, env.ACT_DIM)
+                    actions[i] = rng.uniform(-1, 1, env.ACT_DIM)
 
             obs, reward, done, info = env.step(actions)
 
@@ -1123,7 +1137,7 @@ class TrainingPipeline:
 
         TMS, PS = env.get_state()
         try:
-            of_byz, _, _ = objective_function(net, TMS, PS)
+            of_byz, _, _ = objective_function(net, TMS, PS, fault_type=config.fault_type)
             constraints = check_constraints(net, TMS, PS, fault_type=config.fault_type)
             result.byzantine_of = float(of_byz)
             result.byzantine_trust_scores = trust_scores
@@ -1266,9 +1280,16 @@ class TrainingPipeline:
         act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
         rng = np.random.default_rng(config.seed_offset + 900)
 
-        env.TMS = result.best_tms.copy()
-        env.PS = result.best_ps.copy()
+        # reset() unconditionally re-randomizes TMS/PS, so set_state()
+        # must come AFTER it (setting the attributes directly before
+        # reset(), as a previous version of this method did, gets
+        # silently discarded) — and obs must be recomputed post-
+        # set_state() since the obs reset() returned reflects the
+        # now-stale randomized TMS/PS, not the just-restored
+        # best_tms/best_ps.
         obs = env.reset(seed=config.seed_offset + 900, fault_type=eval_fault_type)
+        env.set_state(result.best_tms.copy(), result.best_ps.copy())
+        obs = env._get_obs()
         done = False
         steps = 0
         while not done and steps < env.max_steps:
@@ -1347,7 +1368,7 @@ class TrainingPipeline:
 
         TMS, PS = env.get_state()
         try:
-            of_noisy, _, _ = objective_function(net, TMS, PS)
+            of_noisy, _, _ = objective_function(net, TMS, PS, fault_type=config.fault_type)
             constraints = check_constraints(net, TMS, PS, fault_type=config.fault_type)
             result.noisy_of = float(of_noisy)
             result.noisy_cti_ok = constraints["cti_satisfied"]
@@ -1940,12 +1961,20 @@ class TrainingPipeline:
             warnings.warn("Compression eval requires a trained policy (actor_params is None)")
             return result
 
+        # Reconstruct the ACTUAL trained actor via _get_actor_for_eval —
+        # hand-building a fresh SharedGaussianActor sized for the raw obs
+        # dimension (the previous version of this method) silently
+        # misaligned MLP.set_params's parameter-chunk splitting whenever
+        # result.use_comm=True, since actor_params is then sized for
+        # raw_obs_dim + comm_msg_dim, not the raw dimension alone.
+        act_fn, _mean_fn, _comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
+
         # Genuinely compress the actor's weights:
         #   - Quantization: round to the requested bit depth's effective
         #     resolution over the weight's observed range.
         #   - Pruning: zero out the smallest-magnitude weights up to
         #     prune_ratio, the standard magnitude-pruning heuristic.
-        compressed_params = result.actor_params.copy()
+        compressed_params = actor.get_all_params().copy()
 
         if config.quantize_bits and config.quantize_bits < 32:
             levels = 2 ** config.quantize_bits
@@ -1960,12 +1989,7 @@ class TrainingPipeline:
                 prune_idx = np.argsort(np.abs(compressed_params))[:n_prune]
                 compressed_params[prune_idx] = 0.0
 
-        from marl.marl_agents import SharedGaussianActor
-        compressed_actor = SharedGaussianActor(
-            result.obs_dim or env.OBS_DIM, result.act_dim or env.ACT_DIM,
-            hidden=result.actor_hidden or 64, seed=0,
-        )
-        compressed_actor.set_all_params(compressed_params)
+        actor.set_all_params(compressed_params)
 
         rng = np.random.default_rng(config.seed_offset + 1600)
         obs = env.reset()
@@ -1979,8 +2003,11 @@ class TrainingPipeline:
                 # uncompressed here — Fig 22 (bandwidth) already covers
                 # comm-channel compression specifically, so Fig 53
                 # isolates actor compression to avoid conflating the
-                # two effects in one figure.
-                a, _ = compressed_actor.sample(obs[i], rng)
+                # two effects in one figure. act_fn (from
+                # _get_actor_for_eval) still routes obs through the
+                # (uncompressed) comm graph first when use_comm=True,
+                # matching how the actor was actually trained.
+                a, _ = act_fn(obs, i, rng)
                 actions[i] = a
             obs, _, done, _ = env.step(actions)
             steps += 1

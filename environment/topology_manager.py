@@ -105,8 +105,10 @@ class TopologyManager:
         line_outages: List[int] = None,
         switch_outages: List[int] = None,
     ) -> TopologyState:
-        """Apply multiple simultaneous outages (N-k)."""
-        state = self.base_state.copy()
+        """Apply multiple simultaneous outages (N-k), accumulating on top of
+        whatever outages are already active in current_state (call reset()
+        first if a clean base topology is wanted)."""
+        state = self.current_state.copy()
 
         if line_outages:
             for idx in line_outages:
@@ -183,12 +185,18 @@ class TopologyManager:
         state = topology_state or self.current_state
         affected = set()
 
-        # Simplified: all buses beyond first outage are potentially affected
+        # Simplified: treat outaged line `line_idx` as connecting buses
+        # line_idx and line_idx+1 (no real line-to-bus adjacency is tracked
+        # by this class). Bounds-checked rather than wrapped with `% n_buses`:
+        # n_lines can exceed n_buses (e.g. meshed IEEE systems), and wrapping
+        # would alias unrelated high-numbered lines onto low bus indices,
+        # conflating distinct lines' line-index space with the bus-index space.
         for line_idx, in_service in state.line_status.items():
             if not in_service:
-                # Mark buses on both sides as affected
-                affected.add(line_idx % self.n_buses)
-                affected.add((line_idx + 1) % self.n_buses)
+                if line_idx < self.n_buses:
+                    affected.add(line_idx)
+                if line_idx + 1 < self.n_buses:
+                    affected.add(line_idx + 1)
 
         return affected
 
@@ -221,11 +229,15 @@ class TopologyManager:
         """Reset to base topology."""
         self.current_state = self.base_state.copy()
 
-    def random_n1_contingency(self, rng: Optional[np.random.Generator] = None) -> TopologyState:
-        """Apply a random N-1 contingency."""
-        if rng is None:
-            rng = np.random.default_rng()
+    def random_n1_contingency(self, rng: np.random.Generator) -> TopologyState:
+        """Apply a random N-1 contingency.
 
+        `rng` is required (no unseeded default) — this class has no
+        `self.rng` of its own to fall back to, and the repo-wide
+        convention is that every stochastic component is driven by an
+        explicitly-seeded np.random.default_rng(seed) supplied by the
+        caller, not one silently seeded from OS entropy.
+        """
         if self.n_lines > 0 and (self.n_switches == 0 or rng.random() < 0.7):
             # 70% chance of line outage
             line_idx = rng.integers(0, self.n_lines)

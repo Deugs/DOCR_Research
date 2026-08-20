@@ -8,9 +8,12 @@ import argparse
 import sys
 import os
 
-_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+# The real exp_fig*.py this adapter wraps lives in marl/experiments/, not alongside this file (see README_PHASE2_ADAPTERS.md —
+# this package was never actually merged into that layout).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_TARGET_DIR = os.path.join(_REPO_ROOT, "marl", "experiments")
+if _TARGET_DIR not in sys.path:
+    sys.path.insert(0, _TARGET_DIR)
 
 from exp_fig16_ewc_effectiveness import main as fig16_main
 
@@ -30,7 +33,7 @@ def main():
     print(f"[Adapter] ewc_ablation.py -> calling fig16_main()")
     print(f"  Output dir: {out_dir}")
 
-    fig16_main(n_seeds=args.n_runs, output_dir=out_dir)
+    fig16_main(n_seeds=args.n_runs, output_dir=out_dir, system=args.system)
 
 
 if __name__ == "__main__":

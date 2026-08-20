@@ -7,14 +7,25 @@ This is a **merged, cache-efficient** version of the DOCR-MARL thesis experiment
 ### Original Problem
 - **58 figures** requiring training
 - **~30+ redundant training sessions** (same configs re-trained for each figure)
-- **~40 GPU-days** estimated compute time
 - Figures 9, 10, 21, 37, 38 all trained MAPPO-Safe-EWC separately on 8-bus, 100% PV
 
 ### Merged Solution
-- **6 core training runs** that cache all results
+- **11 core training runs (A–K)** that cache all results — Cores A–F do
+  real independent training and parallelize with `--n-workers`; Cores G–K
+  are smaller and make a handful of evaluation calls each (see
+  `EXPERIMENT_GUIDE.md` §2.2 for the full breakdown)
 - **Post-processing scripts** generate figures from cached data (no re-training)
-- **~8-10 GPU-days** estimated compute time
 - All figures that share training data are generated from a single cached run
+
+**On compute time:** this codebase is CPU-only by default (hand-rolled
+NumPy MLPs trained via evolution strategies — no GPU dependency in the
+default path; see `EXPERIMENT_GUIDE.md` §2.2.4 for the optional,
+GPU-only-when-available backend and why it isn't used on CPU). Measured
+directly rather than estimated: full-scale (`thesis_sweep` preset) Cores
+A–D alone run **~40 CPU-days sequential** on one core; the fast preset
+(`thesis_sweep_fast`) is **~7–8 hours sequential**. `--n-workers N`
+divides this close to linearly — see the two new sections below for how
+to actually run either scale.
 
 ---
 
@@ -30,7 +41,7 @@ This is a **merged, cache-efficient** version of the DOCR-MARL thesis experiment
                     ▼                               ▼
         ┌─────────────────────┐         ┌─────────────────────────┐
         │  run_core_training  │         │  run_post_processing    │
-        │  (6 training runs)  │         │  (figure generation)    │
+        │  (11 training runs) │         │  (figure generation)    │
         └─────────────────────┘         └─────────────────────────┘
                     │                               ▲
                     │    ┌──────────────────────┐   │
@@ -41,14 +52,22 @@ This is a **merged, cache-efficient** version of the DOCR-MARL thesis experiment
 
 ### Core Training Runs
 
-| Core Run | Configuration | Feeds Figures | Est. Time |
-|----------|--------------|---------------|-----------|
-| **A** | MAPPO-Safe-EWC, 8-bus, 100% PV, 50 seeds | 9, 10, 12, 21, 37, 38, 41, 48-50, 55-57 | ~3-4 days |
-| **B** | Curriculum 0%→100% PV, 10 seeds | 5, 6, 7, 16, 29, 39 | ~1-2 days |
-| **C** | Baselines (4 methods), 50 seeds | 11, 12, 31-33, 55-56 | ~2-3 days |
-| **D** | Ablation (5 configs), 10 seeds | 39 | ~0.5-1 day |
-| **E** | Hyperparameter grid, 3 seeds × 80 configs | 40 | ~0.5-1 day |
-| **F** | Scalability (5 systems) | 15 | ~0.5 day |
+Cores A–F do real, independent per-item training (parallelizable with
+`--n-workers`); Cores G–K are smaller, each making 1–5 sequential
+evaluation calls via `core_eval_bridge.py`. Full-scale (`thesis_sweep`)
+run counts shown; the `thesis_sweep_fast` preset reduces each by roughly
+5–25x (see the "Full thesis-scale run" section below for measured
+wall-clock times, both sequential and parallelized):
+
+| Core Run | Configuration | Feeds Figures |
+|----------|--------------|---------------|
+| **A** | MAPPO-Safe-EWC, 8-bus, 60% PV, 50 runs | 9, 10, 12, 21, 37, 38, 41, 48-50, 55-57 |
+| **B** | Curriculum 0%→60% PV, 10 runs (with/without EWC) | 5, 6, 7, 16, 29, 39 |
+| **C** | Baselines (5 methods incl. Traditional), 50 runs | 11, 12, 31-33, 55-56 |
+| **D** | Ablation (5 configs), 10 runs | 39 |
+| **E** | Hyperparameter grid, 80 configs × 3 seeds | 40 |
+| **F** | Scalability (up to 7 systems) | 15 |
+| **G–K** | Robustness, transfer, deployment, protection, seasonal — smaller, sequential | 13, 20, 22-25, 44-47, 53, 54 |
 
 ### Post-Processing Figures (No Training)
 
@@ -117,6 +136,128 @@ python run_post_processing.py --list            # List available
 python run_core_training.py --cache-status      # Show cache entries
 python run_core_training.py --clear-cache       # Clear all caches
 ```
+
+---
+
+## Running the Full Thesis-Scale Experiments on a PC
+
+The active thesis scope (`thesis_sweep` preset: 8/14/39-bus, 0/20/40/60%
+PV) is a genuinely large run — see Time Comparison below before starting.
+Full step-by-step detail, troubleshooting, and per-phase reruns are in
+`EXPERIMENT_GUIDE.md`; this is the condensed path.
+
+**1. Install dependencies**
+```bash
+python --version   # 3.9+
+pip install -r requirements.txt
+# pandapower (already in requirements.txt) is optional — an analytical
+# fallback is used automatically if it's absent, except for Fig 44.
+```
+
+**2. Verify the setup**
+```bash
+python -c "
+from network.network_data import NETWORKS
+from marl.marl_env import DynamicDOCREnv
+from marl.marl_agents import MAPPOMARLTrainer
+print('Setup OK — all imports resolved')
+"
+```
+
+**3. Run a fast smoke test first (always do this before committing to full scale)**
+```bash
+python run_thesis_experiments.py --all --preset thesis_sweep_fast --n-workers N
+```
+Replace `N` with your machine's core count (check with `nproc` on
+Linux/macOS or the Task Manager on Windows). This produces real
+(non-synthetic) results at reduced scale in a few hours — see the Time
+Comparison table above for what to expect.
+
+**4. Run the full thesis-scale suite**
+```bash
+python run_thesis_experiments.py --all --preset thesis_sweep --n-workers N
+```
+This is the run that actually reproduces every figure at full statistical
+power. At full scale, `--n-workers` is not optional in practice — without
+it this is a multi-week single-core job (see Time Comparison). Even
+parallelized across a typical desktop's cores, expect this to run for
+multiple days; plan to leave it running unattended (a workstation you can
+leave on, or see the Docker/cloud section below for something you don't
+have to keep your own machine on for).
+
+**5. If it gets interrupted**
+Every Core's result is cached by a content-addressable key (see Cache
+System below) as soon as that Core finishes — re-running the same command
+picks up from the last completed Core rather than starting over. Use
+`python run_core_training.py --cache-status` to see what's already done.
+
+**6. Generate figures once training is cached**
+```bash
+python run_post_processing.py --all
+```
+This step alone is fast (~15 min) — it only reads from `results/core_cache/`.
+
+---
+
+## Running on the Cloud / Remote Server via Docker
+
+The codebase runs entirely on CPU by default (see the Overview above), so
+any cloud VM or remote server that can run Docker can run this pipeline —
+nothing here is provider-specific. `Dockerfile`, `docker-compose.yml`, and
+`docker/entrypoint.sh` at the repo root package the whole pipeline; full
+detail (including the seed-cache mechanism and what's excluded from the
+image) is in `EXPERIMENT_GUIDE.md` §11.
+
+**1. Get the repo onto the remote host**
+```bash
+# from your machine:
+scp -r . user@remote-host:~/DOCR_Research
+# or, on the remote host directly:
+git clone <your-fork-url> DOCR_Research && cd DOCR_Research
+```
+
+**2. Build the image on the remote host**
+```bash
+docker build -t docr-marl .
+# GPU-capable build (see below for when this is worth it):
+# docker build --build-arg INSTALL_TORCH=true -t docr-marl-gpu .
+```
+
+**3. Run it, with `results/`/`outputs/` mounted so output survives past the container's life**
+```bash
+docker run --rm \
+    -v "$(pwd)/results:/app/results" \
+    -v "$(pwd)/outputs:/app/outputs" \
+    docr-marl python3 run_thesis_experiments.py --all --preset thesis_sweep --n-workers N
+```
+Replace `N` with the *container's* visible CPU count (matters if you've
+capped it with `--cpus`). Since this is a multi-day job, run it detached
+so it survives your SSH session ending:
+```bash
+docker run -d --rm --name docr-run \
+    -v "$(pwd)/results:/app/results" -v "$(pwd)/outputs:/app/outputs" \
+    docr-marl python3 run_thesis_experiments.py --all --preset thesis_sweep --n-workers N
+docker logs -f docr-run   # reattach to watch progress; Ctrl-C to detach without stopping it
+```
+Or with `docker-compose.yml`: `docker compose run -d --rm docr python3 run_thesis_experiments.py --all --preset thesis_sweep --n-workers N`.
+
+**4. GPU (optional)**
+`marl/marl_agents.py` has an auto-detected GPU backend for its ES
+actor/critic update (see `EXPERIMENT_GUIDE.md` §2.2.4). It only helps if
+you built with `--build-arg INSTALL_TORCH=true` **and** run with
+`--gpus all` on a host with NVIDIA drivers + the NVIDIA Container Toolkit
+installed (most cloud GPU VM images already have this). Read §2.2.4
+before reaching for this — the same batched approach measured *slower*
+than the default CPU path when benchmarked, and actual GPU speedup for
+this specific workload hasn't been verified on real hardware.
+
+**5. Picking a cloud VM**
+Since the workload is CPU-bound and each Core's `n_runs` are independent,
+prioritize **core count** over any other spec — a 16-32 vCPU instance with
+`--n-workers` matching that count is the most direct way to compress the
+~40 CPU-day full-scale estimate down to a few days. No GPU instance type
+is needed unless you're specifically testing the optional GPU backend
+above.
 
 ---
 
@@ -201,11 +342,13 @@ project/
 
 ## Time Comparison
 
-| Scenario | Training Runs | Post-Process | Total GPU-Days |
-|----------|--------------|--------------|----------------|
-| **Original** (naïve) | ~30 separate | Minimal | ~40 |
-| **Merged** (this) | 6 core runs | ~15 min | **~8-10** |
-| **Fast mode** | 6 core runs (reduced) | ~15 min | **~1-2 hours** |
+Measured directly (see `EXPERIMENT_GUIDE.md` §2.2.4), single CPU core,
+sequential — no GPU dependency in the default path:
+
+| Scenario | Cores A-D alone | With `--n-workers 4` |
+|----------|-----------------|----------------------|
+| **Full scale** (`thesis_sweep`) | ~40 CPU-days | ~10+ days |
+| **Fast mode** (`thesis_sweep_fast`) | ~7-8 hours | ~2-4 hours |
 
 ---
 

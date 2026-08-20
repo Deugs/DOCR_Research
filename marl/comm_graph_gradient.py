@@ -1177,9 +1177,33 @@ def compute_comm_gradient(comm_graph, raw_obs, dloss_denhanced):
             comm_grad[idx:idx+arr.size] = g.ravel()
         idx += arr.size
 
-    # Attention (placeholder — full attention backprop requires custom handling)
+    # Attention: GradGNNAttention.forward() decomposes a_vec into two
+    # linear "pseudo-weights" (tape ops named "att_a1"/"att_a2") so the
+    # (n,n) pairwise score matrix can be built via tape.reshape+tape.add
+    # instead of an explicit repeat -- see GradGNNAttention.forward(). Its
+    # true params (get_params() order: [W_att.ravel(), a_vec]) map back to
+    # tape gradients as follows:
+    #   W_att -> "att_W_W"   (shape (hidden_dim, msg_dim))
+    #   a_vec -> concat("att_a1_W", "att_a2_W")  (each (1, hidden_dim))
+    # This was previously skipped entirely (left as zeros), silently
+    # dropping attention from the comm-graph gradient update.
     if comm_graph.attention is not None:
-        idx += comm_graph.attention.n_params
+        att = comm_graph.attention
+        n_att = att.n_params
+        att_grad = np.zeros(n_att)
+
+        g_w_att = all_grads.get("att_W_W")
+        if g_w_att is not None:
+            att_grad[:att.W_att.size] = g_w_att.ravel()[:att.W_att.size]
+
+        g_a1 = all_grads.get("att_a1_W")
+        g_a2 = all_grads.get("att_a2_W")
+        if g_a1 is not None and g_a2 is not None:
+            a_vec_grad = np.concatenate([g_a1.ravel(), g_a2.ravel()])
+            att_grad[att.W_att.size:att.W_att.size + a_vec_grad.size] = a_vec_grad
+
+        comm_grad[idx:idx + n_att] = att_grad
+        idx += n_att
 
     return comm_grad
 
@@ -1242,7 +1266,8 @@ class GradientBasedMAPPOMARLTrainer:
 
         # Buffer
         self.buffer = self._make_buffer(env.n_agents, actor_obs_dim, env.ACT_DIM,
-                                         rollout_len, use_comm, msg_dim)
+                                         rollout_len, use_comm, msg_dim,
+                                         raw_obs_dim=env.OBS_DIM)
 
         # Optimizers
         self.actor_opt = Adam(lr=lr_actor)
@@ -1280,7 +1305,19 @@ class GradientBasedMAPPOMARLTrainer:
                     gs = np.concatenate([gs, [pv, topo], fo])
                 h1 = np.maximum(0, self.W1 @ gs + self.b1)
                 h2 = np.maximum(0, self.W2 @ h1 + self.b2)
-                return float(self.W3 @ h2 + self.b3)
+                return float((self.W3 @ h2 + self.b3).item())
+
+            def value_batch(self, TMS, PS, pv, ns, ft=0):
+                """Batched form of value(): TMS/PS (T,n_relays), pv (T,),
+                ns (T,6) -> (T,) predictions via one vectorized forward call
+                instead of a Python loop over T individual value() calls."""
+                T = TMS.shape[0]
+                gs = np.concatenate([TMS, PS], axis=1)
+                fo = np.zeros((T, 4)); fo[:, ft] = 1.0
+                gs = np.concatenate([gs, np.stack([pv, np.zeros(T)], axis=1), fo, ns], axis=1)
+                h1 = np.maximum(0, gs @ self.W1.T + self.b1)
+                h2 = np.maximum(0, h1 @ self.W2.T + self.b2)
+                return (h2 @ self.W3.T + self.b3).ravel()
 
             def get_params(self):
                 return np.concatenate([self.W1.ravel(), self.b1,
@@ -1299,24 +1336,39 @@ class GradientBasedMAPPOMARLTrainer:
 
         return Critic(n_relays, hidden, seed)
 
-    def _make_buffer(self, n_agents, obs_dim, act_dim, cap, use_comm, msg_dim):
+    def _make_buffer(self, n_agents, obs_dim, act_dim, cap, use_comm, msg_dim, raw_obs_dim=None):
         class Buf:
-            def __init__(self, n, od, ad, c, uc, md):
+            def __init__(self, n, od, ad, c, uc, md, rod):
                 self.obs = np.zeros((c, n, od))
                 self.actions = np.zeros((c, n, ad))
                 self.rewards = np.zeros((c, n))
                 self.log_probs = np.zeros((c, n))
                 self.values = np.zeros(c)
                 self.dones = np.zeros(c, dtype=bool)
+                # Per-timestep global relay/PV state, needed so the critic
+                # update re-scores each timestep against the state that
+                # actually produced ret_batch[t], not whatever self.env's
+                # current state happens to be when the update runs.
+                self.tms = np.zeros((c, n))
+                self.ps = np.zeros((c, n))
+                self.pv_levels = np.zeros(c)
                 self.use_comm = uc
                 if uc:
                     self.messages = np.zeros((c, n, md))
                     self.attention = np.zeros((c, n, n))
+                    # Pre-communication (raw) observations per timestep, needed
+                    # so _update_actor_and_comm() can recompute the comm graph's
+                    # forward pass (with a gradient tape) against the SAME input
+                    # that actually produced obs[t] during rollout collection —
+                    # not whatever self.env's raw observation happens to be
+                    # after the whole rollout has already finished.
+                    self.raw_obs = np.zeros((c, n, rod if rod is not None else od))
                 self.ptr = self.size = 0
                 self.capacity = c
                 self.n_agents = n
 
-            def add(self, obs, act, rew, lp, val, done, msg=None, attn=None):
+            def add(self, obs, act, rew, lp, val, done, msg=None, attn=None,
+                    tms=None, ps=None, pv_level=0.0, raw_obs=None):
                 i = self.ptr % self.capacity
                 self.obs[i] = obs
                 self.actions[i] = act
@@ -1324,10 +1376,17 @@ class GradientBasedMAPPOMARLTrainer:
                 self.log_probs[i] = lp
                 self.values[i] = val
                 self.dones[i] = done
+                if tms is not None:
+                    self.tms[i] = tms
+                if ps is not None:
+                    self.ps[i] = ps
+                self.pv_levels[i] = pv_level
                 if self.use_comm and msg is not None:
                     self.messages[i] = msg
                 if self.use_comm and attn is not None:
                     self.attention[i] = attn
+                if self.use_comm and raw_obs is not None:
+                    self.raw_obs[i] = raw_obs
                 self.ptr += 1
                 self.size = min(self.ptr, self.capacity)
 
@@ -1349,7 +1408,7 @@ class GradientBasedMAPPOMARLTrainer:
             def clear(self):
                 self.ptr = self.size = 0
 
-        return Buf(n_agents, obs_dim, act_dim, cap, use_comm, msg_dim)
+        return Buf(n_agents, obs_dim, act_dim, cap, use_comm, msg_dim, raw_obs_dim)
 
     def _get_neighbor_stats(self, obs):
         return np.array([
@@ -1357,6 +1416,16 @@ class GradientBasedMAPPOMARLTrainer:
             float(np.std(obs[:, 0])), float(np.std(obs[:, 1])),
             float(np.max(obs[:, 4])), float(np.mean(obs[:, 3])),
         ])
+
+    def _get_neighbor_stats_batch(self, obs_batch):
+        """Batched form of _get_neighbor_stats: obs_batch (T, n_agents,
+        obs_dim) -> (T, 6), reduced over the agent axis (axis=1) instead of
+        a Python loop calling _get_neighbor_stats(obs_batch[t]) per timestep."""
+        return np.stack([
+            obs_batch[:, :, 0].mean(axis=1), obs_batch[:, :, 1].mean(axis=1),
+            obs_batch[:, :, 0].std(axis=1), obs_batch[:, :, 1].std(axis=1),
+            obs_batch[:, :, 4].max(axis=1), obs_batch[:, :, 3].mean(axis=1),
+        ], axis=1)
 
     def _update_actor_and_comm(self, obs_batch, act_batch, adv_batch, old_lp_batch):
         """Compute true gradients and update actor + communication parameters."""
@@ -1369,7 +1438,16 @@ class GradientBasedMAPPOMARLTrainer:
         n_clipped = 0
 
         for t in range(T):
-            raw_obs = self.env._get_obs() if hasattr(self.env, '_get_obs') else obs_batch[t]
+            # Use the raw (pre-comm-graph) observation actually recorded at
+            # timestep t, not self.env's current observation — by the time
+            # this update runs, the whole rollout has already finished, so
+            # self.env's live observation is just the final timestep's obs
+            # repeated for every t, not the historical per-t input that
+            # actually produced obs_batch[t]/enhanced_obs at collection time.
+            if self.use_comm and hasattr(self.buffer, 'raw_obs'):
+                raw_obs = self.buffer.raw_obs[t]
+            else:
+                raw_obs = obs_batch[t]
 
             if self.use_comm and self.comm_graph is not None:
                 comm_tape = ComputationTape()
@@ -1422,18 +1500,23 @@ class GradientBasedMAPPOMARLTrainer:
         theta = self.critic.get_params()
         noises, losses = [], []
 
+        # Use the historical per-timestep relay/PV state stored in the
+        # buffer (not self.env's *current* state) — ret_batch[t] was
+        # computed from the state at timestep t, not whatever state self.env
+        # happens to be in once the rollout has finished and this update
+        # runs. Also precomputed once (not per-perturbation): these don't
+        # depend on the critic's perturbed parameters.
+        tms_batch = self.buffer.tms[:T]
+        ps_batch = self.buffer.ps[:T]
+        pv_batch = self.buffer.pv_levels[:T]
+        ns_batch = self._get_neighbor_stats_batch(obs_batch)
+
         for _ in range(10):
             eps = self.rng.normal(0, 0.02, len(theta))
             for sign in (+1, -1):
                 self.critic.set_params(theta + sign * eps)
-                pred = np.array([
-                    self.critic.value(
-                        self.env.TMS, self.env.PS,
-                        pv=getattr(self.env, 'current_pv_level', 0.0),
-                        ns=self._get_neighbor_stats(obs_batch[t])
-                    ) for t in range(T)
-                ])
-                loss = -float(np.mean([(ret_batch[t] - pred[t])**2 for t in range(T)]))
+                pred = self.critic.value_batch(tms_batch, ps_batch, pv_batch, ns_batch)
+                loss = -float(np.mean((ret_batch - pred[:, None]) ** 2))
                 noises.append(sign * eps)
                 losses.append(loss)
 
@@ -1467,7 +1550,8 @@ class GradientBasedMAPPOMARLTrainer:
             next_obs, rewards, done, info_step = self.env.step(actions)
 
             self.buffer.add(current_obs, actions, rewards, log_probs, val, done,
-                          msg=messages, attn=info.get("attention"))
+                          msg=messages, attn=info.get("attention"),
+                          tms=TMS, ps=PS, pv_level=pv, raw_obs=obs)
 
             self._global_step += 1
             if (self.use_comm and info.get("attention") is not None and
@@ -1484,13 +1568,23 @@ class GradientBasedMAPPOMARLTrainer:
 
         return obs
 
-    def train(self, total_steps=30000, verbose=True, log_every=2000):
+    def train(self, total_steps=30000, verbose=True, log_every=2000,
+              early_stop_patience=None, early_stop_min_delta=1e-4):
+        """
+        early_stop_patience: if set, stop once this many consecutive rollout
+        evaluations pass without the best objective improving by more than
+        early_stop_min_delta. Disabled by default (None) — see
+        MAPPOMARLTrainer.train() in marl/marl_agents.py for the same
+        opt-in pattern and rationale.
+        """
         obs = self.env.reset()
         step = 0
         history = []
         best_OF = np.inf
         best_TMS = self.env.TMS.copy()
         best_PS = self.env.PS.copy()
+        no_improve_count = 0
+        early_stopped = False
         t0 = time.perf_counter()
 
         if verbose:
@@ -1529,10 +1623,12 @@ class GradientBasedMAPPOMARLTrainer:
             except:
                 OF_now = 0.0
 
+            improved = OF_now < best_OF - early_stop_min_delta
             if OF_now < best_OF:
                 best_OF = OF_now
                 best_TMS = TMS.copy()
                 best_PS = PS.copy()
+            no_improve_count = 0 if improved else no_improve_count + 1
 
             history.append(OF_now)
 
@@ -1545,6 +1641,13 @@ class GradientBasedMAPPOMARLTrainer:
                 print(f"  step {step:6d}/{total_steps}  OF={OF_now:.4f}  best={best_OF:.4f}  "
                       f"|grad|={grad_norm:.4f}  clip%={clip_ratio*100:.1f}  "
                       f"t={time.perf_counter()-t0:.1f}s")
+
+            if early_stop_patience is not None and no_improve_count >= early_stop_patience:
+                early_stopped = True
+                if verbose:
+                    print(f"  Early stop at step {step}/{total_steps}: "
+                          f"no improvement > {early_stop_min_delta} for {no_improve_count} rollouts")
+                break
 
         elapsed = time.perf_counter() - t0
         if verbose:
@@ -1561,6 +1664,8 @@ class GradientBasedMAPPOMARLTrainer:
             "clip_ratio_history": self.clip_ratio_history,
             "attention_snapshots": self.attention_snapshots,
             "per_agent_returns": self.per_agent_returns,
+            "early_stopped": early_stopped,
+            "stopped_at_step": step,
         }
 
 

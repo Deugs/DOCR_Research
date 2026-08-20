@@ -21,7 +21,7 @@ import logging
 import argparse
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
@@ -105,14 +105,27 @@ def run_training_with_logging(env, trainer, n_episodes: int = 2000, seed: int = 
     return log
 
 
-def main(n_episodes: int = 2000, seed: int = 42, output_dir: str = "outputs"):
+def main(n_episodes: int = 2000, seed: int = 42, output_dir: str = "outputs", system: str = "8bus"):
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("Figure 9 — CTI Violation Dynamics During Training")
     logger.info("  Episodes: %d", n_episodes)
-    
-    net = get_8bus()
+    logger.info("  System: %s", system)
+
+    if system == "8bus":
+        net = get_8bus()
+    elif system == "14bus":
+        from network.network_data import get_14bus
+        net = get_14bus()
+    elif system == "30bus":
+        from network.network_data import get_30bus
+        net = get_30bus()
+    elif system == "39bus":
+        from network.network_data import get_39bus
+        net = get_39bus()
+    else:
+        net = get_8bus()
     
     # Run MAPPO-Safe
     logger.info("\n[1/2] Training MAPPO-Safe...")

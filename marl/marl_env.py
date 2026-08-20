@@ -11,18 +11,23 @@ Phase 2 Refactor: Enhanced with neighbor observations and communication interfac
 - Topology-aware observations (N-1 contingencies)
 - Sensor noise simulation (CT/PT errors)
 - Curriculum learning support (6 stages)
-- NEW Phase 2: Neighbor observations for GNN communication
-- NEW Phase 2: Enhanced 10-dim observation with neighbor stats
-- NEW Phase 2: Communication cost in reward
+- NEW Phase 2: Neighbor observations for GNN communication (get_neighbor_observations())
 
 Design (CTDE — Centralised Training, Decentralised Execution)
 ──────────────────────────────────────────────────────────────
 - One agent per relay.
 - Agent i controls (TMS_i, PS_i) via continuous Delta-actions in [-1, 1].
 - Observation: [TMS_i, PS_i, If_norm, cti_slack_norm, viol_flag, top_norm, ps_norm,
-                pv_level, topology_flag, sensor_quality]  (10 features — Phase 1)
-- Phase 2 Enhanced: + neighbor_TMS, neighbor_PS, neighbor_viol, neighbor_slack
-- Reward: shaped local + global penalty signal + PV adaptation bonus + comm cost.
+                pv_level, topology_flag, sensor_quality]  (10 features).
+  An earlier "Phase 2 Enhanced" pass computed additional neighbor_TMS/PS/
+  viol/slack statistics here intending to fold them into this vector, but
+  never actually did — they were computed every step and discarded
+  without affecting OBS_DIM or agent behavior. Removed; real neighbor
+  conditioning for GNN communication happens separately via
+  get_neighbor_observations(), used by MAPPOMARLTrainer when use_comm=True.
+- Reward: shaped local + global penalty signal + PV adaptation bonus.
+  (A "communication efficiency penalty" term exists in _compute_rewards
+  but is hardcoded to 0.0 — never implemented; see that method.)
 - Shared centralised critic sees full [TMS_all || PS_all || PV_level || topology] during training.
 """
 
@@ -158,30 +163,23 @@ class DynamicDOCREnv:
 
         obs = np.zeros((self.n_agents, self.OBS_DIM))
 
-        topology_flag = 1.0 if any(
-            not v for v in self.current_state.topology_state.line_status.values()
-        ) else 0.0 if self.current_state else 0.0
+        # Guard on self.current_state BEFORE dereferencing it — the
+        # previous ternary evaluated the `any(...)` condition
+        # unconditionally and only guarded the else-branch, so it would
+        # raise AttributeError (not return 0.0) if _get_obs() were ever
+        # called before current_state is set. Currently unreachable
+        # since reset() always populates current_state first, but fixed
+        # for correctness rather than relying on that call order.
+        topology_flag = 0.0
+        if self.current_state:
+            topology_flag = 1.0 if any(
+                not v for v in self.current_state.topology_state.line_status.values()
+            ) else 0.0
 
         sensor_quality = 1.0
         if self.sensor_noise:
             n_outages = sum(1 for v in self.current_state.topology_state.line_status.values() if not v) if self.current_state else 0
             sensor_quality = max(0.5, 1.0 - 0.1 * n_outages)
-
-        # Compute neighbor statistics (Phase 2)
-        neighbor_tms = np.zeros(self.n_agents)
-        neighbor_ps = np.zeros(self.n_agents)
-        neighbor_viol = np.zeros(self.n_agents)
-        neighbor_slack = np.zeros(self.n_agents)
-
-        for i in range(self.n_agents):
-            if self.neighbors[i]:
-                neighbor_tms[i] = np.mean([self.TMS[j] for j in self.neighbors[i]]) / TMS_MAX
-                neighbor_ps[i] = np.mean([self.PS[j] for j in self.neighbors[i]]) / np.max(self.ps_max)
-                neighbor_viol[i] = float(any(
-                    delta[pidx] < CTI - 1e-6 for pidx in self.relay_pairs[i]
-                ))
-                slacks = [delta[pidx] - CTI for pidx in self.relay_pairs[i]]
-                neighbor_slack[i] = np.clip(float(np.mean(slacks)) / 2.0 if slacks else 0.0, -1.0, 1.0)
 
         for i in range(self.n_agents):
             tms_n = (self.TMS[i] - TMS_MIN) / self.tms_range
@@ -327,7 +325,11 @@ class DynamicDOCREnv:
                     delta_cti[p] >= CTI - 1e-6 for p in my_pairs
                 ) else -0.1
 
-            # Phase 2: Communication efficiency penalty (if using comm)
+            # Communication efficiency penalty: not implemented (always 0).
+            # Kept as an explicit term so a future real implementation has
+            # an obvious place to plug in, rather than silently claiming
+            # (as an earlier docstring did) that comm cost already
+            # factors into the reward.
             comm_penalty = 0.0
 
             rewards[i] = r_speed + r_coord + r_bonus + pv_adaptation_bonus + topology_bonus + comm_penalty

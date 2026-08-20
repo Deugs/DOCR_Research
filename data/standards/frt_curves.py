@@ -3,11 +3,14 @@
 """
 data/standards/frt_curves.py
 
-Generate Figure 19: PV Inverter Fault Ride-Through Curve (IEC 61427-1 / IEEE 1547-2018).
-Visualizes the voltage ride-through requirements for PV inverters under fault conditions.
+Generate Figure 19: PV Inverter Fault Ride-Through Curve.
+Visualizes a simplified voltage ride-through curve for PV inverters under
+fault conditions, loosely informed by the general shape of grid-code
+requirements (see IEEE 1547-2018 / IEC 61727 for the standards that actually
+govern grid-connected PV fault behavior).
 
 Usage:
-    python data/standards/frt_curves.py --standards iec61427 ieee1547 --output fig.pdf
+    python data/standards/frt_curves.py --standards generic ieee1547 --output fig.pdf
 """
 
 import argparse
@@ -19,7 +22,12 @@ import numpy as np
 
 
 def ride_through_time(v):
-    """IEC 61427-1 / IEEE 1547-2018 ride-through time as function of voltage (pu)."""
+    """Simplified ride-through time as a function of voltage (pu).
+
+    A generic step-function approximation, loosely informed by the general
+    shape of grid-code low-voltage ride-through requirements — not a literal
+    reproduction of any single standard's trip-time table.
+    """
     if v >= 1.1:
         return 0.16  # Instantaneous trip
     elif v >= 1.05:
@@ -71,7 +79,7 @@ def plot_frt_curves(output_path, standards=None):
     
     ax.set_xlabel('Voltage (pu)', fontsize=12)
     ax.set_ylabel('Maximum Trip Time (s)', fontsize=12)
-    ax.set_title('Figure 19: PV Inverter Fault Ride-Through Curve (IEC 61427-1 / IEEE 1547-2018)', 
+    ax.set_title('Figure 19: PV Inverter Fault Ride-Through Curve (Simplified Approximation)',
                  fontsize=13, fontweight='bold')
     ax.set_xlim(0, 1.2)
     ax.set_ylim(0.001, 1000)
@@ -89,7 +97,7 @@ def plot_frt_curves(output_path, standards=None):
 
 def main():
     parser = argparse.ArgumentParser(description='PV Inverter Fault Ride-Through Curves')
-    parser.add_argument('--standards', nargs='+', default=['iec61427', 'ieee1547'],
+    parser.add_argument('--standards', nargs='+', default=['generic', 'ieee1547'],
                         help='Standards to plot')
     parser.add_argument('--output', type=str, required=True, help='Output file path')
     args = parser.parse_args()

@@ -25,14 +25,16 @@ import os
 import sys
 import logging
 import argparse
+import multiprocessing as mp
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import threadpoolctl
 
 from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
@@ -136,25 +138,57 @@ def compute_transfer_metrics(performances: dict):
     return backward_transfer, forward_transfer
 
 
-def main(n_seeds: int = 10, output_dir: str = "outputs"):
+def _pool_worker_init():
+    threadpoolctl.threadpool_limits(1)
+
+
+def _run_job(args):
+    kind, seed_idx, actual_seed, system = args
+    perf = run_curriculum(use_ewc=(kind == "ewc"), seed=actual_seed, system=system)
+    return kind, seed_idx, perf
+
+
+def main(n_seeds: int = 10, output_dir: str = "outputs", system: str = "8bus", n_workers: int = 1):
+    # Applied unconditionally — see baselines/experiments/unified_exp_fig05.py
+    # for why: unpinned BLAS threads oversubscribe the machine under
+    # multiprocessing and can make n_workers>1 slower than sequential, and
+    # this also makes single-process results reproducible regardless of the
+    # machine's ambient BLAS thread configuration.
+    threadpoolctl.threadpool_limits(1)
+
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("Figure 16 — EWC Effectiveness Analysis")
     logger.info("  Seeds: %d", n_seeds)
-    
-    ewc_perfs_all = []
-    noewc_perfs_all = []
-    
-    for seed in range(n_seeds):
-        logger.info("\\nSeed %d/%d", seed + 1, n_seeds)
-        logger.info("  Running with EWC...")
-        ewc_perf = run_curriculum(use_ewc=True, seed=seed)
-        ewc_perfs_all.append(ewc_perf)
-        
-        logger.info("  Running without EWC...")
-        noewc_perf = run_curriculum(use_ewc=False, seed=seed + 1000)
-        noewc_perfs_all.append(noewc_perf)
+
+    # Same seed scheme as before: EWC run uses `seed`, no-EWC run uses
+    # `seed + 1000` — kept as two jobs per seed index rather than paired
+    # same-seed twins, matching the original sequential behavior.
+    jobs = []
+    for seed_idx in range(n_seeds):
+        jobs.append(("ewc", seed_idx, seed_idx, system))
+        jobs.append(("noewc", seed_idx, seed_idx + 1000, system))
+
+    ewc_perfs_all = [None] * n_seeds
+    noewc_perfs_all = [None] * n_seeds
+
+    if n_workers > 1:
+        with mp.Pool(n_workers, initializer=_pool_worker_init) as pool:
+            for kind, seed_idx, perf in pool.imap_unordered(_run_job, jobs):
+                if kind == "ewc":
+                    ewc_perfs_all[seed_idx] = perf
+                else:
+                    noewc_perfs_all[seed_idx] = perf
+                logger.info("  [done] %s seed_idx=%d", kind, seed_idx)
+    else:
+        for job in jobs:
+            kind, seed_idx, perf = _run_job(job)
+            if kind == "ewc":
+                ewc_perfs_all[seed_idx] = perf
+            else:
+                noewc_perfs_all[seed_idx] = perf
+            logger.info("  [done] %s seed_idx=%d", kind, seed_idx)
     
     # Average across seeds
     n_tasks = len(TASKS)
@@ -239,5 +273,7 @@ if __name__ == "__main__":
     p.add_argument("--n_seeds", type=int, default=10)
     p.add_argument("--output_dir", type=str, default="outputs")
     p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
+    p.add_argument("--n_workers", type=int, default=1,
+                   help="Parallel worker processes (default: 1 = sequential)")
     args = p.parse_args()
-    main(args.n_seeds, args.output_dir, args.system)
+    main(args.n_seeds, args.output_dir, args.system, args.n_workers)

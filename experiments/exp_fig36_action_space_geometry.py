@@ -25,7 +25,7 @@ import argparse
 from pathlib import Path
 from typing import Tuple, List
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
@@ -50,7 +50,7 @@ def compute_cti_for_settings(net, TDS: np.ndarray, PSM: np.ndarray,
     Returns the minimum CTI (s); negative means violation.
     """
     env = DynamicDOCREnv(net, use_pandapower=False, fault_type=fault_type, curriculum_stage=5)
-    env.set_relay_settings(TDS, PSM)
+    env.set_state(TDS, PSM)
 
     min_cti = float('inf')
     rng = np.random.default_rng(42)

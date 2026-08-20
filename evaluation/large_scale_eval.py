@@ -21,6 +21,11 @@ from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from collections import defaultdict
 
+try:
+    from network.network_data import NETWORKS
+except ImportError:
+    NETWORKS = {}
+
 
 @dataclass
 class ScalabilityMetrics:
@@ -230,7 +235,14 @@ class LargeScaleEvaluator:
                 config = r.get("config", r)
                 system = config.get("system", "unknown")
                 n_relays = system_sizes.get(system, 0)
-                n_pairs = n_relays * 2  # Approximate
+
+                # Use the system's real n_pairs (from its NetworkData
+                # object) rather than a fixed flat guess — n_pairs differs
+                # across the 3/8/14/30/39/57/118-bus systems this evaluator
+                # spans (e.g. 8bus=20, 14bus=26/38 depending on definition,
+                # 30bus=70, ...). Mirrors the correct approach used in
+                # compute_safety_metrics below.
+                n_pairs = NETWORKS[system]().n_pairs if system in NETWORKS else r.get("n_pairs", n_relays * 2)
 
                 m = ScalabilityMetrics(
                     system_name=system,
@@ -393,18 +405,30 @@ class LargeScaleEvaluator:
         metrics = {}
 
         for method, results in self.by_method.items():
-            cti_viols = []
             cti_mins = []
 
+            # Use each result's own n_pairs (looked up from its recorded
+            # system) rather than a fixed flat guess — n_pairs differs
+            # across the 3/8/14/30/39/57/118-bus systems this evaluator
+            # spans (e.g. 8bus=20, 14bus=26/38 depending on definition,
+            # 30bus=70, ...). Mirrors the correct approach already used in
+            # evaluation/thesis_validation.py's cti_violation_rate metric.
+            total_pairs = 0
+            total_viols = 0
+
             for r in results:
-                cti_viols.append(r.get("cti_violations", 0))
                 cti_mins.append(r.get("cti_min", 0.0))
 
-            total_pairs = len(results) * 20  # Approximate
+                config = r.get("config", r)
+                system = config.get("system")
+                n_pairs = NETWORKS[system]().n_pairs if system in NETWORKS else r.get("n_pairs")
+                if n_pairs:
+                    total_pairs += n_pairs
+                    total_viols += r.get("cti_violations", 0)
 
             m = SafetyMetrics(
                 method=method,
-                cti_violation_rate=sum(cti_viols) / total_pairs if total_pairs > 0 else 0.0,
+                cti_violation_rate=total_viols / total_pairs if total_pairs > 0 else 0.0,
                 max_cti_violation=float(np.max(cti_mins)) if cti_mins else 0.0,
                 mean_cti_violation=float(np.mean(cti_mins)) if cti_mins else 0.0,
             )

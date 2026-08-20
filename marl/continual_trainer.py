@@ -196,12 +196,21 @@ class EWCRegularizer:
         self.current_task_params = optimal_params.copy()
         self.n_tasks_learned += 1
 
-    def _consolidate_current_task(self):
-        """Consolidate current task into memory with Fisher Information."""
-        # For now, use uniform Fisher (will be updated with actual estimation)
-        # In practice, this should be called after Fisher estimation
+    def _consolidate_current_task(self, fisher: Optional[np.ndarray] = None):
+        """Consolidate current task into memory with Fisher Information.
+
+        Parameters:
+            fisher: Fisher Information diagonal to use for this task. If not
+                given (the historical behavior, preserved for existing
+                callers of register_task()), a uniform placeholder is used
+                instead — see finalize() for the path that supplies a real
+                estimate collected via update_fisher().
+        """
         n_params = len(self.current_task_params)
-        fisher = np.ones(n_params) * 0.1  # Placeholder - will be updated
+        if fisher is None:
+            # For now, use uniform Fisher (will be updated with actual estimation)
+            # In practice, this should be called after Fisher estimation
+            fisher = np.ones(n_params) * 0.1  # Placeholder - will be updated
 
         # Add to memory
         self.task_memory.append((
@@ -233,6 +242,42 @@ class EWCRegularizer:
         if self.current_task_name == task_name:
             # Store for later consolidation
             self._pending_fisher = fisher_diagonal
+
+    def finalize(self):
+        """
+        Consolidate whatever task is currently "in progress" into task_memory.
+
+        register_task()/update_fisher() only consolidate the *previous*
+        task's optimal parameters and Fisher information when the *next*
+        task's register_task() call fires (see _consolidate_current_task).
+        That lag is intentional — it lets callers call update_fisher() for
+        the current task after register_task() without the task being
+        prematurely finalized before its Fisher estimate is ready — but it
+        also means the LAST task in any sequence has no "next" transition
+        to trigger its own consolidation, and is silently dropped: it is
+        never added to task_memory and therefore never protected against
+        catastrophic forgetting.
+
+        Call this once, after training on the final task in a sequence
+        completes, to close it out explicitly. Uses any Fisher Information
+        already supplied via update_fisher() for the current task (stashed
+        as self._pending_fisher) instead of the zero-information uniform
+        placeholder that register_task()-triggered consolidation falls
+        back to. A no-op if there is no current task (e.g. called twice,
+        or before any task was ever registered).
+        """
+        if self.current_task_name is None or self.current_task_params is None:
+            return
+
+        fisher = getattr(self, '_pending_fisher', None)
+        self._consolidate_current_task(fisher=fisher)
+
+        # Clear the now-consolidated "current task" so a stray extra call
+        # (finalize() twice, or a later register_task()) doesn't re-add it.
+        self.current_task_name = None
+        self.current_task_params = None
+        if hasattr(self, '_pending_fisher'):
+            del self._pending_fisher
 
     def compute_ewc_penalty(self, current_params: np.ndarray) -> Tuple[float, np.ndarray]:
         """
@@ -570,6 +615,15 @@ class ContinualMAPPOTrainer:
         if not hasattr(self, '_ewc_loss_log'):
             self._ewc_loss_log: List[float] = []
         self._ewc_loss_log.append(float(penalty))
+
+    def finalize(self):
+        """
+        Close out the current (final) task so it gets consolidated and
+        protected. See EWCRegularizer.finalize() — call this once after
+        training on the last task in a sequence completes; without it,
+        the last task is silently never added to task_memory.
+        """
+        self.ewc_regularizer.finalize()
 
     def should_consolidate(self, step: int) -> bool:
         """Check if it's time to consolidate current task."""

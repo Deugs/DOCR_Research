@@ -1,0 +1,196 @@
+2026-08-15 08:29:05,162 | INFO     | [FAST MODE] Using reduced iterations for testing.
+2026-08-15 08:29:05,162 | INFO     | 
+2026-08-15 08:29:05,162 | INFO     | ======================================================================
+2026-08-15 08:29:05,162 | INFO     | DOCR-MARL THESIS: COMPLETE EXPERIMENT SUITE
+2026-08-15 08:29:05,162 | INFO     | Strategy: 11 core training runs + unified post-processing
+2026-08-15 08:29:05,162 | INFO     | System: 8BUS | PV: 60% | Fault: 3ph
+2026-08-15 08:29:05,162 | INFO     | Runs: 2 | Episodes: 500
+2026-08-15 08:29:05,162 | INFO     | Estimated: ~8-10 GPU-days (full) / ~1-2 hours (fast)
+2026-08-15 08:29:05,162 | INFO     | ======================================================================
+2026-08-15 08:29:05,162 | INFO     | 
+2026-08-15 08:29:05,162 | INFO     | ======================================================================
+2026-08-15 08:29:05,163 | INFO     | PHASE 1: Manual Diagrams & Architecture
+2026-08-15 08:29:05,163 | INFO     | ======================================================================
+2026-08-15 08:29:05,163 | INFO     | Phase 1: 15 auto-generatable + 2 truly manual figures
+2026-08-15 08:29:05,163 | INFO     | Output directory: results/figures/figs_01_10
+2026-08-15 08:29:06,156 | INFO     |   [Fig 01] ✓ Generated in 0.99s
+2026-08-15 08:29:06,826 | INFO     |   [Fig 02] ✓ Generated in 0.67s
+2026-08-15 08:29:07,373 | INFO     |   [Fig 03] ✓ Generated in 0.55s
+2026-08-15 08:29:07,952 | INFO     |   [Fig 04] ✓ Generated in 0.58s
+2026-08-15 08:29:09,157 | INFO     |   [Fig 17] ✓ Generated in 1.20s
+2026-08-15 08:29:09,792 | INFO     |   [Fig 19] ✓ Generated in 0.63s
+2026-08-15 08:29:10,590 | INFO     |   [Fig 26] ✓ Generated in 0.80s
+2026-08-15 08:29:11,156 | INFO     |   [Fig 27] ✓ Generated in 0.57s
+2026-08-15 08:29:11,688 | INFO     |   [Fig 28] ✓ Generated in 0.53s
+2026-08-15 08:29:12,131 | INFO     |   [Fig 29] ✓ Generated in 0.44s
+2026-08-15 08:29:13,359 | INFO     |   [Fig 30] ✓ Generated in 1.23s
+2026-08-15 08:29:14,370 | INFO     |   [Fig 34] ✓ Generated in 1.01s
+2026-08-15 08:29:15,783 | INFO     |   [Fig 35] ✓ Generated in 1.41s
+2026-08-15 08:29:17,394 | INFO     |   [Fig 51] ✓ Generated in 1.61s
+2026-08-15 08:29:18,178 | INFO     |   [Fig 52] ✓ Generated in 0.78s
+2026-08-15 08:29:18,178 | INFO     |   [Fig 36] ○ Truly manual - create in docs/diagrams/ or LaTeX
+2026-08-15 08:29:18,178 | INFO     |   [Fig 26a] ○ Truly manual - create in docs/diagrams/ or LaTeX
+2026-08-15 08:29:18,179 | INFO     | Phase 1 complete: 15 generated, 0 failed, 2 manual
+2026-08-15 08:29:18,179 | INFO     | ✓ Phase 1 Manual Diagrams & Architecture: COMPLETE (0:00:13)
+2026-08-15 08:29:18,179 | INFO     | 
+2026-08-15 08:29:18,179 | INFO     | ======================================================================
+2026-08-15 08:29:18,179 | INFO     | PHASE 2: Core Training Runs (A-K with Real Evals)
+2026-08-15 08:29:18,179 | INFO     | ======================================================================
+2026-08-15 08:29:18,179 | INFO     | Running unified core training via run_core_training.py...
+2026-08-15 08:29:18,179 | INFO     |   System: 8BUS | PV: 60% | Fault: 3ph
+2026-08-15 08:29:18,179 | INFO     |   Runs: 2 | Episodes: 500
+2026-08-15 08:29:18,179 | INFO     |   Features: GNN=✗ | Safety=✓ | EWC=✓
+2026-08-15 08:29:18,179 | INFO     | 
+2026-08-15 08:29:18,179 | INFO     | ──────────────────────────────────────────────────────────────────────
+2026-08-15 08:29:18,179 | INFO     | ▶ Phase 2: Unified Core Training (all 11 cores A-K)
+2026-08-15 08:29:18,179 | INFO     |   CMD: python run_core_training.py --all --fast --system 8bus --pv 0.6 --n-runs 2 --episodes 500 --n-workers 4
+2026-08-15 08:34:50,159 | INFO     |   ✓ SUCCESS in 332.0s
+2026-08-15 08:34:50,160 | INFO     | 
+[Phase 2] Running Objective 4 benchmark comparison (GA-SQP/HWOA/HHO/JAYA/EEO vs MARL)...
+2026-08-15 08:34:50,993 | INFO     |   PV level: 0% - already computed, loading results/benchmark_pv000.pkl
+2026-08-15 08:34:51,001 | INFO     |   PV level: 20% - already computed, loading results/benchmark_pv020.pkl
+2026-08-15 08:34:51,009 | INFO     |   PV level: 40% - already computed, loading results/benchmark_pv040.pkl
+2026-08-15 08:34:51,018 | INFO     |   PV level: 60%
+2026-08-15 09:08:35,567 | INFO     |     Saved: results/benchmark_pv060.pkl
+2026-08-15 09:08:35,614 | INFO     |     Statistical report saved: results/stat_comparison_pv060.txt
+2026-08-15 09:08:35,614 | INFO     | [Phase 2] Objective 4 benchmark comparison complete.
+2026-08-15 09:08:35,614 | INFO     | ✓ Phase 2 Core Training Runs (A-K with Real Evals): COMPLETE (0:39:17)
+2026-08-15 09:08:35,621 | INFO     | 
+2026-08-15 09:08:35,621 | INFO     | ======================================================================
+2026-08-15 09:08:35,621 | INFO     | PHASE 3: Training Dynamics
+2026-08-15 09:08:35,621 | INFO     | ======================================================================
+2026-08-15 09:08:35,621 | INFO     | Generating 12 figures from Core A/B cached data: [5, 6, 7, 8, 9, 10, 12, 16, 21, 37, 38, 41]
+2026-08-15 09:08:35,625 | ERROR    |   [Fig 05] ✗ Failed: 0.2
+2026-08-15 09:08:35,625 | ERROR    | Fig 5 error: 0.2
+2026-08-15 09:08:35,625 | ERROR    |   [Fig 06] ✗ Failed: 0.2
+2026-08-15 09:08:35,625 | ERROR    | Fig 6 error: 0.2
+2026-08-15 09:08:35,641 | ERROR    |   [Fig 07] ✗ Failed: index 4 is out of bounds for axis 1 with size 4
+2026-08-15 09:08:35,641 | ERROR    | Fig 7 error: index 4 is out of bounds for axis 1 with size 4
+2026-08-15 09:08:36,116 | INFO     |   [Fig 08] ✓ Generated in 0.48s
+2026-08-15 09:08:36,554 | INFO     |   [Fig 09] ✓ Generated in 0.44s
+2026-08-15 09:08:36,683 | INFO     |   [Fig 10] ✓ Generated in 0.13s
+2026-08-15 09:08:36,991 | INFO     |   [Fig 12] ✓ Generated in 0.31s
+2026-08-15 09:08:37,031 | ERROR    |   [Fig 16] ✗ Failed: x and y must have same first dimension, but have shapes (5,) and (4,)
+2026-08-15 09:08:37,031 | ERROR    | Fig 16 error: x and y must have same first dimension, but have shapes (5,) and (4,)
+2026-08-15 09:08:37,152 | INFO     |   [Fig 21] ✓ Generated in 0.12s
+2026-08-15 09:08:37,648 | INFO     |   [Fig 37] ✓ Generated in 0.50s
+2026-08-15 09:08:37,650 | ERROR    |   [Fig 38] ✗ Failed: Number of columns must be a positive integer, not 0
+2026-08-15 09:08:37,650 | ERROR    | Fig 38 error: Number of columns must be a positive integer, not 0
+2026-08-15 09:08:37,776 | INFO     |   [Fig 41] ✓ Generated in 0.13s
+2026-08-15 09:08:37,776 | INFO     | Phase 3 complete: 12 generated, 0 failed
+2026-08-15 09:08:37,776 | INFO     | ✓ Phase 3 Training Dynamics: COMPLETE (0:00:02)
+2026-08-15 09:08:37,776 | INFO     | 
+2026-08-15 09:08:37,776 | INFO     | ======================================================================
+2026-08-15 09:08:37,776 | INFO     | PHASE 4: Robustness & Resilience
+2026-08-15 09:08:37,776 | INFO     | ======================================================================
+2026-08-15 09:08:37,776 | INFO     | Generating 6 figures from Core G cached data: [13, 14, 20, 22, 24, 54]
+2026-08-15 09:08:37,981 | INFO     |   [Fig 13] ✓ Generated in 0.20s
+2026-08-15 09:08:38,139 | INFO     |   [Fig 14] ✓ Generated in 0.16s
+2026-08-15 09:08:38,234 | INFO     |   [Fig 20] ✓ Generated in 0.09s
+2026-08-15 09:08:38,421 | INFO     |   [Fig 22] ✓ Generated in 0.19s
+2026-08-15 09:08:38,715 | INFO     |   [Fig 24] ✓ Generated in 0.29s
+2026-08-15 09:08:38,851 | INFO     |   [Fig 54] ✓ Generated in 0.14s
+2026-08-15 09:08:38,851 | INFO     | Phase 4 complete: 6 generated, 0 failed
+2026-08-15 09:08:38,851 | INFO     | ✓ Phase 4 Robustness & Resilience: COMPLETE (0:00:01)
+2026-08-15 09:08:38,851 | INFO     | 
+2026-08-15 09:08:38,851 | INFO     | ======================================================================
+2026-08-15 09:08:38,851 | INFO     | PHASE 5: Scalability & Transfer Learning
+2026-08-15 09:08:38,851 | INFO     | ======================================================================
+2026-08-15 09:08:38,851 | INFO     | Generating 3 figures from Core F/H cached data: [15, 23, 25]
+2026-08-15 09:08:39,105 | INFO     |   [Fig 15] ✓ Generated in 0.25s
+2026-08-15 09:08:39,198 | INFO     |   [Fig 23] ✓ Generated in 0.09s
+2026-08-15 09:08:39,370 | INFO     |   [Fig 25] ✓ Generated in 0.17s
+2026-08-15 09:08:39,370 | INFO     | Phase 5 complete: 3 generated, 0 failed
+2026-08-15 09:08:39,370 | INFO     | ✓ Phase 5 Scalability & Transfer Learning: COMPLETE (0:00:00)
+2026-08-15 09:08:39,370 | INFO     | 
+2026-08-15 09:08:39,370 | INFO     | ======================================================================
+2026-08-15 09:08:39,370 | INFO     | PHASE 6: Deployment & Hardware
+2026-08-15 09:08:39,370 | INFO     | ======================================================================
+2026-08-15 09:08:39,370 | INFO     | Generating 2 figures from Core I cached data: [18, 53]
+2026-08-15 09:08:39,677 | INFO     |   [Fig 18] ✓ Generated in 0.30s
+2026-08-15 09:08:39,678 | ERROR    |   [Fig 53] ✗ Failed: 'float' object is not subscriptable
+2026-08-15 09:08:39,678 | ERROR    | Fig 53 error: 'float' object is not subscriptable
+2026-08-15 09:08:39,678 | INFO     | Phase 6 complete: 2 generated, 0 failed
+2026-08-15 09:08:39,678 | INFO     | ✓ Phase 6 Deployment & Hardware: COMPLETE (0:00:00)
+2026-08-15 09:08:39,678 | INFO     | 
+2026-08-15 09:08:39,678 | INFO     | ======================================================================
+2026-08-15 09:08:39,678 | INFO     | PHASE 7: Protection Engineering & Interpretability
+2026-08-15 09:08:39,678 | INFO     | ======================================================================
+2026-08-15 09:08:39,678 | INFO     | Generating 9 figures from Core J/A cached data: [43, 44, 45, 46, 47, 48, 49, 50, 58]
+2026-08-15 09:08:39,822 | INFO     |   [Fig 43] ✓ Generated in 0.14s
+2026-08-15 09:08:39,830 | ERROR    |   [Fig 44] ✗ Failed: ufunc 'less' did not contain a loop with signature matching types (<class 'numpy.dtypes.StrDType'>, <class 'numpy.dtypes._PyLongDType'>) -> None
+2026-08-15 09:08:39,831 | ERROR    | Fig 44 error: ufunc 'less' did not contain a loop with signature matching types (<class 'numpy.dtypes.StrDType'>, <class 'numpy.dtypes._PyLongDType'>) -> None
+2026-08-15 09:08:40,023 | INFO     |   [Fig 45] ✓ Generated in 0.19s
+2026-08-15 09:08:40,157 | INFO     |   [Fig 46] ✓ Generated in 0.13s
+2026-08-15 09:08:40,308 | INFO     |   [Fig 47] ✓ Generated in 0.15s
+2026-08-15 09:08:40,445 | INFO     |   [Fig 48] ✓ Generated in 0.14s
+2026-08-15 09:08:40,697 | INFO     |   [Fig 49] ✓ Generated in 0.25s
+2026-08-15 09:08:41,085 | INFO     |   [Fig 50] ✓ Generated in 0.39s
+2026-08-15 09:08:41,085 | ERROR    |   [Fig 58] ✗ Failed: 'performance'
+2026-08-15 09:08:41,085 | ERROR    | Fig 58 error: 'performance'
+2026-08-15 09:08:41,085 | INFO     | Phase 7 complete: 9 generated, 0 failed
+2026-08-15 09:08:41,085 | INFO     | ✓ Phase 7 Protection Engineering & Interpretability: COMPLETE (0:00:01)
+2026-08-15 09:08:41,085 | INFO     | 
+2026-08-15 09:08:41,086 | INFO     | ======================================================================
+2026-08-15 09:08:41,086 | INFO     | PHASE 8: Statistical Aggregation
+2026-08-15 09:08:41,086 | INFO     | ======================================================================
+2026-08-15 09:08:41,086 | INFO     | Generating 10 figures from Core C cached data: [11, 31, 32, 33, 55, 56, 57, 39, 40, 42]
+2026-08-15 09:08:41,165 | INFO     |   [Fig 11] ✓ Generated in 0.08s
+2026-08-15 09:08:41,249 | INFO     |   [Fig 31] ✓ Generated in 0.08s
+2026-08-15 09:08:41,369 | INFO     |   [Fig 32] ✓ Generated in 0.12s
+2026-08-15 09:08:41,522 | INFO     |   [Fig 33] ✓ Generated in 0.15s
+2026-08-15 09:08:41,678 | INFO     |   [Fig 55] ✓ Generated in 0.16s
+2026-08-15 09:08:41,941 | INFO     |   [Fig 56] ✓ Generated in 0.26s
+2026-08-15 09:08:42,196 | INFO     |   [Fig 57] ✓ Generated in 0.25s
+2026-08-15 09:08:42,533 | INFO     |   [Fig 39] ✓ Generated in 0.34s
+2026-08-15 09:08:44,149 | INFO     |   [Fig 40] ✓ Generated in 1.62s
+2026-08-15 09:08:44,157 | ERROR    |   [Fig 42] ✗ Failed: shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between 'x' with shape (5,) and 'height' with shape (4,).
+2026-08-15 09:08:44,157 | ERROR    | Fig 42 error: shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between 'x' with shape (5,) and 'height' with shape (4,).
+2026-08-15 09:08:44,157 | INFO     | Phase 8 complete: 10 generated, 0 failed
+2026-08-15 09:08:44,157 | INFO     | ✓ Phase 8 Statistical Aggregation: COMPLETE (0:00:03)
+2026-08-15 09:08:44,157 | INFO     | 
+2026-08-15 09:08:44,157 | INFO     | ======================================================================
+2026-08-15 09:08:44,157 | INFO     | PHASE 9: Final Compilation
+2026-08-15 09:08:44,157 | INFO     | ======================================================================
+2026-08-15 09:08:44,158 | INFO     |   -> Compilation report saved to results/reports/compilation_report.json
+2026-08-15 09:08:44,158 | INFO     |   -> Figures generated: 33/58 (16 auto + 17 manual)
+2026-08-15 09:08:44,158 | INFO     |   -> Cache entries: 12
+2026-08-15 09:08:44,159 | INFO     |   -> Cached cores: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K']
+2026-08-15 09:08:44,159 | INFO     | ✓ Phase 9 Final Compilation: COMPLETE (0:00:00)
+2026-08-15 09:08:44,159 | INFO     | 
+2026-08-15 09:08:44,159 | INFO     | ======================================================================
+2026-08-15 09:08:44,159 | INFO     | EXPERIMENT SUITE SUMMARY
+2026-08-15 09:08:44,159 | INFO     | ======================================================================
+2026-08-15 09:08:44,159 | INFO     | Total elapsed: 0:39:38
+2026-08-15 09:08:44,159 | INFO     | Mode: FAST
+2026-08-15 09:08:44,159 | INFO     | ETA: 0:02:52
+2026-08-15 09:08:44,159 | INFO     | ----------------------------------------------------------------------
+2026-08-15 09:08:44,159 | INFO     |   ✓ Phase 1: Manual Diagrams & Architecture COMPLETE   0:00:13
+2026-08-15 09:08:44,159 | INFO     |   ✓ Phase 2: Core Training Runs (A-K with Real Evals) COMPLETE   0:39:17
+2026-08-15 09:08:44,159 | INFO     |   ✓ Phase 3: Training Dynamics              COMPLETE   0:00:02 [5 failed]
+2026-08-15 09:08:44,159 | INFO     |   ✓ Phase 4: Robustness & Resilience        COMPLETE   0:00:01
+2026-08-15 09:08:44,159 | INFO     |   ✓ Phase 5: Scalability & Transfer Learning COMPLETE   0:00:00
+2026-08-15 09:08:44,159 | INFO     |   ✓ Phase 6: Deployment & Hardware          COMPLETE   0:00:00 [1 failed]
+2026-08-15 09:08:44,159 | INFO     |   ✓ Phase 7: Protection Engineering & Interpretability COMPLETE   0:00:01 [2 failed]
+2026-08-15 09:08:44,160 | INFO     |   ✓ Phase 8: Statistical Aggregation        COMPLETE   0:00:03 [1 failed]
+2026-08-15 09:08:44,160 | INFO     |   ✓ Phase 9: Final Compilation              COMPLETE   0:00:00
+2026-08-15 09:08:44,160 | INFO     | ----------------------------------------------------------------------
+2026-08-15 09:08:44,160 | INFO     | Figures: 48 generated, 9 failed, 1 pending
+2026-08-15 09:08:44,160 | INFO     | Failed figures:
+2026-08-15 09:08:44,160 | ERROR    |   Fig 05: 0.2
+2026-08-15 09:08:44,160 | ERROR    |   Fig 06: 0.2
+2026-08-15 09:08:44,160 | ERROR    |   Fig 07: index 4 is out of bounds for axis 1 with size 4
+2026-08-15 09:08:44,160 | ERROR    |   Fig 16: x and y must have same first dimension, but have shapes (5,) and (4,)
+2026-08-15 09:08:44,160 | ERROR    |   Fig 38: Number of columns must be a positive integer, not 0
+2026-08-15 09:08:44,160 | ERROR    |   Fig 53: 'float' object is not subscriptable
+2026-08-15 09:08:44,160 | ERROR    |   Fig 44: ufunc 'less' did not contain a loop with signature matching types (<class 'numpy.dtypes.StrDType'>, <class 'numpy.dtypes._PyLongDType'>) -> None
+2026-08-15 09:08:44,160 | ERROR    |   Fig 58: 'performance'
+2026-08-15 09:08:44,160 | ERROR    |   Fig 42: shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between 'x' with shape (5,) and 'height' with shape (4,).
+2026-08-15 09:08:44,160 | INFO     | ======================================================================
+2026-08-15 09:08:44,161 | INFO     | Report saved to: /home/user/DOCR_Research/results/reports/experiment_report_20260815_082905.json
+2026-08-15 09:08:44,161 | INFO     | 
+2026-08-15 09:08:44,162 | INFO     | ======================================================================
+2026-08-15 09:08:44,162 | INFO     | ALL PHASES COMPLETE
+2026-08-15 09:08:44,162 | INFO     | Total time: 0:39:38
+2026-08-15 09:08:44,162 | INFO     | Report: /home/user/DOCR_Research/results/reports/experiment_report_20260815_082905.json
+2026-08-15 09:08:44,162 | INFO     | ======================================================================

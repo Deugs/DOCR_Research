@@ -7,8 +7,8 @@ Tests:
 1. Novelty claim initialization
 2. Claim validation (C1: MAPPO-Comm performance)
 3. Claim validation (C2: Safe RL zero violations)
-4. Claim validation (C3: EWC forgetting)
-5. Claim validation (C4: Curriculum efficiency)
+4. Claim validation (C3: EWC forgetting, incl. backward_transfer)
+5. Claim validation (C4: Curriculum efficiency / sample_efficiency_ratio)
 6. Claim validation (C5: Scalability)
 7. Validation report generation
 8. LaTeX table generation
@@ -22,6 +22,8 @@ Tests:
 
 import numpy as np
 import sys, os
+import tempfile
+from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from evaluation.thesis_validation import (
@@ -123,8 +125,8 @@ def test_claim_c3_validation():
         "results": [
             {"method": "MAPPO-Safe", "system": "8bus", "best_of": 5.1},
             {"method": "MAPPO-Safe-EWC", "system": "8bus", "best_of": 5.0},
-            {"method": "MAPPO-Safe", "system": "30bus", "best_of": 12.0},
-            {"method": "MAPPO-Safe-EWC", "system": "30bus", "best_of": 12.1},
+            {"method": "MAPPO-Safe", "system": "30bus", "best_of": 12.1},
+            {"method": "MAPPO-Safe-EWC", "system": "30bus", "best_of": 12.0},
         ]
     }
 
@@ -134,7 +136,49 @@ def test_claim_c3_validation():
     assert result.claim_id == "C3"
     assert "forgetting_measure" in result.details
 
-    print(f"    ✓ PASS: C3 validated (forgetting={result.details['forgetting_measure']:.4f})")
+    # backward_transfer: signed proxy reusing the same best_of values as
+    # forgetting_measure (see thesis_validation.py) — EWC finishes BELOW
+    # the non-EWC baseline on both systems, and lower OF is better in
+    # this codebase, so this should score as positive transfer
+    # (improvement), not forgetting.
+    assert "backward_transfer" in result.details
+    assert result.details["backward_transfer"] > 0
+
+    print(f"    ✓ PASS: C3 validated (forgetting={result.details['forgetting_measure']:.4f}, "
+          f"backward_transfer={result.details['backward_transfer']:.4f})")
+
+
+def test_claim_c4_validation():
+    """Test: Validate C4 (Curriculum learning sample efficiency)."""
+    print("  Test: C4 validation...")
+
+    validator = ThesisValidator()
+    # MAPPO (baseline) settles late in its logged history; MAPPO-Safe-EWC
+    # (curriculum_method = required_methods[-1]) settles much earlier —
+    # samples_to_convergence is the first index after which every later
+    # OF value stays within 5% of the run's final value.
+    mappo_history = [10, 9, 8, 7, 6, 5, 4, 3.5, 3.2, 3.1, 3.05, 3.02, 3.01,
+                      3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+    ewc_history = [10, 6, 4, 3.2, 3.05, 3.0, 3.0, 3.0, 3.0, 3.0]
+    validator.results = {
+        "results": [
+            {"method": "MAPPO", "system": "8bus", "best_of": mappo_history[-1], "history": mappo_history},
+            {"method": "MAPPO-Safe-EWC", "system": "8bus", "best_of": ewc_history[-1], "history": ewc_history},
+        ]
+    }
+
+    claim = ThesisValidator.CLAIMS[3]  # C4
+    result = validator.validate_claim(claim)
+
+    assert result.claim_id == "C4"
+    assert result.details["MAPPO_samples_to_convergence"] == 9
+    assert result.details["MAPPO-Safe-EWC_samples_to_convergence"] == 4
+    assert "sample_efficiency_ratio" in result.details
+    assert abs(result.details["sample_efficiency_ratio"] - 4 / 9) < 1e-9
+    assert result.details["sample_efficiency_ratio"] < 0.60  # meets C4's pass criterion
+    assert result.details["final_of"] == ewc_history[-1]
+
+    print(f"    ✓ PASS: C4 validated (sample_efficiency_ratio={result.details['sample_efficiency_ratio']:.3f})")
 
 
 def test_claim_c5_validation():
@@ -181,7 +225,7 @@ def test_validation_report():
     print("    ✓ PASS: Validation report generated")
 
 
-def test_latex_table_generation():
+def test_latex_table_generation(tmp_path):
     """Test 7: LaTeX table generation."""
     print("  Test 7: LaTeX table generation...")
 
@@ -189,44 +233,78 @@ def test_latex_table_generation():
     validator.results = {"results": []}
     validator.validate_all_claims()
 
-    latex = validator.generate_latex_tables("/tmp/test_thesis_table.tex")
+    output_path = tmp_path / "test_thesis_table.tex"
+    latex = validator.generate_latex_tables(str(output_path))
 
     assert "\\begin{table}" in latex
     assert "\\end{table}" in latex
     assert "C1" in latex
 
-    assert os.path.exists("/tmp/test_thesis_table.tex")
+    assert output_path.exists()
 
     print("    ✓ PASS: LaTeX table generated")
 
 
-def test_reproducibility_checklist():
+def test_reproducibility_checklist(tmp_path):
     """Test 8: Reproducibility checklist."""
     print("  Test 8: Reproducibility checklist...")
 
-    checklist = ReproducibilityChecklist(repo_dir=".")
+    # Build a fake repo tree with a known, deliberate mix of present/absent
+    # markers so every check's actual boolean VALUE (not just its presence
+    # as a key) can be verified against what run_check() should compute.
+    (tmp_path / ".git").mkdir()                       # Code availability     -> True
+    (tmp_path / "requirements.txt").write_text("numpy\n")  # Environment spec -> True
+    (tmp_path / "configs").mkdir()                     # Hyperparameters       -> True
+    (tmp_path / "evaluation").mkdir()
+    (tmp_path / "evaluation" / "stat_analysis.py").write_text("# stub\n")  # Statistical tests -> True
+    # Deliberately NOT created: "data", "Dockerfile", "outputs",
+    # "evaluation/evaluation.py" -> their checks must come back False.
+
+    checklist = ReproducibilityChecklist(repo_dir=str(tmp_path))
     checks = checklist.run_all_checks()
 
+    expected = {
+        "Code availability": True,
+        "Data availability": False,
+        "Environment specification": True,
+        "Docker container": False,
+        "Random seeds": True,             # always documented in code
+        "Hyperparameters": True,
+        "Hardware specification": True,   # always documented in thesis
+        "Runtime logs": False,
+        "Statistical tests": True,
+        "Plot generation": False,
+    }
+
     assert len(checks) == 10
-    assert "Code availability" in checks
+    assert checks == expected, f"Checklist values diverged from expected: {checks}"
+
+    expected_passed = sum(expected.values())
+    assert expected_passed == 6
+    assert sum(checks.values()) == expected_passed
 
     report = checklist.generate_report()
     assert "REPRODUCIBILITY CHECKLIST" in report
-    assert "Score:" in report
+    assert f"Score: {expected_passed}/10 (60%)" in report
+    # Every individual check result must be reflected in the report with the
+    # correct pass/fail marker, not just the aggregate score.
+    for name, passed_flag in expected.items():
+        marker = "✓" if passed_flag else "✗"
+        assert f"{marker} {name}:" in report, f"Report missing '{marker} {name}:'"
 
     print(f"    ✓ PASS: Reproducibility checklist ({sum(checks.values())}/{len(checks)} checks)")
 
 
-def test_dockerfile_generation():
+def test_dockerfile_generation(tmp_path):
     """Test 9: Dockerfile generation."""
     print("  Test 9: Dockerfile generation...")
 
-    generate_dockerfile("/tmp/test_dockerfile")
+    output_path = tmp_path / "test_dockerfile"
+    generate_dockerfile(str(output_path))
 
-    assert os.path.exists("/tmp/test_dockerfile")
+    assert output_path.exists()
 
-    with open("/tmp/test_dockerfile") as f:
-        content = f.read()
+    content = output_path.read_text()
 
     assert "FROM python:3.10-slim" in content
     assert "requirements.txt" in content
@@ -234,16 +312,16 @@ def test_dockerfile_generation():
     print("    ✓ PASS: Dockerfile generated")
 
 
-def test_github_actions_generation():
+def test_github_actions_generation(tmp_path):
     """Test 10: GitHub Actions CI config."""
     print("  Test 10: GitHub Actions CI config...")
 
-    generate_github_actions("/tmp/test_ci.yml")
+    output_path = tmp_path / "test_ci.yml"
+    generate_github_actions(str(output_path))
 
-    assert os.path.exists("/tmp/test_ci.yml")
+    assert output_path.exists()
 
-    with open("/tmp/test_ci.yml") as f:
-        content = f.read()
+    content = output_path.read_text()
 
     assert "name: DOCR-MARL CI" in content
     assert "test_phase1.py" in content
@@ -338,6 +416,7 @@ def run_all_tests():
         test_claim_c1_validation,
         test_claim_c2_validation,
         test_claim_c3_validation,
+        test_claim_c4_validation,
         test_claim_c5_validation,
         test_validation_report,
         test_latex_table_generation,
@@ -348,12 +427,26 @@ def run_all_tests():
         test_full_validation_pipeline,
     ]
 
+    # These tests take a `tmp_path`-style fixture when run under pytest.
+    # When this module is executed directly (not via pytest), give each of
+    # them its own throwaway temp directory instead.
+    tests_needing_tmp_path = {
+        test_latex_table_generation,
+        test_reproducibility_checklist,
+        test_dockerfile_generation,
+        test_github_actions_generation,
+    }
+
     passed = 0
     failed = 0
 
     for test in tests:
         try:
-            test()
+            if test in tests_needing_tmp_path:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    test(Path(tmpdir))
+            else:
+                test()
             passed += 1
         except Exception as e:
             print(f"    ✗ FAIL: {e}")

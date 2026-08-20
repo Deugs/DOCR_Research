@@ -1,0 +1,527 @@
+{
+  "timestamp": "2026-08-15T09:08:44.160854",
+  "fast_mode": true,
+  "total_elapsed_seconds": 2378.9982352256775,
+  "eta": "0:02:52",
+  "phases": {
+    "1": {
+      "name": "Manual Diagrams & Architecture",
+      "status": "complete",
+      "duration_seconds": 13.016187191009521,
+      "figures_generated": [
+        1,
+        2,
+        3,
+        4,
+        17,
+        19,
+        26,
+        27,
+        28,
+        29,
+        30,
+        34,
+        35,
+        51,
+        52
+      ],
+      "figures_failed": [],
+      "details": {}
+    },
+    "2": {
+      "name": "Core Training Runs (A-K with Real Evals)",
+      "status": "complete",
+      "duration_seconds": 2357.435434103012,
+      "figures_generated": [],
+      "figures_failed": [],
+      "details": {}
+    },
+    "3": {
+      "name": "Training Dynamics",
+      "status": "complete",
+      "duration_seconds": 2.1551318168640137,
+      "figures_generated": [
+        8,
+        9,
+        10,
+        12,
+        21,
+        37,
+        41
+      ],
+      "figures_failed": [
+        {
+          "fig": 5,
+          "error": "0.2"
+        },
+        {
+          "fig": 6,
+          "error": "0.2"
+        },
+        {
+          "fig": 7,
+          "error": "index 4 is out of bounds for axis 1 with size 4"
+        },
+        {
+          "fig": 16,
+          "error": "x and y must have same first dimension, but have shapes (5,) and (4,)"
+        },
+        {
+          "fig": 38,
+          "error": "Number of columns must be a positive integer, not 0"
+        }
+      ],
+      "details": {}
+    },
+    "4": {
+      "name": "Robustness & Resilience",
+      "status": "complete",
+      "duration_seconds": 1.0747172832489014,
+      "figures_generated": [
+        13,
+        14,
+        20,
+        22,
+        24,
+        54
+      ],
+      "figures_failed": [],
+      "details": {}
+    },
+    "5": {
+      "name": "Scalability & Transfer Learning",
+      "status": "complete",
+      "duration_seconds": 0.5189223289489746,
+      "figures_generated": [
+        15,
+        23,
+        25
+      ],
+      "figures_failed": [],
+      "details": {}
+    },
+    "6": {
+      "name": "Deployment & Hardware",
+      "status": "complete",
+      "duration_seconds": 0.3079335689544678,
+      "figures_generated": [
+        18
+      ],
+      "figures_failed": [
+        {
+          "fig": 53,
+          "error": "'float' object is not subscriptable"
+        }
+      ],
+      "details": {}
+    },
+    "7": {
+      "name": "Protection Engineering & Interpretability",
+      "status": "complete",
+      "duration_seconds": 1.4074952602386475,
+      "figures_generated": [
+        43,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50
+      ],
+      "figures_failed": [
+        {
+          "fig": 44,
+          "error": "ufunc 'less' did not contain a loop with signature matching types (<class 'numpy.dtypes.StrDType'>, <class 'numpy.dtypes._PyLongDType'>) -> None"
+        },
+        {
+          "fig": 58,
+          "error": "'performance'"
+        }
+      ],
+      "details": {}
+    },
+    "8": {
+      "name": "Statistical Aggregation",
+      "status": "complete",
+      "duration_seconds": 3.0715601444244385,
+      "figures_generated": [
+        11,
+        31,
+        32,
+        33,
+        55,
+        56,
+        57,
+        39,
+        40
+      ],
+      "figures_failed": [
+        {
+          "fig": 42,
+          "error": "shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between 'x' with shape (5,) and 'height' with shape (4,)."
+        }
+      ],
+      "details": {}
+    },
+    "9": {
+      "name": "Final Compilation",
+      "status": "complete",
+      "duration_seconds": 0.0014622211456298828,
+      "figures_generated": [],
+      "figures_failed": [],
+      "details": {}
+    }
+  },
+  "figures": {
+    "1": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.9935071468353271,
+      "error": null
+    },
+    "2": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.6695892810821533,
+      "error": null
+    },
+    "3": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.546527624130249,
+      "error": null
+    },
+    "4": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.5791444778442383,
+      "error": null
+    },
+    "17": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.2046899795532227,
+      "error": null
+    },
+    "19": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.6348233222961426,
+      "error": null
+    },
+    "26": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.7972934246063232,
+      "error": null
+    },
+    "27": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.565239429473877,
+      "error": null
+    },
+    "28": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.5322525501251221,
+      "error": null
+    },
+    "29": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.4426610469818115,
+      "error": null
+    },
+    "30": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.2277767658233643,
+      "error": null
+    },
+    "34": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.0109682083129883,
+      "error": null
+    },
+    "35": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.412583351135254,
+      "error": null
+    },
+    "51": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.610264778137207,
+      "error": null
+    },
+    "52": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.7839314937591553,
+      "error": null
+    },
+    "5": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.0008826255798339844,
+      "error": "0.2"
+    },
+    "6": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.0004363059997558594,
+      "error": "0.2"
+    },
+    "7": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.015635967254638672,
+      "error": "index 4 is out of bounds for axis 1 with size 4"
+    },
+    "8": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.47505664825439453,
+      "error": null
+    },
+    "9": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.43764519691467285,
+      "error": null
+    },
+    "10": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.1283588409423828,
+      "error": null
+    },
+    "12": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.308635950088501,
+      "error": null
+    },
+    "16": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.03951144218444824,
+      "error": "x and y must have same first dimension, but have shapes (5,) and (4,)"
+    },
+    "21": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.12124204635620117,
+      "error": null
+    },
+    "37": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.49574875831604004,
+      "error": null
+    },
+    "38": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.001184225082397461,
+      "error": "Number of columns must be a positive integer, not 0"
+    },
+    "41": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.12581324577331543,
+      "error": null
+    },
+    "13": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 0.20247817039489746,
+      "error": null
+    },
+    "14": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 0.15846872329711914,
+      "error": null
+    },
+    "20": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 0.09422802925109863,
+      "error": null
+    },
+    "22": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 0.1873798370361328,
+      "error": null
+    },
+    "24": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 0.2936532497406006,
+      "error": null
+    },
+    "54": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 0.1353468894958496,
+      "error": null
+    },
+    "15": {
+      "phase": 5,
+      "status": "complete",
+      "duration_seconds": 0.25222229957580566,
+      "error": null
+    },
+    "23": {
+      "phase": 5,
+      "status": "complete",
+      "duration_seconds": 0.09276485443115234,
+      "error": null
+    },
+    "25": {
+      "phase": 5,
+      "status": "complete",
+      "duration_seconds": 0.17130398750305176,
+      "error": null
+    },
+    "18": {
+      "phase": 6,
+      "status": "complete",
+      "duration_seconds": 0.3045516014099121,
+      "error": null
+    },
+    "53": {
+      "phase": 6,
+      "status": "failed",
+      "duration_seconds": 0.0004220008850097656,
+      "error": "'float' object is not subscriptable"
+    },
+    "43": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.14095234870910645,
+      "error": null
+    },
+    "44": {
+      "phase": 7,
+      "status": "failed",
+      "duration_seconds": 0.008630990982055664,
+      "error": "ufunc 'less' did not contain a loop with signature matching types (<class 'numpy.dtypes.StrDType'>, <class 'numpy.dtypes._PyLongDType'>) -> None"
+    },
+    "45": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.19192290306091309,
+      "error": null
+    },
+    "46": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.13446617126464844,
+      "error": null
+    },
+    "47": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.15016961097717285,
+      "error": null
+    },
+    "48": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.13683414459228516,
+      "error": null
+    },
+    "49": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.2523844242095947,
+      "error": null
+    },
+    "50": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.3874998092651367,
+      "error": null
+    },
+    "58": {
+      "phase": 7,
+      "status": "failed",
+      "duration_seconds": 0.00037407875061035156,
+      "error": "'performance'"
+    },
+    "11": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.07792067527770996,
+      "error": null
+    },
+    "31": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.08379054069519043,
+      "error": null
+    },
+    "32": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.11937284469604492,
+      "error": null
+    },
+    "33": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.1534562110900879,
+      "error": null
+    },
+    "55": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.15530872344970703,
+      "error": null
+    },
+    "56": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.26325416564941406,
+      "error": null
+    },
+    "57": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.25447726249694824,
+      "error": null
+    },
+    "39": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.33660101890563965,
+      "error": null
+    },
+    "40": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 1.6158697605133057,
+      "error": null
+    },
+    "42": {
+      "phase": 8,
+      "status": "failed",
+      "duration_seconds": 0.007880210876464844,
+      "error": "shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between 'x' with shape (5,) and 'height' with shape (4,)."
+    }
+  },
+  "summary": {
+    "total_phases": 9,
+    "completed_phases": 9,
+    "failed_phases": 0,
+    "total_figures": 58,
+    "completed_figures": 48,
+    "failed_figures": 9
+  }
+}

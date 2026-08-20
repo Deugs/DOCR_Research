@@ -63,6 +63,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-8s | 
 logger = logging.getLogger(__name__)
 
 
+def _json_fallback(obj):
+    """json.dump default= hook for values TrainingResult attaches (numpy
+    arrays/scalars). `default=str` on an ndarray previously called
+    numpy's own str(), which whitespace-separates rows and truncates
+    large arrays with '...' — the cached JSON looked fine but the array
+    data (e.g. fig48 SHAP values, fig49 t-SNE embeddings) was silently
+    unusable/lossy on reload. tolist()/item() round-trip exactly."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.floating, np.integer, np.bool_)):
+        return obj.item()
+    return str(obj)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  BRIDGE RESULT WRAPPER
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -178,6 +192,8 @@ class CoreEvalBridge:
         net_factory = self._get_network_factory()
         from marl.marl_env import DynamicDOCREnv
         from marl.marl_agents import MAPPOMARLTrainer
+        from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+        from marl.continual_trainer import create_ewc_trainer, EWCConfig
         from network.relay_physics import check_constraints, objective_function
 
         net = net_factory()
@@ -195,11 +211,20 @@ class CoreEvalBridge:
         # this for iteration speed, matching the prior n_episodes scaling.
         total_steps = 5000 if self.fast_mode else 50000
 
-        trainer = MAPPOMARLTrainer(env, use_comm=True, seed=self.seed)
-        if hasattr(trainer, 'use_safety'):
-            trainer.use_safety = True
-        if hasattr(trainer, 'use_ewc'):
-            trainer.use_ewc = True
+        # "Safe"/"EWC" were previously dead post-hoc attribute sets
+        # (trainer.use_safety/use_ewc are not real MAPPOMARLTrainer
+        # attributes — the hasattr guards were always False), so this
+        # base policy — which every downstream Core G/H/I/J/K evaluation
+        # is built on — trained as plain MAPPO+GNN despite being labeled
+        # "MAPPO-Safe-EWC". Safe RL is a real env wrapper and must wrap
+        # env before the trainer is constructed.
+        safe_env = create_safe_rl_env(env, SafeRLConfig(
+            project_actions=True, enforce_cti=True,
+            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+            use_pid=True, adaptive_rho=True,
+        ))
+        trainer = MAPPOMARLTrainer(safe_env, use_comm=True, seed=self.seed)
+        ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
 
         # This is the actual fix: previously this call never happened.
         # trainer.train() runs the ES rollout + _update_actor_es +
@@ -208,25 +233,39 @@ class CoreEvalBridge:
         history_obj = trainer.train(total_steps=total_steps, verbose=self.fast_mode is False)
         history = list(history_obj) if history_obj is not None else []
 
+        # Register this task with EWC so the apparatus genuinely runs
+        # (n_tasks_learned reflects reality) rather than staying entirely
+        # inert. A lone task has nothing to protect against forgetting —
+        # expected, not a bug — but the machinery should reflect that it
+        # actually ran (same rationale as run_core_training.py's Core A).
+        ewc_trainer.ewc_regularizer.register_task(
+            f"{self.system}_{int(self.pv_level*100)}pv", trainer.actor.get_all_params())
+
         # Evaluate the TRAINED (post-update) policy to find its best
         # observed operating point — this is now a real evaluation of a
-        # learned policy, not a random-search artifact.
+        # learned policy, not a random-search artifact. Uses safe_env
+        # (not the raw env) so action projection and the Lagrangian CTI
+        # penalty are exercised during evaluation too, matching training.
         rng = np.random.default_rng(self.seed + 999)
         n_eval_episodes = 20 if self.fast_mode else 100
         best_of = float('inf')
         best_tms, best_ps = None, None
 
         for ep in range(n_eval_episodes):
-            obs = env.reset(seed=self.seed + 10_000 + ep)
+            obs = safe_env.reset(seed=self.seed + 10_000 + ep)
             done = False
             while not done:
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
+                if trainer.use_comm and trainer.comm_graph is not None:
+                    policy_obs, _, _ = trainer.comm_graph.forward(obs, rng)
+                else:
+                    policy_obs = obs
                 for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
+                    a, _ = trainer.actor.sample(policy_obs[i], rng)
                     actions[i] = a
-                obs, reward, done, info = env.step(actions)
+                obs, reward, done, info = safe_env.step(actions)
 
-            TMS, PS = env.get_state()
+            TMS, PS = safe_env.get_state()
             try:
                 of_val, _, _ = objective_function(net, TMS, PS, fault_type=self.fault_type)
                 if of_val < best_of:
@@ -644,7 +683,8 @@ class CoreEvalBridge:
                  "TDS": 0.5, "PSM": 2.0},
             47: {"cases_prevented": 15, "cases_total": 20, "prevention_rate": 0.75},
             48: {"features": ["V_local", "I_branch", "TMS", "PS", "PV_gen"], "shap": [0.1, 0.08, 0.05, 0.03, 0.02]},
-            49: {"x": rng.randn(500), "y": rng.randn(500), "labels": (rng.randn(500) > 0).astype(int)},
+            49: {"x": rng.standard_normal(500), "y": rng.standard_normal(500),
+                 "labels": (rng.standard_normal(500) > 0).astype(int)},
             50: [{"primary": i, "backup": j, "lambda": 0.5, "violation_rate": 0.1} for i in range(1, 8) for j in range(i + 1, 8)],
             53: {"original": {"size_mb": 45, "performance": 0.85}, "int8": {"size_mb": 12, "performance": 0.84},
                  "pruning": {"size_mb": 22, "performance": 0.83}, "distillation": {"size_mb": 18, "performance": 0.82}},
@@ -666,7 +706,7 @@ class CoreEvalBridge:
         """Cache result for post-processing."""
         cache_file = self.cache_dir / f"core_eval_fig{fig_num:02d}.json"
         with open(cache_file, 'w') as f:
-            json.dump(result.to_core_format(), f, indent=2, default=str)
+            json.dump(result.to_core_format(), f, indent=2, default=_json_fallback)
         logger.info(f"  Cached to {cache_file}")
 
     def load_cached_result(self, fig_num: int) -> Optional[BridgeResult]:

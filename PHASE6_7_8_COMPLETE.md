@@ -428,8 +428,8 @@ docr_marl_thesis/
 ## References
 
 - IEC 61850: Communication networks and systems for power utility automation
-- IEC 61427-1: Utility-interconnected photovoltaic inverters
-- IEEE 1547-2018: Standard for Interconnection and Interoperability
+- IEEE 1547-2018: Standard for Interconnection and Interoperability (PV FRT model is a simplified
+  linear approximation loosely informed by this and IEC 61727, not a certified implementation of either)
 - ONNX: Open Neural Network Exchange format
 - Demšar, "Statistical Comparisons of Classifiers over Multiple Data Sets", JMLR 2006
 - Yu et al., "The Surprising Effectiveness of PPO in Cooperative Multi-Agent Games", NeurIPS 2022

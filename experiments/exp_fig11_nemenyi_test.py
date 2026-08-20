@@ -27,12 +27,15 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy import stats
+
+from evaluation.experiments._synthetic_label import mark_synthetic
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -201,74 +204,91 @@ def plot_critical_difference(ax, avg_ranks, method_names, cd, title,
 
 
 def load_experimental_data(fig5_path: str = "outputs/fig05_pv_sweep.npz",
-                           fig6_path: str = "outputs/fig06_cti_violations.npz") -> Dict[str, Dict[str, np.ndarray]]:
+                           fig6_path: str = "outputs/fig06_cti_violations.npz",
+                           n_seeds: int = 50,
+                           seed: int = 42) -> Tuple[Dict[str, Dict[str, np.ndarray]], bool]:
     """
     Load actual experimental results from Fig 5 and Fig 6.
-    Falls back to synthetic data if files not found.
+    Falls back to synthetic data if files not found — or if they exist but
+    don't contain the raw per-seed arrays a Friedman/Nemenyi test needs
+    (Fig 5/6 currently only save aggregated per-PV-level mean/std).
+
+    Returns (data, used_real).
     """
-    data = {}
-    
-    try:
-        # Try to load actual experimental data
-        fig5 = np.load(fig5_path, allow_pickle=True)
-        fig6 = np.load(fig6_path, allow_pickle=True)
-        
-        # Extract 100% PV results for each method
-        pv_idx = -1  # 100% PV
-        
-        for method in METHODS:
-            of_key = f"{method}_mean_OF"
-            cti_key = f"{method}_violation_rate"
-            
-            if of_key in fig5:
-                # This would need actual per-seed data from Fig 5
-                # For now, generate realistic synthetic based on method
-                pass
-        
-        logger.info("Loaded experimental data from %s and %s", fig5_path, fig6_path)
-        
-    except FileNotFoundError:
-        logger.warning("Experimental data not found, using synthetic data for demonstration")
-    
-    # Generate realistic synthetic data for demonstration
-    np.random.seed(42)
-    n_seeds = 50
-    
-    data["OF"] = {
-        "MAPPO-Safe-EWC": np.random.normal(2.1, 0.15, n_seeds),
-        "MAPPO-Safe": np.random.normal(2.3, 0.18, n_seeds),
-        "MAPPO": np.random.normal(2.6, 0.20, n_seeds),
-        "IPPO": np.random.normal(2.8, 0.22, n_seeds),
-        "QMIX": np.random.normal(3.0, 0.25, n_seeds),
-        "IQL": np.random.normal(3.3, 0.28, n_seeds),
-        "Traditional": np.random.normal(4.5, 0.35, n_seeds),
-    }
-    
-    data["CTI"] = {
-        "MAPPO-Safe-EWC": np.random.exponential(0.5, n_seeds),
-        "MAPPO-Safe": np.random.exponential(1.2, n_seeds),
-        "MAPPO": np.random.exponential(2.5, n_seeds),
-        "IPPO": np.random.exponential(3.0, n_seeds),
-        "QMIX": np.random.exponential(3.5, n_seeds),
-        "IQL": np.random.exponential(4.0, n_seeds),
-        "Traditional": np.random.exponential(8.0, n_seeds),
-    }
-    
-    return data
+    fig5, fig6 = None, None
+    if os.path.exists(fig5_path):
+        try:
+            fig5 = np.load(fig5_path, allow_pickle=True)
+        except Exception as exc:
+            logger.warning("Could not read %s (%s)", fig5_path, exc)
+    if os.path.exists(fig6_path):
+        try:
+            fig6 = np.load(fig6_path, allow_pickle=True)
+        except Exception as exc:
+            logger.warning("Could not read %s (%s)", fig6_path, exc)
+
+    used_real = False
+    data: Dict[str, Dict[str, np.ndarray]] = {}
+
+    if fig5 is not None and fig6 is not None:
+        # A real per-seed wiring would read f"{method}_all_OF" / f"{method}_all_cti"
+        # (raw per-seed samples), not the aggregated f"{method}_mean_OF" that Fig 5/6
+        # actually save today. Use them if a future version of those scripts adds them.
+        have_all = all(f"{m}_all_OF" in fig5 and f"{m}_all_cti" in fig6 for m in METHODS)
+        if have_all:
+            data["OF"] = {m: np.asarray(fig5[f"{m}_all_OF"]) for m in METHODS}
+            data["CTI"] = {m: np.asarray(fig6[f"{m}_all_cti"]) for m in METHODS}
+            used_real = True
+            logger.info("Loaded real per-seed data from %s and %s", fig5_path, fig6_path)
+        else:
+            logger.warning(
+                "%s and %s exist but only contain aggregated per-PV-level statistics, "
+                "not the raw per-seed arrays this test needs — falling back to synthetic data.",
+                fig5_path, fig6_path)
+    else:
+        logger.warning("%s / %s not found — using synthetic data for demonstration",
+                        fig5_path, fig6_path)
+
+    if not used_real:
+        rng = np.random.default_rng(seed)
+
+        data["OF"] = {
+            "MAPPO-Safe-EWC": rng.normal(2.1, 0.15, n_seeds),
+            "MAPPO-Safe": rng.normal(2.3, 0.18, n_seeds),
+            "MAPPO": rng.normal(2.6, 0.20, n_seeds),
+            "IPPO": rng.normal(2.8, 0.22, n_seeds),
+            "QMIX": rng.normal(3.0, 0.25, n_seeds),
+            "IQL": rng.normal(3.3, 0.28, n_seeds),
+            "Traditional": rng.normal(4.5, 0.35, n_seeds),
+        }
+
+        data["CTI"] = {
+            "MAPPO-Safe-EWC": rng.exponential(0.5, n_seeds),
+            "MAPPO-Safe": rng.exponential(1.2, n_seeds),
+            "MAPPO": rng.exponential(2.5, n_seeds),
+            "IPPO": rng.exponential(3.0, n_seeds),
+            "QMIX": rng.exponential(3.5, n_seeds),
+            "IQL": rng.exponential(4.0, n_seeds),
+            "Traditional": rng.exponential(8.0, n_seeds),
+        }
+        logger.warning("[WARNING] SYNTHETIC DATA (seed=%d) — Friedman/Nemenyi statistics below "
+                        "are computed on fabricated numbers, not a real experiment run.", seed)
+
+    return data, used_real
 
 
-def main(n_seeds: int = 50, alpha: float = 0.05, 
+def main(n_seeds: int = 50, alpha: float = 0.05,
          fig5_path: str = "outputs/fig05_pv_sweep.npz",
          fig6_path: str = "outputs/fig06_cti_violations.npz",
-         output_dir: str = "outputs"):
+         output_dir: str = "outputs", seed: int = 42):
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("Figure 11 — Nemenyi Critical Difference Diagram (IMPROVED)")
     logger.info("  Alpha: %.2f, Seeds: %d", alpha, n_seeds)
-    
+
     # Load data
-    data = load_experimental_data(fig5_path, fig6_path)
+    data, used_real = load_experimental_data(fig5_path, fig6_path, n_seeds, seed)
     
     # Friedman test
     for metric_name, metric_data in data.items():
@@ -312,6 +332,8 @@ def main(n_seeds: int = 50, alpha: float = 0.05,
                             METHOD_COLORS, METHOD_SHORT)
     
     fig.tight_layout()
+    if not used_real:
+        mark_synthetic(fig, note=f"seed={seed}; no real per-seed OF/CTI arrays found")
     fig.savefig(out_path / "fig11_nemenyi.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
     logger.info("Saved: %s", out_path / "fig11_nemenyi.png")
@@ -352,5 +374,8 @@ if __name__ == "__main__":
     p.add_argument("--fig5_path", type=str, default="outputs/fig05_pv_sweep.npz")
     p.add_argument("--fig6_path", type=str, default="outputs/fig06_cti_violations.npz")
     p.add_argument("--output_dir", type=str, default="outputs")
+    p.add_argument("--seed", type=int, default=42,
+                    help="Seed for the synthetic fallback RNG (used only when real "
+                         "per-seed Fig5/Fig6 data is unavailable)")
     args = p.parse_args()
-    main(args.n_seeds, args.alpha, args.fig5_path, args.fig6_path, args.output_dir)
+    main(args.n_seeds, args.alpha, args.fig5_path, args.fig6_path, args.output_dir, args.seed)

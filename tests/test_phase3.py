@@ -195,6 +195,93 @@ def test_safe_rl_wrapper():
     print(f"  SafeRL Wrapper: rewards_mean={rewards.mean():.4f}, λ_mean={stats['lambda_mean']:.3f}")
 
 
+def test_safe_rl_wrapper_auto_updates_lagrangian_at_episode_end():
+    """SafeRLWrapper.step() must call update_lagrangian() itself when an
+    episode ends (done=True), not rely on an external caller to do so.
+
+    Before this fix, no real training path (Core A-D, mains/main3-6.py)
+    ever called update_lagrangian() explicitly, so lambda/rho stayed
+    frozen at their init values for an entire run despite lambda_lr /
+    adaptive_rho being configured. This steps a short (max_steps=3)
+    episode to completion and checks the wrapper's own dual-ascent
+    counter advanced, and its per-episode violation/step counters reset,
+    WITHOUT this test ever calling update_lagrangian() itself.
+    """
+    from marl.marl_env import DynamicDOCREnv
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+    from network.network_data import get_3bus
+
+    net = get_3bus()
+    env = DynamicDOCREnv(net, use_pandapower=False, seed=42, max_steps=3)
+    safe_env = create_safe_rl_env(env, SafeRLConfig(enforce_cti=True))
+
+    assert safe_env.n_updates == 0
+
+    safe_env.reset(seed=42)
+    actions = np.zeros((net.n_relays, env.ACT_DIM))
+    done = False
+    steps = 0
+    while not done and steps < 10:  # env.max_steps=3 guards against a runaway loop
+        _, _, done, _ = safe_env.step(actions)
+        steps += 1
+
+    assert done, "episode should have ended within max_steps=3"
+    assert safe_env.n_updates == 1, \
+        "SafeRLWrapper.step() should auto-trigger exactly one update_lagrangian() call at episode end"
+    # update_lagrangian() resets these after folding them into the dual update.
+    assert safe_env.episode_violations == 0
+    assert safe_env.episode_steps == 0
+
+    print(f"  SafeRL auto-update: n_updates={safe_env.n_updates} after {steps}-step episode")
+
+
+def test_safe_rl_wrapper_curriculum_stage_property():
+    """Test SafeRLWrapper.curriculum_stage getter/setter propagates to the real env.
+
+    SafeRLWrapper.curriculum_stage is a property (not a plain attribute)
+    specifically to fix a bug where `wrapped_env.curriculum_stage = x`
+    would silently shadow-set an attribute on the *wrapper* instead of
+    reaching the real underlying environment the wrapper actually steps
+    (self.env). This test constructs a real env, wraps it, sets
+    curriculum_stage through the wrapper, and asserts the write actually
+    lands on the underlying env -- not just on the wrapper object -- and
+    that reads through the wrapper reflect it.
+    """
+    from marl.marl_env import DynamicDOCREnv
+    from marl.safe_rl import create_safe_rl_env
+    from network.network_data import get_3bus
+
+    net = get_3bus()
+    env = DynamicDOCREnv(net, use_pandapower=False, seed=42, curriculum_stage=0)
+    safe_env = create_safe_rl_env(env)
+
+    # Sanity: wrapper composes the real env under .env
+    assert safe_env.env is env
+
+    # Baseline
+    assert safe_env.curriculum_stage == 0
+    assert env.curriculum_stage == 0
+
+    # Set through the wrapper, as curriculum loops (Core B/D) do.
+    safe_env.curriculum_stage = 3
+
+    # The write must propagate to the *real* underlying env, not just
+    # shadow-set an attribute on the wrapper.
+    assert env.curriculum_stage == 3, \
+        "Setting curriculum_stage on the wrapper did not propagate to the underlying env"
+
+    # Reading through the wrapper must reflect the underlying env's value.
+    assert safe_env.curriculum_stage == 3
+
+    # Change it again on the underlying env directly and confirm the
+    # wrapper's getter reads through (not caching a stale copy).
+    env.curriculum_stage = 5
+    assert safe_env.curriculum_stage == 5
+
+    print(f"  SafeRL curriculum_stage: wrapper set propagated to env, "
+          f"final env.curriculum_stage={env.curriculum_stage}")
+
+
 def test_adaptive_rho():
     """Test adaptive penalty coefficient."""
     from marl.safe_rl import AugmentedLagrangian, SafeRLConfig
@@ -243,7 +330,18 @@ def test_ewc_fisher_estimation():
 
 
 def test_ewc_penalty():
-    """Test EWC penalty computation."""
+    """Test EWC penalty computation.
+
+    register_task()/update_fisher() only consolidate a task into
+    task_memory on the *next* register_task() call (see
+    EWCRegularizer._consolidate_current_task's docstring) -- a one-task
+    lag that means the last (here, only) task registered is never
+    actually moved into task_memory unless finalize() is called. Without
+    finalize(), compute_ewc_penalty() would short-circuit on an empty
+    task_memory and return (0.0, zeros) regardless of whether the penalty
+    math is correct, so the test must call finalize() before computing
+    the penalty in order to genuinely exercise it.
+    """
     from marl.continual_trainer import EWCRegularizer, EWCConfig
 
     config = EWCConfig(lambda_ewc=100.0)
@@ -256,50 +354,132 @@ def test_ewc_penalty():
     # Register task
     ewc.register_task("task1", old_params)
 
-    # Update Fisher (mock)
-    fisher = np.random.rand(n_params) * 0.5
+    # Update Fisher (mock) -- use a strictly positive Fisher so the
+    # penalty is guaranteed nonzero for a nonzero delta.
+    fisher = np.random.rand(n_params) * 0.5 + 0.1
     ewc.update_fisher("task1", fisher)
+
+    # Close out "task1" so it actually lands in task_memory -- without
+    # this, task_memory is empty and compute_ewc_penalty() degenerates
+    # to (0.0, zeros) trivially satisfying `penalty >= 0`.
+    ewc.finalize()
+    assert len(ewc.task_memory) == 1, "finalize() should consolidate the only task"
 
     # Compute penalty
     penalty, gradient = ewc.compute_ewc_penalty(current_params)
 
-    assert penalty >= 0, "Penalty should be non-negative"
+    assert penalty > 0, "Penalty should be strictly positive for non-empty, non-degenerate task_memory"
     assert gradient.shape == (n_params,)
     assert np.all(np.isfinite(gradient)), "Gradient should be finite"
 
-    print(f"  EWC Penalty: {penalty:.4f}, grad_norm={np.linalg.norm(gradient):.4f}")
+    # Verify the *real* weighted-Fisher-penalty math, not just "some
+    # positive number": manually compute the expected penalty/gradient
+    # from the registered (params, fisher, lambda) and compare.
+    delta = current_params - old_params
+    expected_penalty = 0.5 * config.lambda_ewc * np.sum(fisher * delta ** 2)
+    expected_gradient = config.lambda_ewc * fisher * delta
+    assert np.isclose(penalty, expected_penalty), \
+        f"Penalty {penalty} != expected {expected_penalty}"
+    assert np.allclose(gradient, expected_gradient), "Gradient does not match expected EWC formula"
+
+    # Penalty should grow as current params drift further from the
+    # registered optimum -- confirms the quadratic penalty is actually
+    # being evaluated on real (non-zero) Fisher/param data, not a
+    # degenerate all-zero fallback.
+    farther_params = old_params + (current_params - old_params) * 5.0
+    penalty_far, _ = ewc.compute_ewc_penalty(farther_params)
+    assert penalty_far > penalty, "Penalty should increase as params move further from registered optimum"
+
+    print(f"  EWC Penalty: {penalty:.4f} (far={penalty_far:.4f}), grad_norm={np.linalg.norm(gradient):.4f}")
 
 
 def test_ewc_multiple_tasks():
-    """Test EWC with multiple tasks."""
+    """Test EWC with multiple tasks, including real eviction of the oldest task.
+
+    register_task() only consolidates the *previous* current task into
+    task_memory when the *next* register_task() fires -- a one-task lag
+    (see EWCRegularizer._consolidate_current_task). With N registered
+    tasks, only N-1 ever reach task_memory unless the final task is
+    explicitly closed out via finalize(). The original version of this
+    test registered 4 tasks with max_tasks=3 and expected the pop-oldest
+    eviction branch to fire, but because of the lag only 3 tasks ever
+    actually reached task_memory (never 4), so len(task_memory) never
+    exceeded max_tasks and the eviction branch was silently never
+    exercised.  Here we register 5 tasks and finalize() the last one, so
+    task_memory actually receives all 5 pushes and eviction is forced to
+    fire (twice).
+    """
     from marl.continual_trainer import EWCRegularizer, EWCConfig
 
     config = EWCConfig(lambda_ewc=50.0, max_tasks=3)
     ewc = EWCRegularizer(config)
 
     n_params = 10
+    n_tasks = 5
+    task_params = {}
 
-    # Register multiple tasks
-    for i in range(4):
+    # Register a sequence of tasks. Each register_task() call consolidates
+    # the *previous* current task (with a placeholder Fisher); we then
+    # overwrite that placeholder with a real Fisher estimate via
+    # update_fisher() on the task that just landed in task_memory.
+    for i in range(n_tasks):
         params = np.random.randn(n_params)
+        task_params[f"task{i}"] = params
         ewc.register_task(f"task{i}", params)
-        fisher = np.random.rand(n_params) * 0.3
+        fisher = np.random.rand(n_params) * 0.3 + 0.05  # keep strictly positive
         if ewc.task_memory:
             ewc.update_fisher(ewc.task_memory[-1][0], fisher)
 
-    # Should only keep max_tasks
-    assert len(ewc.task_memory) <= config.max_tasks, "Should limit task memory"
+    # The last task ("task4") is still "current" and has not been pushed
+    # into task_memory yet. Supply it a real Fisher and finalize() to
+    # force its consolidation -- without this it would be silently
+    # dropped and never protected, and task_memory would never exceed
+    # max_tasks (masking the eviction branch below).
+    last_fisher = np.random.rand(n_params) * 0.3 + 0.05
+    ewc.update_fisher(f"task{n_tasks - 1}", last_fisher)
+    ewc.finalize()
 
-    # Compute penalty
+    # Eviction (pop-oldest) must actually have fired: exactly max_tasks
+    # entries remain, and the oldest two tasks (task0, task1) must have
+    # been evicted while the most recent max_tasks tasks survive.
+    assert len(ewc.task_memory) == config.max_tasks, \
+        f"Expected exactly {config.max_tasks} tasks after eviction, got {len(ewc.task_memory)}"
+    remaining_names = [t[0] for t in ewc.task_memory]
+    assert remaining_names == ["task2", "task3", "task4"], \
+        f"Expected oldest tasks evicted, kept most recent {config.max_tasks}; got {remaining_names}"
+    assert "task0" not in remaining_names and "task1" not in remaining_names, \
+        "Oldest tasks should have been evicted from task_memory"
+
+    # Confirm none of the surviving tasks are stuck with the degenerate
+    # uniform placeholder Fisher (0.1 everywhere) -- i.e. real Fisher
+    # estimates actually propagated into task_memory.
+    placeholder = np.ones(n_params) * 0.1
+    for name, _params, fisher, _lw in ewc.task_memory:
+        assert not np.allclose(fisher, placeholder), \
+            f"{name} still has placeholder Fisher; real estimate did not propagate"
+
+    # Compute penalty and cross-check against the real weighted-Fisher
+    # formula summed over the surviving tasks (not a degenerate 0.0).
     current = np.random.randn(n_params)
-    penalty, _ = ewc.compute_ewc_penalty(current)
+    penalty, gradient = ewc.compute_ewc_penalty(current)
 
-    assert penalty >= 0, "Penalty should be non-negative"
+    expected_penalty = 0.0
+    expected_gradient = np.zeros(n_params)
+    for name, opt_params, fisher, lambda_w in ewc.task_memory:
+        delta = current - opt_params
+        expected_penalty += 0.5 * lambda_w * np.sum(fisher * delta ** 2)
+        expected_gradient += lambda_w * fisher * delta
+
+    assert penalty > 0, "Penalty should be strictly positive with real, non-empty task_memory"
+    assert np.isclose(penalty, expected_penalty), f"Penalty {penalty} != expected {expected_penalty}"
+    assert np.allclose(gradient, expected_gradient), "Gradient does not match expected EWC formula"
 
     stats = ewc.get_task_stats()
-    assert stats["n_tasks_consolidated"] <= config.max_tasks
+    assert stats["n_tasks_consolidated"] == config.max_tasks
+    assert stats["n_tasks_learned"] == n_tasks
 
-    print(f"  EWC Multi-Task: n_tasks={stats['n_tasks_consolidated']}, penalty={penalty:.4f}")
+    print(f"  EWC Multi-Task: n_tasks={stats['n_tasks_consolidated']}, "
+          f"kept={remaining_names}, penalty={penalty:.4f}")
 
 
 def test_task_similarity():
@@ -394,7 +574,18 @@ def test_safe_rl_mappo_integration():
 
 
 def test_ewc_mappo_integration():
-    """Test EWC with MAPPO trainer."""
+    """Test EWC with MAPPO trainer.
+
+    on_task_transition() only calls ewc_regularizer.register_task() for
+    the task being *left* -- and register_task() only consolidates a
+    task into task_memory once a *subsequent* register_task() call
+    fires (see EWCRegularizer._consolidate_current_task). Since this
+    test only ever transitions into a single task and never transitions
+    out of it again, without an explicit continual.finalize() call
+    task_memory stays empty and compute_ewc_penalty() would
+    short-circuit to (0.0, zeros) regardless of whether the underlying
+    penalty math is correct.
+    """
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
     from marl.continual_trainer import create_ewc_trainer, EWCConfig
@@ -414,21 +605,48 @@ def test_ewc_mappo_integration():
     cond1 = {"pv_level": 0.0, "topology_flag": 0.0, "fault_type": "3ph"}
     is_new, name1 = continual.detect_task_change(cond1)
 
-    # Mock parameters
+    # Mock parameters. Note on_task_transition() registers the task being
+    # *left* (old_task_name = "none" here) with current_params as its
+    # "optimal" params -- so the task that ends up in task_memory is
+    # named "none", not name1.
     mock_params = np.random.randn(100)
     continual.on_task_transition("none", name1, mock_params)
+
+    # Give the task a real (non-placeholder) Fisher estimate, then close
+    # it out with finalize() -- this is the only task in the sequence,
+    # so without finalize() it never actually reaches task_memory.
+    fisher = np.random.rand(100) * 0.4 + 0.05  # strictly positive
+    continual.ewc_regularizer.update_fisher("none", fisher)
+    continual.finalize()
+    assert len(continual.ewc_regularizer.task_memory) == 1, \
+        "finalize() should consolidate the only registered task"
 
     # Compute EWC penalty
     current = mock_params + np.random.randn(100) * 0.05
     penalty, grad = continual.compute_ewc_penalty(current)
 
-    assert penalty >= 0, "Penalty should be non-negative"
+    assert penalty > 0, "Penalty should be strictly positive for non-empty, non-degenerate task_memory"
     assert grad.shape == (100,)
+    assert np.all(np.isfinite(grad)), "Gradient should be finite"
+
+    # Cross-check against the real weighted-Fisher-penalty formula.
+    delta = current - mock_params
+    expected_penalty = 0.5 * ewc_config.lambda_ewc * np.sum(fisher * delta ** 2)
+    expected_grad = ewc_config.lambda_ewc * fisher * delta
+    assert np.isclose(penalty, expected_penalty), f"Penalty {penalty} != expected {expected_penalty}"
+    assert np.allclose(grad, expected_grad), "Gradient does not match expected EWC formula"
+
+    # Penalty must grow as current params drift further from the
+    # registered task's optimum -- confirms the quadratic penalty is
+    # genuinely being evaluated, not returning a fixed degenerate value.
+    farther_params = mock_params + delta * 5.0
+    penalty_far, _ = continual.compute_ewc_penalty(farther_params)
+    assert penalty_far > penalty, "Penalty should increase as params move further from registered optimum"
 
     stats = continual.get_adaptation_stats()
     assert stats["n_tasks_learned"] >= 1
 
-    print(f"  EWC+MAPPO: penalty={penalty:.4f}, n_tasks={stats['n_tasks_learned']}")
+    print(f"  EWC+MAPPO: penalty={penalty:.4f} (far={penalty_far:.4f}), n_tasks={stats['n_tasks_learned']}")
 
 
 def test_backward_compatibility_phase3():
@@ -484,6 +702,8 @@ def run_all_tests():
         test_lagrange_multiplier_updates,
         test_pid_lagrangian,
         test_safe_rl_wrapper,
+        test_safe_rl_wrapper_auto_updates_lagrangian_at_episode_end,
+        test_safe_rl_wrapper_curriculum_stage_property,
         test_adaptive_rho,
         test_ewc_fisher_estimation,
         test_ewc_penalty,

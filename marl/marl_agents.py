@@ -41,6 +41,32 @@ from network.relay_physics import (
     TMS_MIN, TMS_MAX, CTI, TOP_MIN, TOP_MAX,
 )
 
+# Optional GPU backend for the ES perturbation-population update
+# (_update_actor_es_gpu/_update_critic_es_gpu below). torch is not a hard
+# dependency — everything works exactly as before if it's absent or no CUDA
+# device is present. See those methods' docstrings for why this is GPU-only
+# rather than also replacing the CPU path: the same batched-population
+# reformulation measured *slower* than the plain per-perturbation loop on
+# CPU (large (T, 2*n_pert, hidden) intermediate tensors cost more to build
+# than the loop's small per-perturbation BLAS calls save), so it would be a
+# regression there. It was not possible to benchmark real CUDA hardware
+# while writing this — no GPU was available in that environment — so this
+# is an informed, disclosed bet that the same batching wins on GPU (where
+# kernel-launch overhead, not allocation, dominates for many small ops),
+# not a verified result. Numerical correctness was verified by forcing this
+# code path onto CPU-mode torch tensors and comparing against the NumPy
+# per-perturbation loop (bit-identical to within ~1e-16, float64 vs float64).
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+    _GPU_AVAILABLE = torch.cuda.is_available()
+    _GPU_DEVICE = torch.device("cuda") if _GPU_AVAILABLE else None
+except ImportError:
+    torch = None
+    _TORCH_AVAILABLE = False
+    _GPU_AVAILABLE = False
+    _GPU_DEVICE = None
+
 
 def relu(x): return np.maximum(0, x)
 def tanh(x): return np.tanh(x)
@@ -60,9 +86,20 @@ class MLP:
         self.b3 = np.zeros(out_dim)
 
     def forward(self, x):
-        h1 = relu(self.W1 @ x + self.b1)
-        h2 = relu(self.W2 @ h1 + self.b2)
-        return self.W3 @ h2 + self.b3
+        """x: (in_dim,) for a single input, or (T, in_dim) for a batch —
+        the batched path is a plain matmul, not a Python loop over rows, so
+        callers doing repeated single-row forward passes in a loop (e.g. ES
+        perturbation evaluation over a rollout) should batch the whole
+        rollout into one call instead."""
+        x = np.asarray(x)
+        if x.ndim == 1:
+            h1 = relu(self.W1 @ x + self.b1)
+            h2 = relu(self.W2 @ h1 + self.b2)
+            return self.W3 @ h2 + self.b3
+        else:
+            h1 = relu(x @ self.W1.T + self.b1)
+            h2 = relu(h1 @ self.W2.T + self.b2)
+            return h2 @ self.W3.T + self.b3
 
     def get_params(self):
         return np.concatenate([
@@ -99,11 +136,10 @@ class SharedGaussianActor:
         self.log_std = np.full(act_dim, -1.0)
 
     def get_mean(self, obs):
-        """Get mean action for single or batch observations."""
-        if obs.ndim == 1:
-            return tanh(self.net.forward(obs))
-        else:
-            return tanh(np.array([self.net.forward(o) for o in obs]))
+        """Get mean action for single (obs_dim,) or batch (T, obs_dim)
+        observations — self.net.forward already handles both shapes, so no
+        Python-level loop over rows is needed here."""
+        return tanh(self.net.forward(obs))
 
     def sample(self, obs, rng) -> Tuple[np.ndarray, float]:
         """Sample action and compute log probability."""
@@ -115,13 +151,22 @@ class SharedGaussianActor:
             -0.5 * (noise**2 + 2 * self.log_std + np.log(2 * np.pi))))
         return action, log_prob
 
-    def log_prob(self, obs, action) -> float:
-        """Compute log probability of action."""
+    def log_prob(self, obs, action):
+        """Compute log probability of action(s).
+
+        obs/action of shape (obs_dim,)/(act_dim,) -> returns a scalar float.
+        obs/action of shape (T, obs_dim)/(T, act_dim) -> returns a (T,) array
+        — one vectorized call replacing what used to require a Python loop
+        of T individual log_prob() calls at every ES perturbation evaluation.
+        """
+        obs = np.asarray(obs)
         mean = self.get_mean(obs)
         std = np.exp(np.clip(self.log_std, -3, 0))
         z = (action - mean) / (std + 1e-8)
-        return float(np.sum(
-            -0.5 * (z**2 + 2 * self.log_std + np.log(2 * np.pi))))
+        terms = -0.5 * (z**2 + 2 * self.log_std + np.log(2 * np.pi))
+        if obs.ndim == 1:
+            return float(np.sum(terms))
+        return np.sum(terms, axis=-1)
 
     def get_all_params(self):
         return np.concatenate([self.net.get_params(), self.log_std])
@@ -182,6 +227,28 @@ class MAPPOCentralCritic:
 
         return float(self.net.forward(global_state)[0])
 
+    def value_batch(self, TMS, PS, pv_level, topology_flag, neighbor_stats, fault_type_idx=0) -> np.ndarray:
+        """Batched form of value() for T timesteps at once: TMS/PS shape
+        (T, n_relays), pv_level/topology_flag shape (T,), neighbor_stats
+        shape (T, 6). Returns (T,) predictions via one vectorized MLP.forward
+        call instead of a Python loop of T individual value() calls (used by
+        the ES critic update, which re-evaluates the whole rollout batch at
+        every perturbation)."""
+        T = TMS.shape[0]
+        global_state = np.concatenate([TMS, PS], axis=1)
+
+        fault_onehot = np.zeros((T, 4))
+        if 0 <= fault_type_idx < 4:
+            fault_onehot[:, fault_type_idx] = 1.0
+
+        extra = np.stack([np.asarray(pv_level), np.asarray(topology_flag)], axis=1)
+        if self.use_global_state and neighbor_stats is not None:
+            global_state = np.concatenate([global_state, extra, fault_onehot, neighbor_stats], axis=1)
+        else:
+            global_state = np.concatenate([global_state, extra, fault_onehot], axis=1)
+
+        return self.net.forward(global_state).ravel()
+
     def get_params(self):
         return self.net.get_params()
 
@@ -200,7 +267,8 @@ class MAPPOBuffer:
             log_probs, values, communication info, done flags
     """
 
-    def __init__(self, n_agents, obs_dim, act_dim, capacity, use_comm=False, msg_dim=8):
+    def __init__(self, n_agents, obs_dim, act_dim, capacity, use_comm=False, msg_dim=8,
+                 raw_obs_dim=None):
         self.obs = np.zeros((capacity, n_agents, obs_dim))
         self.actions = np.zeros((capacity, n_agents, act_dim))
         self.rewards = np.zeros((capacity, n_agents))
@@ -209,19 +277,29 @@ class MAPPOBuffer:
         self.dones = np.zeros(capacity, dtype=bool)
         self.pv_levels = np.zeros(capacity)
         self.top_flags = np.zeros(capacity)
+        # Per-timestep global relay state, needed to recompute the critic's
+        # prediction during the update step against the *historical* state
+        # that produced ret_batch[t] rather than the environment's current state.
+        self.tms = np.zeros((capacity, n_agents))
+        self.ps = np.zeros((capacity, n_agents))
 
         # Communication tracking
         self.use_comm = use_comm
         if use_comm:
             self.messages = np.zeros((capacity, n_agents, msg_dim))
             self.attention = np.zeros((capacity, n_agents, n_agents))
+            # Pre-communication observations, needed to train the GNN comm
+            # module itself (obs -> forward() -> enhanced_obs); self.obs above
+            # already holds the *enhanced* observations when use_comm is on.
+            self.raw_obs = np.zeros((capacity, n_agents, raw_obs_dim or obs_dim))
 
         self.ptr = self.size = 0
         self.capacity = capacity
         self.n_agents = n_agents
 
     def add(self, obs, actions, rewards, log_probs, value, done,
-            pv_level=0.0, topology_flag=0.0, messages=None, attention=None):
+            pv_level=0.0, topology_flag=0.0, messages=None, attention=None,
+            tms=None, ps=None, raw_obs=None):
         i = self.ptr % self.capacity
         self.obs[i] = obs
         self.actions[i] = actions
@@ -230,7 +308,13 @@ class MAPPOBuffer:
         self.values[i] = value
         self.dones[i] = done
         self.pv_levels[i] = pv_level
+        if tms is not None:
+            self.tms[i] = tms
+        if ps is not None:
+            self.ps[i] = ps
         self.top_flags[i] = topology_flag
+        if self.use_comm and raw_obs is not None:
+            self.raw_obs[i] = raw_obs
 
         if self.use_comm and messages is not None:
             self.messages[i] = messages
@@ -264,6 +348,56 @@ class MAPPOBuffer:
 
     def clear(self):
         self.ptr = self.size = 0
+
+
+def _mlp_forward_population_torch(x, param_batch, in_dim, hidden, out_dim):
+    """torch.einsum equivalent of a 2-hidden-layer MLP.forward, batched
+    across a population of P differently-parameterized copies — the GPU
+    counterpart of the (removed, CPU-regression) NumPy population forward.
+    x: (T, in_dim) torch tensor. param_batch: (P, n_params) torch tensor,
+    same flat layout as MLP.get_params()/set_params(). Returns (T, P, out_dim)."""
+    P = param_batch.shape[0]
+    sizes = [in_dim * hidden, hidden, hidden * hidden, hidden, out_dim * hidden, out_dim]
+    W1, b1, W2, b2, W3, b3 = torch.split(param_batch, sizes, dim=1)
+    W1 = W1.reshape(P, hidden, in_dim)
+    W2 = W2.reshape(P, hidden, hidden)
+    W3 = W3.reshape(P, out_dim, hidden)
+
+    h1 = torch.relu(torch.einsum('tj,phj->tph', x, W1) + b1[None, :, :])
+    h2 = torch.relu(torch.einsum('tph,pkh->tpk', h1, W2) + b2[None, :, :])
+    return torch.einsum('tpk,pok->tpo', h2, W3) + b3[None, :, :]
+
+
+def _actor_log_prob_population_torch(obs, action, theta_batch, obs_dim, hidden, act_dim):
+    """torch counterpart of SharedGaussianActor.log_prob, batched across a
+    population of P perturbed parameter vectors (same flat layout as
+    get_all_params()/set_all_params(): net params then log_std).
+    obs: (T, obs_dim), action: (T, act_dim), theta_batch: (P, n_params)
+    torch tensors. Returns (T, P)."""
+    n_net = obs_dim * hidden + hidden + hidden * hidden + hidden + act_dim * hidden + act_dim
+    net_batch = theta_batch[:, :n_net]
+    log_std_batch = theta_batch[:, n_net:]  # (P, act_dim)
+    mean = torch.tanh(_mlp_forward_population_torch(obs, net_batch, obs_dim, hidden, act_dim))  # (T, P, act_dim)
+    std = torch.exp(torch.clamp(log_std_batch, -3, 0))  # (P, act_dim)
+    z = (action[:, None, :] - mean) / (std[None, :, :] + 1e-8)
+    terms = -0.5 * (z ** 2 + 2 * log_std_batch[None, :, :] + float(np.log(2 * np.pi)))
+    return terms.sum(dim=-1)  # (T, P)
+
+
+def _critic_global_state(TMS, PS, pv_level, topology_flag, neighbor_stats, use_global_state, fault_type_idx=0):
+    """Builds the same [TMS||PS||pv||topology||fault_onehot||neighbor_stats]
+    global-state matrix as MAPPOCentralCritic.value_batch, as a standalone
+    NumPy function so the GPU critic update can convert it to a torch
+    tensor once rather than duplicating this concatenation inline."""
+    T = TMS.shape[0]
+    global_state = np.concatenate([TMS, PS], axis=1)
+    fault_onehot = np.zeros((T, 4))
+    if 0 <= fault_type_idx < 4:
+        fault_onehot[:, fault_type_idx] = 1.0
+    extra = np.stack([np.asarray(pv_level), np.asarray(topology_flag)], axis=1)
+    if use_global_state and neighbor_stats is not None:
+        return np.concatenate([global_state, extra, fault_onehot, neighbor_stats], axis=1)
+    return np.concatenate([global_state, extra, fault_onehot], axis=1)
 
 
 class MAPPOMARLTrainer:
@@ -323,9 +457,10 @@ class MAPPOMARLTrainer:
 
         # Communication module (must be created before actor to know enhanced_dim)
         self.comm_graph = None
+        self.gnn_trainer = None
         if use_comm:
             try:
-                from marl.comm_graph import CommGraph, build_relay_adjacency
+                from marl.comm_graph import CommGraph, build_relay_adjacency, GNNCommTrainer
                 adj = build_relay_adjacency(env.net)
                 self.comm_graph = CommGraph(
                     n_agents=self.n_agents,
@@ -334,6 +469,10 @@ class MAPPOMARLTrainer:
                     adjacency=adj,
                     seed=seed + 100,
                 )
+                # Without this, the GNN encoder/attention/decoder weights never
+                # move from their random initialization — "learned communication"
+                # would otherwise just be a fixed random projection.
+                self.gnn_trainer = GNNCommTrainer(self.comm_graph, seed=seed + 200)
             except ImportError:
                 print("  Warning: comm_graph not available, running without communication")
                 self.use_comm = False
@@ -359,6 +498,7 @@ class MAPPOMARLTrainer:
             self.n_agents, buffer_obs_dim, env.ACT_DIM, rollout_len,
             use_comm=use_comm,
             msg_dim=8 if use_comm else 0,
+            raw_obs_dim=env.OBS_DIM,
         )
 
         # Statistics
@@ -388,8 +528,31 @@ class MAPPOMARLTrainer:
         mean_slack = float(np.mean(obs[:, 3]))  # cti_slack_norm
         return np.array([mean_tms, mean_ps, std_tms, std_ps, max_viol, mean_slack])
 
+    def _get_neighbor_stats_batch(self, obs_batch):
+        """Batched form of _get_neighbor_stats: obs_batch shape
+        (T, n_agents, obs_dim) -> (T, 6), same formulas reduced over the
+        agent axis (axis=1) instead of a Python loop calling
+        _get_neighbor_stats(obs_batch[t]) once per timestep."""
+        mean_tms = obs_batch[:, :, 0].mean(axis=1)
+        mean_ps = obs_batch[:, :, 1].mean(axis=1)
+        std_tms = obs_batch[:, :, 0].std(axis=1)
+        std_ps = obs_batch[:, :, 1].std(axis=1)
+        max_viol = obs_batch[:, :, 4].max(axis=1)
+        mean_slack = obs_batch[:, :, 3].mean(axis=1)
+        return np.stack([mean_tms, mean_ps, std_tms, std_ps, max_viol, mean_slack], axis=1)
+
     def _update_actor_es(self, agent_idx, obs_batch, act_batch, adv_batch, old_lp, n_pert=10, sigma=0.02):
-        """OpenAI-ES surrogate policy gradient with PPO-clip."""
+        """OpenAI-ES surrogate policy gradient with PPO-clip.
+
+        `eps` below is already sigma-scaled (~N(0, sigma^2)), not unit
+        noise, so the antithetic ES gradient estimate's denominator
+        reduces to sigma**2, not plain sigma (all four ES update
+        methods in this class, and the two in single_agent_ppo.py, had
+        the same off-by-one-power-of-sigma bug — comm_graph.py's ES
+        update already used the correct sigma**2 form).
+        """
+        if _GPU_AVAILABLE:
+            return self._update_actor_es_gpu(agent_idx, obs_batch, act_batch, adv_batch, old_lp, n_pert, sigma)
         theta = self.actor.get_all_params()
         noises, rewards = [], []
 
@@ -397,10 +560,7 @@ class MAPPOMARLTrainer:
             eps = self.rng.normal(0, sigma, len(theta))
             for sign in (+1, -1):
                 self.actor.set_all_params(theta + sign * eps)
-                new_lp = np.array([
-                    self.actor.log_prob(obs_batch[t], act_batch[t])
-                    for t in range(len(obs_batch))
-                ])
+                new_lp = self.actor.log_prob(obs_batch, act_batch)
                 ratio = np.exp(np.clip(new_lp - old_lp, -5, 5))
                 clip_r = np.clip(ratio, 1 - self.clip_eps, 1 + self.clip_eps)
                 surr = float(np.mean(
@@ -411,37 +571,114 @@ class MAPPOMARLTrainer:
         r_arr = np.array(rewards)
         r_norm = (r_arr - r_arr.mean()) / (r_arr.std() + 1e-8)
         grad = sum(r * n for r, n in zip(r_norm, noises))
-        grad /= (2 * n_pert * sigma)
+        grad /= (2 * n_pert * sigma ** 2)
         self.actor.set_all_params(theta + self.lr_actor * grad)
 
     def _update_critic_es(self, obs_batch, ret_batch, n_pert=10, sigma=0.02):
         """Update centralized critic with ES."""
+        if _GPU_AVAILABLE:
+            return self._update_critic_es_gpu(obs_batch, ret_batch, n_pert, sigma)
         theta = self.critic.get_params()
         noises, losses = [], []
+
+        T = len(obs_batch)
+        # These depend only on obs_batch/the buffer (fixed for this update
+        # call), not on the perturbed critic params — compute once instead
+        # of recomputing on every one of the 2*n_pert perturbation passes.
+        neighbor_stats_batch = self._get_neighbor_stats_batch(obs_batch)
+        tms_batch = self.buffer.tms[:T]
+        ps_batch = self.buffer.ps[:T]
+        pv_batch = self.buffer.pv_levels[:T]
+        topo_batch = self.buffer.top_flags[:T]
 
         for _ in range(n_pert):
             eps = self.rng.normal(0, sigma, len(theta))
             for sign in (+1, -1):
                 self.critic.set_params(theta + sign * eps)
-                # We need global state for each timestep - simplified: use mean return
-                pred = np.array([
-                    self.critic.value(
-                        self.env.TMS, self.env.PS,
-                        pv_level=getattr(self.env, 'current_pv_level', 0.0),
-                        topology_flag=0.0,
-                        fault_type_idx=0,
-                        neighbor_stats=self._get_neighbor_stats(obs_batch[t])
-                    ) for t in range(len(obs_batch))
-                ])
-                loss = -float(np.mean([(ret_batch[t] - pred[t])**2 for t in range(len(ret_batch))]))
+                # Use the historical per-timestep relay/PV/topology state stored in
+                # the buffer (not self.env's *current* state) — ret_batch[t] was
+                # computed from the state at timestep t, not the state after rollout.
+                pred = self.critic.value_batch(
+                    tms_batch, ps_batch, pv_batch, topo_batch,
+                    neighbor_stats_batch, fault_type_idx=0,
+                )
+                loss = -float(np.mean((ret_batch - pred[:, None]) ** 2))
                 noises.append(sign * eps)
                 losses.append(loss)
 
         l_arr = np.array(losses)
         l_norm = (l_arr - l_arr.mean()) / (l_arr.std() + 1e-8)
         grad = sum(l * n for l, n in zip(l_norm, noises))
-        grad /= (2 * n_pert * sigma)
+        grad /= (2 * n_pert * sigma ** 2)
         self.critic.set_params(theta + self.lr_critic * grad)
+
+    def _update_actor_es_gpu(self, agent_idx, obs_batch, act_batch, adv_batch, old_lp, n_pert=10, sigma=0.02):
+        """GPU path for _update_actor_es: same OpenAI-ES/PPO-clip math, but
+        all 2*n_pert perturbations are evaluated as one batched population
+        instead of a Python loop, via torch.einsum on _GPU_DEVICE. Only
+        called when _GPU_AVAILABLE (see module-level backend-selection
+        comment above for why this isn't also used on CPU)."""
+        theta = self.actor.get_all_params()
+        n_params = len(theta)
+        base_eps = self.rng.normal(0, sigma, (n_pert, n_params))
+        noise = np.stack([base_eps, -base_eps], axis=1).reshape(2 * n_pert, n_params)
+
+        dev = _GPU_DEVICE
+        theta_t = torch.as_tensor(theta, dtype=torch.float64, device=dev)
+        noise_t = torch.as_tensor(noise, dtype=torch.float64, device=dev)
+        theta_batch = theta_t.unsqueeze(0) + noise_t  # (2*n_pert, n_params)
+
+        obs_t = torch.as_tensor(np.asarray(obs_batch), dtype=torch.float64, device=dev)
+        act_t = torch.as_tensor(np.asarray(act_batch), dtype=torch.float64, device=dev)
+        old_lp_t = torch.as_tensor(np.asarray(old_lp), dtype=torch.float64, device=dev)
+        adv_t = torch.as_tensor(np.asarray(adv_batch), dtype=torch.float64, device=dev)
+
+        hidden, obs_dim = self.actor.net.W1.shape
+        act_dim = self.actor.net.W3.shape[0]
+        new_lp = _actor_log_prob_population_torch(obs_t, act_t, theta_batch, obs_dim, hidden, act_dim)  # (T, 2*n_pert)
+
+        ratio = torch.exp(torch.clamp(new_lp - old_lp_t[:, None], -5, 5))
+        clip_r = torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps)
+        adv_col = adv_t[:, None]
+        rewards = torch.minimum(ratio * adv_col, clip_r * adv_col).mean(dim=0)  # (2*n_pert,)
+
+        r_norm = (rewards - rewards.mean()) / (rewards.std(unbiased=False) + 1e-8)
+        grad = (r_norm @ noise_t) / (2 * n_pert * sigma ** 2)
+        self.actor.set_all_params(theta + self.lr_actor * grad.cpu().numpy())
+
+    def _update_critic_es_gpu(self, obs_batch, ret_batch, n_pert=10, sigma=0.02):
+        """GPU path for _update_critic_es — see _update_actor_es_gpu."""
+        theta = self.critic.get_params()
+        n_params = len(theta)
+
+        T = len(obs_batch)
+        neighbor_stats_batch = self._get_neighbor_stats_batch(obs_batch)
+        tms_batch = self.buffer.tms[:T]
+        ps_batch = self.buffer.ps[:T]
+        pv_batch = self.buffer.pv_levels[:T]
+        topo_batch = self.buffer.top_flags[:T]
+
+        dev = _GPU_DEVICE
+        base_eps = self.rng.normal(0, sigma, (n_pert, n_params))
+        noise = np.stack([base_eps, -base_eps], axis=1).reshape(2 * n_pert, n_params)
+        theta_t = torch.as_tensor(theta, dtype=torch.float64, device=dev)
+        noise_t = torch.as_tensor(noise, dtype=torch.float64, device=dev)
+        theta_batch = theta_t.unsqueeze(0) + noise_t
+
+        global_state = _critic_global_state(tms_batch, ps_batch, pv_batch, topo_batch,
+                                             neighbor_stats_batch, self.critic.use_global_state,
+                                             fault_type_idx=0)
+        gs_t = torch.as_tensor(global_state, dtype=torch.float64, device=dev)
+        hidden, in_dim = self.critic.net.W1.shape
+        pred = _mlp_forward_population_torch(gs_t, theta_batch, in_dim, hidden, 1)[:, :, 0]  # (T, 2*n_pert)
+
+        ret_t = torch.as_tensor(np.asarray(ret_batch), dtype=torch.float64, device=dev)
+        diff = ret_t[:, :, None] - pred[:, None, :]  # (T, n_agents, 2*n_pert)
+        losses = -(diff ** 2).mean(dim=(0, 1))  # (2*n_pert,)
+
+        l_norm = (losses - losses.mean()) / (losses.std(unbiased=False) + 1e-8)
+        grad = (l_norm @ noise_t) / (2 * n_pert * sigma ** 2)
+        self.critic.set_params(theta + self.lr_critic * grad.cpu().numpy())
 
     def _collect_rollout(self, obs):
         """Collect one rollout with optional communication."""
@@ -473,7 +710,15 @@ class MAPPOMARLTrainer:
                     not v for v in self.env.current_state.topology_state.line_status.values()
                 ) else 0.0
 
-            neighbor_stats = self._get_neighbor_stats(current_obs)
+            # _get_neighbor_stats indexes raw feature columns (tms_norm,
+            # ps_norm, cti_slack_norm, viol_flag) — current_obs is the
+            # GNN-decoded enhanced observation when use_comm is on, whose
+            # columns are an arbitrary nonlinear mix of raw+message
+            # features (see GNNMessageDecoder.decode), not those raw
+            # columns. Always use the true raw obs here so this matches
+            # the GAE bootstrap value below, which already (correctly)
+            # computes neighbor_stats from raw obs.
+            neighbor_stats = self._get_neighbor_stats(obs)
             value = self.critic.value(
                 TMS, PS, pv_level, topology_flag,
                 fault_type_idx=0, neighbor_stats=neighbor_stats
@@ -487,6 +732,8 @@ class MAPPOMARLTrainer:
                 pv_level=pv_level, topology_flag=topology_flag,
                 messages=messages,
                 attention=comm_info.get("attention") if comm_info else None,
+                tms=TMS, ps=PS,
+                raw_obs=obs if self.use_comm else None,
             )
 
             # Track communication stats
@@ -518,14 +765,28 @@ class MAPPOMARLTrainer:
 
         return obs
 
-    def train(self, total_steps=30000, verbose=True, log_every=2000):
-        """Train MAPPO with optional GNN communication."""
+    def train(self, total_steps=30000, verbose=True, log_every=2000,
+              early_stop_patience=None, early_stop_min_delta=1e-4):
+        """Train MAPPO with optional GNN communication.
+
+        early_stop_patience: if set, stop once `early_stop_patience`
+        consecutive rollout evaluations pass without the best objective
+        function improving by more than early_stop_min_delta. Disabled by
+        default (None) — total_steps is otherwise a fixed budget regardless
+        of whether the policy has already converged, which wastes compute on
+        easy configurations without helping hard ones. When curriculum
+        learning is enabled, early stopping only takes effect once the final
+        curriculum stage has been reached, so it can't cut a run off before
+        every stage has been visited.
+        """
         obs = self.env.reset()
         step = 0
         history = []
         best_OF = np.inf
         best_TMS = self.env.TMS.copy()
         best_PS = self.env.PS.copy()
+        no_improve_count = 0
+        early_stopped = False
         t0 = time.perf_counter()
 
         stage_history = {i: [] for i in range(self.curriculum_stages)}
@@ -576,12 +837,24 @@ class MAPPOMARLTrainer:
                         self.buffer.log_probs[:T, ag],
                     )
 
-            # Update centralized critic
+            # Update centralized critic. Pass raw_obs (not buffer.obs, the
+            # GNN-enhanced observation used to update the actor above) —
+            # _update_critic_es only uses this to compute neighbor_stats,
+            # which indexes raw feature columns that don't exist in the
+            # decoded enhanced representation. buffer.raw_obs is None when
+            # use_comm is off, in which case buffer.obs already *is* the
+            # raw obs (see _collect_rollout).
             for _ in range(self.n_epochs):
                 self._update_critic_es(
-                    self.buffer.obs[:T],
+                    self.buffer.raw_obs[:T] if self.use_comm else self.buffer.obs[:T],
                     rets[:T],
                 )
+
+            # Update GNN communication weights (encoder/attention/decoder).
+            # Without this call the module's params never move from their
+            # random initialization regardless of how long training runs.
+            if self.use_comm and self.gnn_trainer is not None:
+                self.gnn_trainer.update(self.buffer.raw_obs[:T], advs[:T])
 
             # Evaluate
             from network.relay_physics import objective_function as OF_fn
@@ -593,10 +866,12 @@ class MAPPOMARLTrainer:
                 OF_now, _, _ = OF_fn(self.env.net, TMS, PS)
                 cti_ok = False
 
+            improved = OF_now < best_OF - early_stop_min_delta
             if OF_now < best_OF:
                 best_OF = OF_now
                 best_TMS = TMS.copy()
                 best_PS = PS.copy()
+            no_improve_count = 0 if improved else no_improve_count + 1
 
             history.append(OF_now)
             cti_satisfaction_history.append(1.0 if cti_ok else 0.0)
@@ -633,6 +908,15 @@ class MAPPOMARLTrainer:
                       f"CTI_ok={cti_ok}{stage_info}{comm_info}  "
                       f"t={time.perf_counter() - t0:.1f}s")
 
+            if early_stop_patience is not None:
+                curriculum_done = (not self.curriculum) or (self.current_stage >= self.curriculum_stages - 1)
+                if curriculum_done and no_improve_count >= early_stop_patience:
+                    early_stopped = True
+                    if verbose:
+                        print(f"  Early stop at step {step}/{total_steps}: "
+                              f"no improvement > {early_stop_min_delta} for {no_improve_count} rollouts")
+                    break
+
         elapsed = time.perf_counter() - t0
         if verbose:
             print(f"  Done. Best OF = {best_OF:.4f}  [{elapsed:.1f}s]")
@@ -654,6 +938,8 @@ class MAPPOMARLTrainer:
             "stage_history":    stage_history if self.curriculum else {},
             "use_comm":         self.use_comm,
             "comm_bandwidth":   np.mean(self.comm_bandwidth_history) if self.comm_bandwidth_history else 0.0,
+            "early_stopped":    early_stopped,
+            "stopped_at_step":  step,
             # ── Tier-2 additions ──────────────────────────────────────────────
             "attention_snapshots": self.attention_snapshots,        # Figs 8, 38
             "per_agent_returns":   self.per_agent_returns,          # Fig 37

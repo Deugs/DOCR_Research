@@ -86,15 +86,25 @@ def compute_fault_contributions_pandapower(net, pv_level: float = 1.0) -> dict:
 
         contributions = {"Utility": 0.0, "PV Inverters": 0.0, "Motor Loads": 0.0, "Synchronous DG": 0.0}
 
+        # Derive the source split fractions from the same PV-dependent
+        # analytical model used by the fallback path, so the split actually
+        # responds to pv_level instead of using a fixed 75/20/5 approximation
+        # regardless of penetration (see compute_fault_contributions_analytical).
+        analytical = compute_fault_contributions_analytical(net, pv_level)
+        analytical_total = analytical["Total"]
+        frac_utility = analytical["Utility"] / analytical_total
+        frac_pv = analytical["PV Inverters"] / analytical_total
+        frac_load = analytical["Motor Loads"] / analytical_total
+
         for bus_idx in range(len(pp_net.pp_net.bus)):
             try:
                 sc.calc_sc(pp_net.pp_net, bus=bus_idx, fault="3ph", case="max")
                 # Extract contributions from each element
                 # This is simplified — real implementation needs element-specific extraction
                 ikss = pp_net.pp_net.res_bus_sc.at[bus_idx, "ikss_ka"] * 1000   # kA → A
-                contributions["Utility"] += ikss * 0.75   # approximate split
-                contributions["PV Inverters"] += ikss * 0.20
-                contributions["Motor Loads"] += ikss * 0.05
+                contributions["Utility"] += ikss * frac_utility     # scales with pv_level
+                contributions["PV Inverters"] += ikss * frac_pv     # scales with pv_level
+                contributions["Motor Loads"] += ikss * frac_load    # scales with pv_level
             except Exception as e:
                 logger.warning("SC failed at bus %d: %s", bus_idx, e)
 

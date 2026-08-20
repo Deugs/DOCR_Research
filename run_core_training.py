@@ -15,8 +15,11 @@ import sys
 import json
 import time
 import hashlib
+import zlib
 import pickle
+import multiprocessing as mp
 import numpy as np
+import threadpoolctl
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Any, Callable
@@ -250,20 +253,23 @@ EPISODES_FAST = 500
 EPISODES_HPARAM = 2000
 EPISODES_HPARAM_FAST = 500
 SEED = 42
+FAULT_TYPE = "3ph"
 
 # Config object — set in main()
 CONFIG: Optional[DOCRConfig] = None
 
 def apply_config(config: DOCRConfig):
     """Apply DOCRConfig to global runtime parameters."""
-    global FAST_MODE, USE_SYNTHETIC, SEED
+    global FAST_MODE, USE_SYNTHETIC, SEED, FAULT_TYPE, N_WORKERS_DEFAULT
     global N_RUNS_DEFAULT, N_RUNS_FAST, N_RUNS_BASELINE, N_RUNS_BASELINE_FAST
     global N_RUNS_HPARAM, N_RUNS_HPARAM_FAST
     global EPISODES_DEFAULT, EPISODES_FAST, EPISODES_HPARAM, EPISODES_HPARAM_FAST
-    
+
     FAST_MODE = config.experiment.fast_mode
     USE_SYNTHETIC = config.experiment.use_synthetic
     SEED = config.training.seed
+    FAULT_TYPE = config.system.fault_type
+    N_WORKERS_DEFAULT = config.experiment.n_workers
     
     # Training parameters
     N_RUNS_DEFAULT = config.training.n_runs
@@ -447,6 +453,45 @@ class UnifiedTrainingLogger:
         logger.info(f"[Logger] Saved unified log: {path}")
 
 # ═════════════════════════════════════════════════════════════════
+# Core-training parallelization (--n_workers)
+# ═════════════════════════════════════════════════════════════════
+# Same pattern used throughout marl/experiments/ and baselines/experiments/
+# (see EXPERIMENT_GUIDE.md §2.2.2): each Core's per-run loop is independent
+# across (run_idx) or (method/config, run_idx), so it maps cleanly onto a
+# worker pool. threadpoolctl pins each worker to 1 BLAS thread — without
+# this, N worker processes each defaulting to all-core BLAS oversubscribes
+# the machine and can make --n_workers slower than sequential.
+N_WORKERS_DEFAULT = 1
+
+
+def _core_pool_worker_init():
+    threadpoolctl.threadpool_limits(1)
+
+
+def _run_pool(jobs, worker_fn, n_workers):
+    """Run `worker_fn` over `jobs` either sequentially or via a Pool,
+    yielding (job, result) pairs as they complete. Sequential path calls
+    worker_fn directly (no process overhead) when n_workers <= 1."""
+    if n_workers > 1:
+        with mp.Pool(n_workers, initializer=_core_pool_worker_init) as pool:
+            for job, result in pool.imap_unordered(worker_fn, jobs):
+                yield job, result
+    else:
+        for job in jobs:
+            yield worker_fn(job)
+
+
+def _method_seed_offset(name: str, modulus: int = 10000) -> int:
+    # zlib.crc32 instead of hash(): Python's hash() is randomized per
+    # process by default (PEP 456) — under multiprocessing, each worker
+    # process would derive a *different* offset for the same method/config
+    # name, silently breaking the seed scheme and reproducibility even in
+    # the sequential case (hash() is unstable across separate invocations
+    # of the same process too, e.g. between a cached run and a re-run).
+    return zlib.crc32(name.encode()) % modulus
+
+
+# ═════════════════════════════════════════════════════════════════
 # HELPER: Try experimental, fallback to synthetic (RESPECTS USE_SYNTHETIC FLAG)
 # ═════════════════════════════════════════════════════════════════
 def _try_experimental(fn, fallback_fn, *args, **kwargs):
@@ -535,7 +580,7 @@ def _train_and_collect(trainer, env, n_steps, rng, desc="train"):
 
         TMS, PS = env.get_state()
         try:
-            of_val, _, _ = objective_function(net, TMS, PS, fault_type="3ph")
+            of_val, _, _ = objective_function(net, TMS, PS, fault_type=FAULT_TYPE)
             if of_val < best_of:
                 best_of = of_val
                 best_tms, best_ps = TMS.copy(), PS.copy()
@@ -548,21 +593,38 @@ def _train_and_collect(trainer, env, n_steps, rng, desc="train"):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN A — MAPPO-Safe-EWC 8-Bus 60% PV (max of active sweep)
 # ═════════════════════════════════════════════════════════════════
-def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None, 
-               progress: ExperimentProgress = None):
+def _core_A_job(args):
+    run_idx, run_seed, n_episodes = args
+    # BUGFIX: Pass n_agents=14, n_pairs=20 to match 8-bus network dimensions
+    result = _try_experimental(_run_core_A_experimental, _generate_synthetic_core_A,
+                               n_episodes, run_seed, n_agents=14, n_pairs=20)
+    return run_idx, result
+
+
+def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None,
+               progress: ExperimentProgress = None, n_workers: int = None):
     # Use config values if not explicitly provided
     n_runs = n_runs if n_runs is not None else (N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT)
     n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
-        "name": "core_A_mappo_safe_ewc_8bus_100pv", 
-        "method": "MAPPO-Safe-EWC", 
-        "system": "8bus", 
-        "pv": 1.0, 
-        "n_runs": n_runs, 
-        "n_episodes": n_episodes, 
-        "seed": seed
+        "name": "core_A_mappo_safe_ewc_8bus_100pv",
+        "method": "MAPPO-Safe-EWC",
+        "system": "8bus",
+        "pv": 1.0,
+        "n_runs": n_runs,
+        "n_episodes": n_episodes,
+        "seed": seed,
+        "fault_type": FAULT_TYPE,
+        # Bumped: Safe RL / EWC were previously dead no-op attribute
+        # guards (trainer.use_safety/use_ewc are not real attributes on
+        # MAPPOMARLTrainer), so every prior cache entry under this name
+        # is actually plain unconstrained MAPPO+GNN mislabeled as
+        # "MAPPO-Safe-EWC". This marker forces a genuine re-run now that
+        # both are wired for real (env-wrapped Safe RL + registered EWC task).
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -580,20 +642,20 @@ def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None,
     logger.info("  Feeds: Figs 9,10,12,21,37,38,41,48-50,55-57")
     logger.info("=" * 70)
     
-    all_runs_data = []
+    # Pre-allocated by run_idx rather than appended in completion order —
+    # required for reproducible aggregation regardless of which worker
+    # (when n_workers > 1) finishes first.
+    all_runs_data = [None] * n_runs
+    jobs = [(run_idx, seed + run_idx, n_episodes) for run_idx in range(n_runs)]
     with ProgressTracker(total=n_runs, desc="[Core A] Training runs", unit="run") as pbar:
-        for run_idx in range(n_runs):
-            run_seed = seed + run_idx
-            # BUGFIX: Pass n_agents=14, n_pairs=20 to match 8-bus network dimensions
-            result = _try_experimental(_run_core_A_experimental, _generate_synthetic_core_A, 
-                                       n_episodes, run_seed, n_agents=14, n_pairs=20)
-            all_runs_data.append(result)
+        for run_idx, result in _run_pool(jobs, _core_A_job, n_workers):
+            all_runs_data[run_idx] = result
             pbar.update(1)
-            pbar.set_postfix(seed=run_seed, 
+            pbar.set_postfix(seed=seed + run_idx,
                            return_val=f"{result['global_returns'][-1]:.3f}" if len(result.get('global_returns', [])) > 0 else "N/A")
             if progress:
-                progress.update_step(run_name, run_idx + 1)
-                
+                progress.update_step(run_name, pbar.current)
+
     aggregated = _aggregate_runs(all_runs_data)
     aggregated["config"] = config
     aggregated["checkpoint_path"] = str(CHECKPOINT_DIR / "core_A_best.pt")
@@ -612,11 +674,13 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+    from marl.continual_trainer import create_ewc_trainer, EWCConfig
     from network.relay_physics import check_constraints
 
     net = get_8bus()
     # curriculum_stage=3 → 60% PV (active sweep max; was hardcoded to 5=100%)
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=3)
+    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=3)
 
     n_agents = n_agents or env.n_agents
     n_pairs = n_pairs or (env.net.n_pairs if hasattr(env.net, 'n_pairs') else 20)
@@ -625,9 +689,21 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
     # Previously use_comm=False was used as a workaround for the matmul
     # crash — now fixed via _make_act_fn which routes obs through the
     # comm graph before calling actor.sample().
-    trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
-    if hasattr(trainer, 'use_safety'): trainer.use_safety = True
-    if hasattr(trainer, 'use_ewc'):    trainer.use_ewc = True
+    #
+    # "Safe" and "EWC" were previously no-ops: `trainer.use_safety`/
+    # `use_ewc` are never real attributes on MAPPOMARLTrainer (the
+    # hasattr guards were always False), so this cached result was
+    # actually plain MAPPO+GNN despite being labeled and cached as
+    # "MAPPO-Safe-EWC". Safe RL is a real env wrapper (project actions +
+    # Lagrangian CTI penalty); it must wrap env BEFORE the trainer is
+    # constructed, not be set as a post-hoc attribute.
+    safe_env = create_safe_rl_env(env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
+    trainer = MAPPOMARLTrainer(safe_env, use_comm=True, seed=seed)
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
 
     logger_obj = UnifiedTrainingLogger(
         n_agents=env.n_agents,
@@ -647,12 +723,54 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
     history = trainer.train(total_steps=total_steps, verbose=False)
     logger.info(f"  [Core A] Training complete.")
 
+    # Register this (single) task with EWC. A lone task has nothing to
+    # protect against forgetting — that's expected, not a bug — but the
+    # apparatus should genuinely run rather than stay entirely inert:
+    # this is the same real Fisher-estimation procedure Core B uses
+    # across its multi-task curriculum, applied here to the one task
+    # Core A trains.
+    cur_params = trainer.actor.get_all_params()
+    obs_f = safe_env.reset(seed=seed + 9000)
+    s_obs, s_act = [], []
+    done_f, sf = False, 0
+    while not done_f and sf < 30:
+        acts = np.zeros((env.n_agents, env.ACT_DIM))
+        enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, rng) if trainer.comm_graph is not None else (obs_f, None, None)
+        for i in range(env.n_agents):
+            a, _ = trainer.actor.sample(enhanced_f[i], rng)
+            acts[i] = a
+            s_obs.append(enhanced_f[i].copy())
+            s_act.append(a.copy())
+        obs_f, _, done_f, _ = safe_env.step(acts); sf += 1
+    n_p = len(cur_params)
+    fisher = np.zeros(n_p)
+    if s_obs:
+        idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+        h = 1e-3
+        for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+            bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            b2 = cur_params.copy(); b2[p_idx] += h
+            trainer.actor.set_all_params(b2)
+            ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            fisher[p_idx] = ((ul - bl) / h) ** 2
+        trainer.actor.set_all_params(cur_params)
+    ewc_trainer.ewc_regularizer.register_task("PV060", cur_params)
+    ewc_trainer.ewc_regularizer.update_fisher("PV060", fisher)
+    # register_task()/update_fisher() only consolidate a task into
+    # task_memory when the *next* task's register_task() fires — with no
+    # next task here, finalize() closes this one out explicitly so it's
+    # not silently dropped (n_tasks_consolidated would otherwise stay 0).
+    ewc_trainer.ewc_regularizer.finalize()
+
     act_fn = _make_act_fn(trainer)
 
-    # Post-training evaluation rollout (for logging/convergence curves)
+    # Post-training evaluation rollout (for logging/convergence curves) —
+    # uses safe_env (not the raw env) so action projection and the
+    # Lagrangian CTI penalty are actually exercised during evaluation,
+    # matching how the policy was trained.
     with ProgressTracker(total=min(n_episodes, 200), desc="[Core A] Eval", unit="ep", enable=False) as pbar:
         for ep in range(min(n_episodes, 200)):
-            obs = env.reset(seed=seed + ep)
+            obs = safe_env.reset(seed=seed + ep)
             done = False
             ep_reward = 0.0
             ep_safety_acts = 0
@@ -662,13 +780,15 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
                 for i in range(env.n_agents):
                     a, _ = act_fn(obs, i, rng)
                     actions[i] = a
-                obs, reward, done, info = env.step(actions)
+                obs, reward, done, info = safe_env.step(actions)
                 ep_reward += float(np.mean(reward))
+                if info.get("safe_rl", {}).get("projected_actions"):
+                    ep_projections += 1
+                ep_safety_acts += info.get("safe_rl", {}).get("cti_violations", 0)
 
-            TMS, PS = env.get_state()
+            TMS, PS = safe_env.get_state()
             c = check_constraints(env.net, TMS, PS)
-            lag_norm = float(np.linalg.norm(trainer.lagrange_multipliers)) \
-                if hasattr(trainer, 'lagrange_multipliers') else 0.0
+            lag_norm = float(np.mean(safe_env.get_safe_rl_stats().get("lambda_mean", 0.0)))
             attn = getattr(getattr(trainer, 'actor', None), 'attention_weights', None)
             if attn is not None:
                 attn = attn.copy()
@@ -752,8 +872,13 @@ def _aggregate_runs(runs_data: List[Dict]) -> Dict:
     for ep, mats in all_snapshots.items():
         aggregated[f"attention_snap_{ep}_mean"] = np.mean(mats, axis=0)
         
-    entropies = np.stack([r["attention_entropies"] for r in runs_data if len(r["attention_entropies"]) > 0])
-    if len(entropies) > 0:
+    # np.stack([]) raises ValueError before this could ever check "is there
+    # any data" — build the list first so a run with no recorded attention
+    # entropies (e.g. very short/fast-mode training) degrades to "skip"
+    # instead of crashing the whole aggregation.
+    entropy_arrays = [r["attention_entropies"] for r in runs_data if len(r["attention_entropies"]) > 0]
+    if entropy_arrays:
+        entropies = np.stack(entropy_arrays)
         aggregated["attention_entropy_mean"] = entropies.mean(axis=0)
         aggregated["attention_entropy_std"] = entropies.std(axis=0)
         
@@ -763,18 +888,46 @@ def _aggregate_runs(runs_data: List[Dict]) -> Dict:
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN B — Curriculum 0% -> 100% PV
 # ═════════════════════════════════════════════════════════════════
+def _core_B_job(args):
+    run_idx, run_seed, episodes_per_task, tasks = args
+    result_ewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
+                                  True, run_seed, episodes_per_task)
+    result_noewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
+                                    False, run_seed + 10000, episodes_per_task)
+    # Figs 5/6 are labeled "MAPPO-Safe-EWC" (see fig_05_objective_vs_pv's
+    # legend), so use the EWC run's real per-PV evaluation. Only the
+    # synthetic fallback path (_generate_synthetic_curriculum, taken
+    # when USE_SYNTHETIC=True and real training raised) lacks a
+    # "pv_evaluation" key, since that fallback never touches the real
+    # env/policy at all.
+    eval_results = result_ewc.get("pv_evaluation") or _evaluate_across_pv("checkpoint", tasks)
+    return run_idx, (result_ewc, result_noewc, eval_results)
+
+
 def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = None,
-               progress: ExperimentProgress = None):
+               progress: ExperimentProgress = None, n_workers: int = None):
     n_runs = n_runs if n_runs is not None else (N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE)
     episodes_per_task = episodes_per_task if episodes_per_task is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT) // 10
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
-        "name": "core_B_curriculum", 
+        "name": "core_B_curriculum",
         "tasks": [0.0, 0.20, 0.40, 0.60],  # active sweep (was 0/25/50/75/100%)
-        "episodes_per_task": episodes_per_task, 
-        "n_runs": n_runs, 
-        "seed": seed
+        "episodes_per_task": episodes_per_task,
+        "n_runs": n_runs,
+        "seed": seed,
+        "fault_type": FAULT_TYPE,
+        # Bumped: Safe RL was previously a dead post-hoc attribute set;
+        # now genuinely wraps the env (see _run_curriculum_single).
+        "real_safety": True,
+        # Bumped: eval_results (Figs 5/6's data) previously came from
+        # _evaluate_across_pv("checkpoint", tasks) — a placeholder that
+        # ignored its args and returned a fixed formula with zero
+        # dependence on training. Now genuinely evaluates the trained
+        # policy via objective_function/check_constraints (see
+        # _run_curriculum_single's "pv_evaluation").
+        "real_pv_eval": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -793,29 +946,27 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
     logger.info("=" * 70)
     
     TASKS = config["tasks"]
-    all_results = {"with_ewc": [], "without_ewc": [], "task_evaluations": []}
-    
+    # Pre-allocated by run_idx rather than appended in completion order —
+    # required for reproducible aggregation regardless of which worker
+    # finishes first.
+    with_ewc = [None] * n_runs
+    without_ewc = [None] * n_runs
+    task_evaluations = [None] * n_runs
+    jobs = [(run_idx, seed + run_idx, episodes_per_task, TASKS) for run_idx in range(n_runs)]
+
     with ProgressTracker(total=n_runs, desc="[Core B] Curriculum runs", unit="run") as pbar:
-        for run_idx in range(n_runs):
-            run_seed = seed + run_idx
-            logger.info(f"\n[Core B] Run {run_idx + 1}/{n_runs} (seed={run_seed})")
-            
-            result_ewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum, 
-                                          True, run_seed, episodes_per_task)
-            result_noewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
-                                            False, run_seed + 10000, episodes_per_task)
-            eval_results = _evaluate_across_pv("checkpoint", TASKS)
-            
-            all_results["with_ewc"].append(result_ewc)
-            all_results["without_ewc"].append(result_noewc)
-            all_results["task_evaluations"].append(eval_results)
-            
+        for run_idx, (result_ewc, result_noewc, eval_results) in _run_pool(jobs, _core_B_job, n_workers):
+            with_ewc[run_idx] = result_ewc
+            without_ewc[run_idx] = result_noewc
+            task_evaluations[run_idx] = eval_results
+
             pbar.update(1)
-            pbar.set_postfix(run=run_idx+1, 
+            pbar.set_postfix(run=run_idx + 1,
                            ewc_perf=f"{np.mean(result_ewc['task_performances'][-1]):.3f}")
             if progress:
-                progress.update_step(run_name, run_idx + 1)
-                
+                progress.update_step(run_name, pbar.current)
+
+    all_results = {"with_ewc": with_ewc, "without_ewc": without_ewc, "task_evaluations": task_evaluations}
     cache.put(config, all_results)
     logger.info("[Core B] Complete.")
     
@@ -834,13 +985,21 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
     from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
     net = get_8bus()
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=0)
-    base_trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
-    if hasattr(base_trainer, 'use_safety'): base_trainer.use_safety = True
-    if hasattr(base_trainer, 'use_ewc'):    base_trainer.use_ewc = use_ewc
+    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=0)
+    # Safe RL was previously a dead post-hoc attribute set (use_safety is
+    # not a real MAPPOMARLTrainer attribute) — it's a real env wrapper and
+    # must wrap env before the trainer is constructed. curriculum_stage
+    # mutation below reaches the real env through SafeRLWrapper's property.
+    safe_env = create_safe_rl_env(env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
+    base_trainer = MAPPOMARLTrainer(safe_env, use_comm=True, seed=seed)
 
     ewc_wrapper = create_ewc_trainer(base_trainer, EWCConfig()) if use_ewc else None
 
@@ -872,7 +1031,10 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
                 cur = base_trainer.actor.get_all_params()
                 # Estimate Fisher for the task just completed before
                 # register_task() consolidates the previous one.
-                obs_f = env.reset(seed=seed + 9000 + task_idx)
+                # Uses safe_env (not the raw env) so this rollout is
+                # collected under the same action projection the policy
+                # was actually trained under.
+                obs_f = safe_env.reset(seed=seed + 9000 + task_idx)
                 s_obs, s_act = [], []
                 done_f = False; sf = 0
                 while not done_f and sf < 30:
@@ -889,7 +1051,7 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
                         acts[i] = a
                         s_obs.append(enhanced_f[i].copy())
                         s_act.append(a.copy())
-                    obs_f, _, done_f, _ = env.step(acts); sf += 1
+                    obs_f, _, done_f, _ = safe_env.step(acts); sf += 1
 
                 n_p = len(cur)
                 fisher = np.zeros(n_p)
@@ -909,20 +1071,21 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
                 prev_task_name = task_name
                 prev_fisher = fisher
 
-            # Evaluate across all tasks seen so far
+            # Evaluate across all tasks seen so far — via safe_env so the
+            # safety projection applies during evaluation too.
             task_perf = []
             for eval_pv in TASKS:
                 env.curriculum_stage = int(eval_pv * 5)
                 rewards = []
                 for ep in range(30):
-                    obs = env.reset(seed=seed + 50000 + int(eval_pv * 1000) + ep)
+                    obs = safe_env.reset(seed=seed + 50000 + int(eval_pv * 1000) + ep)
                     done = False; ep_reward = 0
                     while not done:
                         actions = np.zeros((env.n_agents, env.ACT_DIM))
                         for i in range(env.n_agents):
                             a, _ = act_fn(obs, i, rng)
                             actions[i] = a
-                        obs, r, done, _ = env.step(actions)
+                        obs, r, done, _ = safe_env.step(actions)
                         ep_reward += float(np.mean(r))
                     rewards.append(ep_reward)
                 task_perf.append(float(np.mean(rewards)))
@@ -930,10 +1093,55 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
             pbar.update(1)
             pbar.set_postfix(pv=f"{pv:.0%}")
 
+    if use_ewc and ewc_wrapper is not None:
+        # The loop above only consolidates a task into task_memory when
+        # the *next* task's register_task() call fires (lagged by one
+        # iteration) — so TASKS[-1] (60% PV) is never consolidated
+        # without this: finalize() closes it out explicitly.
+        ewc_wrapper.ewc_regularizer.finalize()
+
+    # Final objective/CTI evaluation of the fully-trained policy across
+    # all PV levels — this is what Figs 5 (Objective vs PV) and 6 (CTI
+    # Violation Rate vs PV) actually need. Previously run_core_B's
+    # caller got this from _evaluate_across_pv("checkpoint", tasks) — a
+    # placeholder that ignored its "checkpoint" argument (a literal
+    # string, never an actual trained policy — this function never
+    # returned anything a checkpoint could even be built from) and
+    # returned a fixed formula (1.0 + pv*2, max(0, 0.5 - pv*0.3)) with
+    # zero dependence on training. Because it was cached under the real
+    # "core_B_curriculum" name, is_synthetic was never True for Figs
+    # 5/6 and the fabricated numbers were never disclosed. This uses
+    # the actual final trained policy's (TMS, PS) state, averaged over
+    # real evaluation episodes per PV level.
+    from network.relay_physics import objective_function as _of_fn, check_constraints as _cc_fn
+    pv_evaluation = {}
+    for eval_pv in TASKS:
+        env.curriculum_stage = int(eval_pv * 5)
+        of_vals, cti_rates = [], []
+        for ep in range(30):
+            obs = safe_env.reset(seed=seed + 70000 + int(eval_pv * 1000) + ep)
+            done = False
+            while not done:
+                actions = np.zeros((env.n_agents, env.ACT_DIM))
+                for i in range(env.n_agents):
+                    a, _ = act_fn(obs, i, rng)
+                    actions[i] = a
+                obs, _, done, _ = safe_env.step(actions)
+            TMS, PS = env.get_state()
+            of_val, _, _ = _of_fn(net, TMS, PS, fault_type=FAULT_TYPE)
+            c = _cc_fn(net, TMS, PS, fault_type=FAULT_TYPE)
+            of_vals.append(of_val)
+            cti_rates.append(c["cti_violations"] / net.n_pairs)
+        pv_evaluation[eval_pv] = {
+            "objective": float(np.mean(of_vals)),
+            "cti_rate": float(np.mean(cti_rates)),
+        }
+
     return {
         "task_performances": np.array(task_performances),
         "use_ewc": use_ewc,
         "final_checkpoint": "saved",
+        "pv_evaluation": pv_evaluation,
     }
 
 
@@ -960,23 +1168,47 @@ def _generate_synthetic_curriculum(use_ewc: bool, seed: int, episodes_per_task: 
 
 
 def _evaluate_across_pv(checkpoint, pv_levels):
+    """Synthetic-fallback-only partner for _core_B_job's eval_results.
+
+    Real per-PV evaluation now comes from _run_curriculum_single's
+    "pv_evaluation" (a genuine trained-policy evaluation via
+    objective_function/check_constraints). This formulaic stand-in is
+    only reached when the real training path raised AND
+    USE_SYNTHETIC=True routed to _generate_synthetic_curriculum instead
+    (which has no real policy to evaluate) — `checkpoint` is accepted
+    for backward-compatible call shape but intentionally unused, since
+    there is no real checkpoint in that fallback case.
+    """
     return {pv: {"objective": 1.0 + pv * 2, "cti_rate": max(0, 0.5 - pv * 0.3)} for pv in pv_levels}
 
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN C — Baseline Comparison
 # ═════════════════════════════════════════════════════════════════
+def _core_C_job(args):
+    method, run_idx, run_seed, n_episodes = args
+    returns = _try_experimental(_run_baseline_single, _generate_synthetic_baseline,
+                               method, run_seed, n_episodes)
+    return (method, run_idx), returns
+
+
 def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
-               progress: ExperimentProgress = None):
+               progress: ExperimentProgress = None, n_workers: int = None):
     n_runs = n_runs if n_runs is not None else (N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT)
     n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
-        "name": "core_C_baselines", 
-        "methods": ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"], 
-        "n_runs": n_runs, 
-        "n_episodes": n_episodes, 
-        "seed": seed
+        "name": "core_C_baselines",
+        "methods": ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"],
+        "n_runs": n_runs,
+        "n_episodes": n_episodes,
+        "seed": seed,
+        "fault_type": FAULT_TYPE,
+        # Bumped: "Safe"/"EWC" methods previously trained identically to
+        # plain "MAPPO" (dead post-hoc attribute guards). Now genuinely
+        # differ — see _run_baseline_single.
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -995,23 +1227,23 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
     logger.info("  Feeds: Figs 11, 12, 31-33, 55-56")
     logger.info("=" * 70)
     
-    results = {method: [] for method in config["methods"]}
-    step_count = 0
-    
+    # Pre-allocated by (method, run_idx) rather than appended in completion
+    # order — required for reproducible aggregation regardless of which
+    # worker finishes first.
+    results = {method: [None] * n_runs for method in config["methods"]}
+    jobs = [
+        (method, run_idx, seed + run_idx + _method_seed_offset(method), n_episodes)
+        for method in config["methods"] for run_idx in range(n_runs)
+    ]
+
     with ProgressTracker(total=total_steps, desc="[Core C] Baseline runs", unit="run") as pbar:
-        for method in config["methods"]:
-            logger.info(f"\n[Core C] Method: {method}")
-            for run_idx in range(n_runs):
-                run_seed = seed + run_idx + hash(method) % 10000
-                returns = _try_experimental(_run_baseline_single, _generate_synthetic_baseline, 
-                                           method, run_seed, n_episodes)
-                results[method].append(returns)
-                step_count += 1
-                pbar.update(1)
-                pbar.set_postfix(method=method[:10], run=run_idx+1)
-                if progress:
-                    progress.update_step(run_name, step_count)
-                    
+        for (method, run_idx), returns in _run_pool(jobs, _core_C_job, n_workers):
+            results[method][run_idx] = returns
+            pbar.update(1)
+            pbar.set_postfix(method=method[:10], run=run_idx + 1)
+            if progress:
+                progress.update_step(run_name, pbar.current)
+
     for method in results:
         results[method] = np.array(results[method])
         
@@ -1028,21 +1260,78 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int):
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+    from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
     net = get_8bus()
     # curriculum_stage=3 → 60% PV (active sweep max)
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=3)
+    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=3)
     if method == "Traditional":
         return _evaluate_traditional(env, net, n_episodes, seed)
 
+    use_safe = method in ["MAPPO-Safe-EWC", "MAPPO-Safe"]
+    use_ewc = method == "MAPPO-Safe-EWC"
     use_comm = method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO"]
-    trainer = MAPPOMARLTrainer(env, use_comm=use_comm, seed=seed)
-    if hasattr(trainer, 'use_safety'): trainer.use_safety = (method in ["MAPPO-Safe-EWC", "MAPPO-Safe"])
-    if hasattr(trainer, 'use_ewc'):    trainer.use_ewc = (method == "MAPPO-Safe-EWC")
+
+    # Safe RL is a real env wrapper (use_safety was previously a dead
+    # post-hoc attribute — MAPPOMARLTrainer never defines it — so "Safe"
+    # methods here trained identically to plain "MAPPO").
+    train_env = env
+    if use_safe:
+        train_env = create_safe_rl_env(env, SafeRLConfig(
+            project_actions=True, enforce_cti=True,
+            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+            use_pid=True, adaptive_rho=True,
+        ))
+    trainer = MAPPOMARLTrainer(train_env, use_comm=use_comm, seed=seed)
 
     # ── ACTUAL TRAINING ───────────────────────────────────────────────────
     total_steps = n_episodes * 300
     trainer.train(total_steps=total_steps, verbose=False)
+
+    if use_ewc:
+        # Register this single task with EWC so the apparatus genuinely
+        # runs (n_tasks_learned reflects reality) rather than staying
+        # completely inert — see Core A for the same pattern and its
+        # rationale (one task has nothing to protect against forgetting,
+        # by construction, which is expected here).
+        ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
+        cur = trainer.actor.get_all_params()
+        # Real (if cheap) Fisher estimation via finite differences, same
+        # method Core A/B/D use — without an explicit update_fisher()
+        # call here, _consolidate_current_task falls back to a uniform
+        # placeholder (fisher = 0.1 everywhere), which is a real
+        # inconsistency with the other Cores' EWC registrations.
+        fisher_rng = np.random.default_rng(seed + 8000)
+        obs_f = train_env.reset(seed=seed + 9000)
+        s_obs, s_act = [], []
+        done_f, sf = False, 0
+        while not done_f and sf < 30:
+            acts = np.zeros((env.n_agents, env.ACT_DIM))
+            enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, fisher_rng) if trainer.comm_graph is not None else (obs_f, None, None)
+            for i in range(env.n_agents):
+                a, _ = trainer.actor.sample(enhanced_f[i], fisher_rng)
+                acts[i] = a
+                s_obs.append(enhanced_f[i].copy())
+                s_act.append(a.copy())
+            obs_f, _, done_f, _ = train_env.step(acts); sf += 1
+        n_p = len(cur)
+        fisher = np.zeros(n_p)
+        if s_obs:
+            idx = fisher_rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+            h = 1e-3
+            for p_idx in fisher_rng.choice(n_p, size=min(n_p, 50), replace=False):
+                bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                b2 = cur.copy(); b2[p_idx] += h
+                trainer.actor.set_all_params(b2)
+                ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                fisher[p_idx] = ((ul - bl) / h) ** 2
+            trainer.actor.set_all_params(cur)
+        ewc_trainer.ewc_regularizer.register_task(method, cur)
+        ewc_trainer.ewc_regularizer.update_fisher(method, fisher)
+        # No "next" task will ever register here to trigger the lagged
+        # consolidation — finalize() closes this one out explicitly.
+        ewc_trainer.ewc_regularizer.finalize()
 
     act_fn = _make_act_fn(trainer)
     rng = np.random.default_rng(seed + 9999)
@@ -1050,7 +1339,7 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int):
     returns = []
     with ProgressTracker(total=min(n_episodes, 200), desc=f"[Core C] {method} eval", unit="ep", enable=False) as pbar:
         for ep in range(min(n_episodes, 200)):
-            obs = env.reset(seed=seed + ep)
+            obs = train_env.reset(seed=seed + ep)
             done = False
             ep_return = 0.0
             while not done:
@@ -1058,7 +1347,7 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int):
                 for i in range(env.n_agents):
                     a, _ = act_fn(obs, i, rng)
                     actions[i] = a
-                obs, reward, done, _ = env.step(actions)
+                obs, reward, done, _ = train_env.step(actions)
                 ep_return += float(np.mean(reward))
             returns.append(ep_return)
             pbar.update(1)
@@ -1082,7 +1371,11 @@ def _evaluate_traditional(env, net, n_episodes: int, seed: int):
     return np.array(returns)
 
 
-def _generate_synthetic_baseline(method: str, n_episodes: int, seed: int, n_agents: int = 14):
+def _generate_synthetic_baseline(method: str, seed: int, n_episodes: int, n_agents: int = 14):
+    # Parameter order matches _run_baseline_single(method, seed, n_episodes)
+    # — _try_experimental() forwards the same positional args to whichever
+    # of the two runs, so a mismatched order here silently swapped seed and
+    # n_episodes whenever the synthetic fallback actually fired.
     rng = np.random.default_rng(seed)
     profiles = {
         "MAPPO-Safe-EWC": (-3.0, 7.8, 800), 
@@ -1106,18 +1399,31 @@ def _generate_synthetic_baseline(method: str, n_episodes: int, seed: int, n_agen
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN D — Ablation Study
 # ═════════════════════════════════════════════════════════════════
+def _core_D_job(args):
+    cfg_name, run_idx, run_seed, n_episodes = args
+    of_val, cti_val = _try_experimental(_run_ablation_single, _generate_synthetic_ablation,
+                                        cfg_name, run_seed, n_episodes)
+    return (cfg_name, run_idx), {"OF": of_val, "CTI": cti_val}
+
+
 def run_core_D(n_runs: int = None, n_episodes: int = None, seed: int = None,
-               progress: ExperimentProgress = None):
+               progress: ExperimentProgress = None, n_workers: int = None):
     n_runs = n_runs if n_runs is not None else (N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE)
     n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
-        "name": "core_D_ablation", 
-        "configs": ["MAPPO", "MAPPO+GNN", "MAPPO+GNN+Safe", "MAPPO+GNN+Safe+EWC", "MAPPO+GNN+Safe+EWC+Curr"], 
-        "n_runs": n_runs, 
-        "n_episodes": n_episodes, 
-        "seed": seed
+        "name": "core_D_ablation",
+        "configs": ["MAPPO", "MAPPO+GNN", "MAPPO+GNN+Safe", "MAPPO+GNN+Safe+EWC", "MAPPO+GNN+Safe+EWC+Curr"],
+        "n_runs": n_runs,
+        "n_episodes": n_episodes,
+        "seed": seed,
+        "fault_type": FAULT_TYPE,
+        # Bumped: "Safe"/"EWC" arms previously trained identically to
+        # "MAPPO+GNN" (dead post-hoc attribute guards, unused ewc_wrapper).
+        # Now genuinely differ — see _run_ablation_single.
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1136,23 +1442,23 @@ def run_core_D(n_runs: int = None, n_episodes: int = None, seed: int = None,
     logger.info("  Feeds: Fig 39")
     logger.info("=" * 70)
     
-    results = {name: [] for name in config["configs"]}
-    step_count = 0
-    
+    # Pre-allocated by (cfg_name, run_idx) rather than appended in
+    # completion order — required for reproducible aggregation regardless
+    # of which worker finishes first.
+    results = {name: [None] * n_runs for name in config["configs"]}
+    jobs = [
+        (cfg_name, run_idx, seed + run_idx + _method_seed_offset(cfg_name, 1000), n_episodes)
+        for cfg_name in config["configs"] for run_idx in range(n_runs)
+    ]
+
     with ProgressTracker(total=total_steps, desc="[Core D] Ablation runs", unit="run") as pbar:
-        for cfg_name in config["configs"]:
-            logger.info(f"\n[Core D] Config: {cfg_name}")
-            for run_idx in range(n_runs):
-                run_seed = seed + run_idx + hash(cfg_name) % 1000
-                of_val, cti_val = _try_experimental(_run_ablation_single, _generate_synthetic_ablation,
-                                                    cfg_name, run_seed, n_episodes)
-                results[cfg_name].append({"OF": of_val, "CTI": cti_val})
-                step_count += 1
-                pbar.update(1)
-                pbar.set_postfix(config=cfg_name[:15], run=run_idx+1, OF=f"{of_val:.3f}")
-                if progress:
-                    progress.update_step(run_name, step_count)
-                    
+        for (cfg_name, run_idx), res in _run_pool(jobs, _core_D_job, n_workers):
+            results[cfg_name][run_idx] = res
+            pbar.update(1)
+            pbar.set_postfix(config=cfg_name[:15], run=run_idx + 1, OF=f"{res['OF']:.3f}")
+            if progress:
+                progress.update_step(run_name, pbar.current)
+
     cache.put(config, results)
     logger.info("[Core D] Complete.")
     
@@ -1171,34 +1477,132 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+    from marl.continual_trainer import create_ewc_trainer, EWCConfig
     from network.relay_physics import check_constraints
 
     net = get_8bus()
     # curriculum_stage=3 → 60% PV; use 0 if curriculum training is enabled
-    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph",
+    env = DynamicDOCREnv(net, use_pandapower=False, fault_type=FAULT_TYPE,
                           curriculum_stage=0 if use_curr else 3, seed=seed)
-    trainer = MAPPOMARLTrainer(env, use_comm=use_comm, seed=seed)
-    if hasattr(trainer, 'use_safety'): trainer.use_safety = use_safe
-    if hasattr(trainer, 'use_ewc'):    trainer.use_ewc = use_ewc
+    # "Safe" was previously a dead post-hoc attribute set (use_safety is
+    # not a real MAPPOMARLTrainer attribute) — it's a real env wrapper.
+    train_env = env
+    if use_safe:
+        train_env = create_safe_rl_env(env, SafeRLConfig(
+            project_actions=True, enforce_cti=True,
+            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+            use_pid=True, adaptive_rho=True,
+        ))
+    trainer = MAPPOMARLTrainer(train_env, use_comm=use_comm, seed=seed)
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig()) if use_ewc else None
 
     total_steps = n_episodes * 300
+    rng = np.random.default_rng(seed + 9999)
 
     if use_curr:
-        # Curriculum over 0/20/40/60%
+        # Curriculum over 0/20/40/60% — when EWC is also enabled, drive
+        # real task-transition consolidation across the stages (same
+        # pattern as Core B), rather than leaving the ewc_trainer
+        # entirely unused as before. Without EWC, this arm isolates
+        # curriculum warm-starting alone.
         steps_per_task = total_steps // 4
-        for pv in [0.0, 0.20, 0.40, 0.60]:
+        TASKS = [0.0, 0.20, 0.40, 0.60]
+        prev_task_name, prev_fisher = None, None
+        act_fn_curr = _make_act_fn(trainer)
+        for task_idx, pv in enumerate(TASKS):
             env.curriculum_stage = int(pv * 5)
+
+            if use_ewc and prev_task_name is not None:
+                cur = trainer.actor.get_all_params()
+                ewc_grad = ewc_trainer.apply_ewc_to_gradient(cur, np.zeros_like(cur))
+                trainer.actor.set_all_params(cur - 0.01 * ewc_grad)
+
             trainer.train(total_steps=steps_per_task, verbose=False)
+            task_name = f"PV{int(pv*100):03d}"
+
+            if use_ewc:
+                cur = trainer.actor.get_all_params()
+                obs_f = train_env.reset(seed=seed + 9000 + task_idx)
+                s_obs, s_act = [], []
+                done_f, sf = False, 0
+                while not done_f and sf < 30:
+                    acts = np.zeros((env.n_agents, env.ACT_DIM))
+                    enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, rng) if trainer.comm_graph is not None else (obs_f, None, None)
+                    for i in range(env.n_agents):
+                        a, _ = act_fn_curr(obs_f, i, rng)
+                        acts[i] = a
+                        s_obs.append(enhanced_f[i].copy())
+                        s_act.append(a.copy())
+                    obs_f, _, done_f, _ = train_env.step(acts); sf += 1
+                n_p = len(cur)
+                fisher = np.zeros(n_p)
+                if s_obs:
+                    idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+                    h = 1e-3
+                    for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+                        bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                        b2 = cur.copy(); b2[p_idx] += h
+                        trainer.actor.set_all_params(b2)
+                        ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                        fisher[p_idx] = ((ul - bl) / h) ** 2
+                    trainer.actor.set_all_params(cur)
+                ewc_trainer.ewc_regularizer.register_task(task_name, cur)
+                if prev_task_name is not None:
+                    ewc_trainer.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+                prev_task_name, prev_fisher = task_name, fisher
+        if use_ewc:
+            # The loop above only consolidates a task when the *next*
+            # task's register_task() fires — TASKS[-1] (60% PV) has no
+            # next task, so finalize() closes it out explicitly.
+            ewc_trainer.ewc_regularizer.finalize()
     else:
         trainer.train(total_steps=total_steps, verbose=False)
+        if use_ewc:
+            # Single task, no curriculum: register it so the apparatus
+            # genuinely runs (see Core A for the same rationale — no
+            # forgetting to prevent with only one task, by construction).
+            # Real (if cheap) Fisher estimation via finite differences,
+            # same method used above for the curriculum arm — without an
+            # explicit update_fisher() call, _consolidate_current_task
+            # falls back to a uniform placeholder (fisher = 0.1
+            # everywhere), a real inconsistency with the curriculum arm.
+            cur = trainer.actor.get_all_params()
+            fisher_rng = np.random.default_rng(seed + 8000)
+            obs_f = train_env.reset(seed=seed + 9000)
+            s_obs, s_act = [], []
+            done_f, sf = False, 0
+            while not done_f and sf < 30:
+                acts = np.zeros((env.n_agents, env.ACT_DIM))
+                enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, fisher_rng) if trainer.comm_graph is not None else (obs_f, None, None)
+                for i in range(env.n_agents):
+                    a, _ = trainer.actor.sample(enhanced_f[i], fisher_rng)
+                    acts[i] = a
+                    s_obs.append(enhanced_f[i].copy())
+                    s_act.append(a.copy())
+                obs_f, _, done_f, _ = train_env.step(acts); sf += 1
+            n_p = len(cur)
+            fisher = np.zeros(n_p)
+            if s_obs:
+                idx = fisher_rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+                h = 1e-3
+                for p_idx in fisher_rng.choice(n_p, size=min(n_p, 50), replace=False):
+                    bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    b2 = cur.copy(); b2[p_idx] += h
+                    trainer.actor.set_all_params(b2)
+                    ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    fisher[p_idx] = ((ul - bl) / h) ** 2
+                trainer.actor.set_all_params(cur)
+            ewc_trainer.ewc_regularizer.register_task(config_name, cur)
+            ewc_trainer.ewc_regularizer.update_fisher(config_name, fisher)
+            ewc_trainer.ewc_regularizer.finalize()
 
     act_fn = _make_act_fn(trainer)
-    rng = np.random.default_rng(seed + 9999)
 
     of_values, cti_values = [], []
     with ProgressTracker(total=50, desc=f"[Core D] {config_name} eval", unit="ep", enable=False) as pbar:
         for ep in range(50):
-            obs = env.reset(seed=seed + 999 + ep)
+            obs = train_env.reset(seed=seed + 999 + ep)
             done = False
             ep_of = float('inf')
             while not done:
@@ -1206,10 +1610,10 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
                 for i in range(env.n_agents):
                     a, _ = act_fn(obs, i, rng)
                     actions[i] = a
-                obs, _, done, info = env.step(actions)
+                obs, _, done, info = train_env.step(actions)
                 ep_of = min(ep_of, info.get("OF", float('inf')))
             of_values.append(ep_of)
-            TMS, PS = env.get_state()
+            TMS, PS = train_env.get_state()
             c = check_constraints(net, TMS, PS)
             cti_values.append(c["cti_violations"])
             pbar.update(1)
@@ -1217,7 +1621,12 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
     return float(np.mean(of_values)), float(np.mean(cti_values))
 
 
-def _generate_synthetic_ablation(config_name: str, seed: int):
+def _generate_synthetic_ablation(config_name: str, seed: int, n_episodes: int = None):
+    # n_episodes accepted-and-ignored: _try_experimental() forwards the same
+    # 3 positional args (config_name, seed, n_episodes) to this fallback
+    # that it passes to _run_ablation_single, which does use all three —
+    # this previously only took 2 params and crashed with a TypeError the
+    # moment the synthetic fallback actually fired.
     rng = np.random.default_rng(seed)
     base_of = 5.0
     improvements = {
@@ -1235,20 +1644,36 @@ def _generate_synthetic_ablation(config_name: str, seed: int):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN E — Hyperparameter Grid
 # ═════════════════════════════════════════════════════════════════
+def _core_E_job(args):
+    seed_idx, idx, lamb, alpha, hid, run_seed, n_steps = args
+    of_val, cti_val = _try_experimental(_run_hparam_single, _generate_synthetic_hparam,
+                                        lamb, alpha, hid, run_seed, n_steps)
+    return (seed_idx, idx), {
+        "lambda_ewc": lamb, "alpha_lambda": alpha, "hidden_dim": hid,
+        "seed": seed_idx, "OF": of_val, "CTI": cti_val,
+    }
+
+
 def run_core_E(n_seeds: int = None, n_steps: int = None, seed: int = None,
-               progress: ExperimentProgress = None):
+               progress: ExperimentProgress = None, n_workers: int = None):
     n_seeds = n_seeds if n_seeds is not None else (N_RUNS_HPARAM_FAST if FAST_MODE else N_RUNS_HPARAM)
     n_steps = n_steps if n_steps is not None else (EPISODES_HPARAM_FAST if FAST_MODE else EPISODES_HPARAM)
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
-        "name": "core_E_hparam", 
-        "lambda_ewc": [1e2, 1e3, 1e4, 1e5, 1e6], 
-        "alpha_lambda": [1e-5, 1e-4, 1e-3, 1e-2], 
-        "hidden_dim": [16, 32, 64, 128], 
-        "n_seeds": n_seeds, 
-        "n_steps": n_steps, 
-        "seed": seed
+        "name": "core_E_hparam",
+        "lambda_ewc": [1e2, 1e3, 1e4, 1e5, 1e6],
+        "alpha_lambda": [1e-5, 1e-4, 1e-3, 1e-2],
+        "hidden_dim": [16, 32, 64, 128],
+        "n_seeds": n_seeds,
+        "n_steps": n_steps,
+        "seed": seed,
+        "fault_type": FAULT_TYPE,
+        # Bumped: lambda_ewc/alpha_lambda were previously received but
+        # never used at all (CTI was also hardcoded to 0). Now genuinely
+        # wired — see _run_hparam_single.
+        "real_hparam_effect": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1270,28 +1695,25 @@ def run_core_E(n_seeds: int = None, n_steps: int = None, seed: int = None,
     logger.info("  Feeds: Fig 40")
     logger.info("=" * 70)
     
-    results = []
-    step_count = 0
-    
+    # Pre-allocated by (seed_idx, grid_idx) rather than appended in
+    # completion order — preserves the exact seed-major, grid-minor
+    # ordering of the original nested loop regardless of which worker
+    # finishes first.
+    results_grid = [[None] * len(grid) for _ in range(n_seeds)]
+    jobs = [
+        (seed_idx, idx, lamb, alpha, hid, seed + seed_idx, n_steps)
+        for seed_idx in range(n_seeds) for idx, (lamb, alpha, hid) in enumerate(grid)
+    ]
+
     with ProgressTracker(total=total_steps, desc="[Core E] Grid search", unit="config") as pbar:
-        for seed_idx in range(n_seeds):
-            logger.info(f"\n[Core E] Seed {seed_idx + 1}/{n_seeds}")
-            for idx, (lamb, alpha, hid) in enumerate(grid):
-                if idx % 20 == 0:
-                    logger.info(f"  [{idx}/{len(grid)}] lambda={lamb:.0e}, alpha={alpha:.0e}, h={hid}")
-                    
-                of_val, cti_val = _try_experimental(_run_hparam_single, _generate_synthetic_hparam,
-                                                    lamb, alpha, hid, seed + seed_idx, n_steps)
-                results.append({
-                    "lambda_ewc": lamb, "alpha_lambda": alpha, "hidden_dim": hid, 
-                    "seed": seed_idx, "OF": of_val, "CTI": cti_val
-                })
-                step_count += 1
-                pbar.update(1)
-                pbar.set_postfix(seed=seed_idx+1, grid=f"{idx+1}/{len(grid)}", OF=f"{of_val:.3f}")
-                if progress:
-                    progress.update_step(run_name, step_count)
-                    
+        for (seed_idx, idx), res in _run_pool(jobs, _core_E_job, n_workers):
+            results_grid[seed_idx][idx] = res
+            pbar.update(1)
+            pbar.set_postfix(seed=seed_idx + 1, grid=f"{idx + 1}/{len(grid)}", OF=f"{res['OF']:.3f}")
+            if progress:
+                progress.update_step(run_name, pbar.current)
+
+    results = [r for row in results_grid for r in row]
     cache.put(config, results)
     logger.info("[Core E] Complete.")
     
@@ -1305,49 +1727,114 @@ def _run_hparam_single(lambda_ewc, alpha_lambda, hidden_dim, seed, n_steps):
     from network.network_data import get_8bus
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
+    from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+    from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
     net = get_8bus()
-    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=3, seed=seed)
-    trainer = MAPPOMARLTrainer(env, use_comm=False,
+    env = DynamicDOCREnv(net, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=0, seed=seed)
+    # alpha_lambda is this grid's swept Lagrangian dual-ascent learning
+    # rate — genuinely modulates how fast the constraint penalty adapts.
+    # use_pid=False (unlike Core A-D's SafeRLConfig) is required here:
+    # AugmentedLagrangian.update_lagrangian's PID branch never reads
+    # lambda_lr at all (only its Kp/Ki/Kd gains) — with use_pid=True this
+    # sweep's whole point (alpha_lambda) would silently have zero effect.
+    safe_env = create_safe_rl_env(env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=alpha_lambda, rho_penalty=10.0,
+        use_pid=False, adaptive_rho=True,
+    ))
+    trainer = MAPPOMARLTrainer(safe_env, use_comm=False,
                                 hidden_actor=hidden_dim, hidden_critic=hidden_dim, seed=seed)
-
-    # ── ACTUAL TRAINING ───────────────────────────────────────────────────
-    trainer.train(total_steps=n_steps, verbose=False)
-
-    act_fn = _make_act_fn(trainer)
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig(lambda_ewc=lambda_ewc))
     rng = np.random.default_rng(seed + 9999)
 
-    of_values = []
+    # lambda_ewc (this grid's swept EWC regularization strength) only has
+    # a real effect across a task transition — previously received but
+    # never used at all. Run a short warm-start task (0% PV) before
+    # switching to the target (60% PV) task with a real EWC gradient
+    # correction (computed from real, if cheap, Fisher estimation) applied
+    # at the switch, so this hyperparameter genuinely modulates the
+    # outcome.
+    warm_steps = max(n_steps // 4, 300)
+    env.curriculum_stage = 0
+    trainer.train(total_steps=warm_steps, verbose=False)
+
+    cur = trainer.actor.get_all_params()
+    obs_f = safe_env.reset(seed=seed + 9000)
+    s_obs, s_act = [], []
+    done_f, sf = False, 0
+    while not done_f and sf < 15:
+        acts = np.zeros((env.n_agents, env.ACT_DIM))
+        for i in range(env.n_agents):
+            a, _ = trainer.actor.sample(obs_f[i], rng)
+            acts[i] = a
+            s_obs.append(obs_f[i].copy())
+            s_act.append(a.copy())
+        obs_f, _, done_f, _ = safe_env.step(acts); sf += 1
+    n_p = len(cur)
+    fisher = np.zeros(n_p)
+    if s_obs:
+        idx = rng.choice(len(s_obs), size=min(15, len(s_obs)), replace=False)
+        h = 1e-3
+        for p_idx in rng.choice(n_p, size=min(n_p, 20), replace=False):
+            bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            b2 = cur.copy(); b2[p_idx] += h
+            trainer.actor.set_all_params(b2)
+            ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            fisher[p_idx] = ((ul - bl) / h) ** 2
+        trainer.actor.set_all_params(cur)
+    ewc_trainer.ewc_regularizer.register_task("warmstart", cur)
+    ewc_trainer.ewc_regularizer.update_fisher("warmstart", fisher)
+    ewc_grad = ewc_trainer.apply_ewc_to_gradient(cur, np.zeros_like(cur))
+    trainer.actor.set_all_params(cur - 0.01 * ewc_grad)
+
+    env.curriculum_stage = 3
+    trainer.train(total_steps=max(n_steps - warm_steps, 300), verbose=False)
+
+    act_fn = _make_act_fn(trainer)
+
+    of_values, cti_values = [], []
     with ProgressTracker(total=30, desc="[Core E] HParam eval", unit="ep", enable=False) as pbar:
         for ep in range(30):
-            obs = env.reset(seed=seed + 999 + ep)
+            obs = safe_env.reset(seed=seed + 999 + ep)
             done = False
             ep_of = float('inf')
+            ep_cti = 0
             while not done:
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
                 for i in range(env.n_agents):
                     a, _ = act_fn(obs, i, rng)
                     actions[i] = a
-                obs, _, done, info = env.step(actions)
+                obs, _, done, info = safe_env.step(actions)
                 ep_of = min(ep_of, info.get("OF", float('inf')))
+                ep_cti += info.get("safe_rl", {}).get("cti_violations", 0)
             of_values.append(ep_of)
+            cti_values.append(ep_cti)
             pbar.update(1)
 
-    return float(np.mean(of_values)), 0
+    return float(np.mean(of_values)), float(np.mean(cti_values))
 
 
 def _generate_synthetic_hparam(lambda_ewc, alpha_lambda, hidden_dim, seed, n_steps):
     rng = np.random.default_rng(seed)
     of_val = 2.0 + np.exp(-lambda_ewc / 1e5) + alpha_lambda * 100 + 1.0 / hidden_dim
-    return of_val + rng.normal(0, 0.1), rng.randint(0, 3)
+    return of_val + rng.normal(0, 0.1), rng.integers(0, 3)
 
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN F — Scalability Analysis
 # ═════════════════════════════════════════════════════════════════
+def _core_F_job(args):
+    sys_name, seed = args
+    result = _try_experimental(_run_scalability_single, _generate_synthetic_scalability,
+                              sys_name, seed)
+    return sys_name, result
+
+
 def run_core_F(systems: List[str] = None, seed: int = None,
-               progress: ExperimentProgress = None):
+               progress: ExperimentProgress = None, n_workers: int = None):
     """Scalability analysis across all supported network sizes."""
     seed = seed if seed is not None else SEED
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     if systems is None:
         # Full suite: all 7 network sizes; Fast mode: subset
@@ -1355,7 +1842,7 @@ def run_core_F(systems: List[str] = None, seed: int = None,
             "3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"
         ]
         
-    config = {"name": "core_F_scalability", "systems": systems, "seed": seed}
+    config = {"name": "core_F_scalability", "systems": systems, "seed": seed, "fault_type": FAULT_TYPE}
     cached = cache.get(config)
     if cached is not None:
         logger.info("[Core F] Using cached results")
@@ -1372,19 +1859,21 @@ def run_core_F(systems: List[str] = None, seed: int = None,
     logger.info("  Feeds: Fig 15")
     logger.info("=" * 70)
     
+    # Pre-allocated (dict keyed by sys_name — insertion order doesn't
+    # matter here since nothing downstream indexes this positionally) so
+    # this is safe regardless of which worker finishes first.
     results = {}
+    jobs = [(sys_name, seed) for sys_name in systems]
+
     with ProgressTracker(total=len(systems), desc="[Core F] Systems", unit="sys") as pbar:
-        for sys_name in systems:
-            logger.info(f"\n[Core F] System: {sys_name}")
-            result = _try_experimental(_run_scalability_single, _generate_synthetic_scalability, 
-                                      sys_name, seed)
+        for sys_name, result in _run_pool(jobs, _core_F_job, n_workers):
             results[sys_name] = result
             pbar.update(1)
-            pbar.set_postfix(system=sys_name, relays=result.get("n_relays", "?"), 
+            pbar.set_postfix(system=sys_name, relays=result.get("n_relays", "?"),
                             time_val=f"{result.get('train_time', 0):.1f}s")
             if progress:
                 progress.update_step(run_name, len(results))
-                
+
     cache.put(config, results)
     logger.info("[Core F] Complete.")
     
@@ -1412,7 +1901,7 @@ def _run_scalability_single(sys_name: str, seed: int):
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
     
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph", curriculum_stage=3)
+    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=3)
     trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
     rng = np.random.default_rng(seed)
 
@@ -1453,7 +1942,8 @@ def _generate_synthetic_scalability(sys_name: str, seed: int, net=None):
     if net is None:
         net = load_network(sys_name)
     n_relays = net.n_relays
-    train_time = n_relays * 15 + np.random.rand() * 5
+    rng = np.random.default_rng(seed)
+    train_time = n_relays * 15 + rng.random() * 5
     return {
         "n_relays": n_relays, 
         "train_time": train_time, 
@@ -1478,10 +1968,15 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     seed = seed if seed is not None else SEED
     
     config = {
-        "name": "core_G_robustness", 
-        "stress_types": ["communication", "byzantine", "bandwidth", "sensor", "adversarial"], 
+        "name": "core_G_robustness",
+        "stress_types": ["communication", "byzantine", "bandwidth", "sensor", "adversarial"],
         "seed": seed,
-        "real_eval": BRIDGE_AVAILABLE
+        "fault_type": FAULT_TYPE,
+        "real_eval": BRIDGE_AVAILABLE,
+        # Bumped: core_eval_bridge.py's base policy previously trained as
+        # plain MAPPO+GNN despite being labeled MAPPO-Safe-EWC (dead
+        # hasattr guards). Now genuinely Safe RL + EWC wrapped.
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1581,10 +2076,12 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     seed = seed if seed is not None else SEED
     
     config = {
-        "name": "core_H_transfer", 
-        "evaluations": ["unseen_faults", "zero_shot_8to30"], 
+        "name": "core_H_transfer",
+        "evaluations": ["unseen_faults", "zero_shot_8to30"],
         "seed": seed,
-        "real_eval": BRIDGE_AVAILABLE
+        "fault_type": FAULT_TYPE,
+        "real_eval": BRIDGE_AVAILABLE,
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1636,7 +2133,7 @@ def _generate_synthetic_core_H(seed: int):
     """Synthetic fallback for Core H."""
     rng = np.random.default_rng(seed)
     return {
-        "unseen_faults": {ft: max(0, 0.85 - rng.rand() * 0.2) for ft in ["bolted", "high-impedance", "evolving", "simultaneous"]},
+        "unseen_faults": {ft: max(0, 0.85 - rng.random() * 0.2) for ft in ["bolted", "high-impedance", "evolving", "simultaneous"]},
         "zero_shot": {
             "warm_start": {"performance": 0.75, "convergence_ep": 500},
             "cold_start": {"performance": 0.20, "convergence_ep": 2000},
@@ -1652,10 +2149,16 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     seed = seed if seed is not None else SEED
     
     config = {
-        "name": "core_I_deployment", 
-        "benchmarks": ["inference_latency", "model_compression"], 
+        "name": "core_I_deployment",
+        "benchmarks": ["inference_latency", "model_compression"],
         "seed": seed,
-        "real_eval": BRIDGE_AVAILABLE
+        "fault_type": FAULT_TYPE,
+        "real_eval": BRIDGE_AVAILABLE,
+        "real_safety_ewc": True,
+        # Bumped: the latency loop previously timed env.reset() + an
+        # unseeded np.random.randn() call ("simulate inference") rather
+        # than the trained actor — see run_core_I.
+        "real_inference_timing": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1682,18 +2185,24 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             logger.info("\n[Core I] Fig 18: Inference Latency (REAL)")
             # Latency is measured during base policy inference
             base_result = bridge._get_base_result()
-            # Simulate latency measurement
             import time
-            latencies = []
             from network.network_data import get_8bus
             from marl.marl_env import DynamicDOCREnv
             net = get_8bus()
-            env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type="3ph")
+            env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE)
+            # Reconstruct the ACTUAL trained actor (and its GNN comm
+            # module, if trained with use_comm=True) rather than timing
+            # env.reset() + an unseeded np.random.randn() call ("simulate
+            # inference") — that measured reset overhead and RNG cost,
+            # not the policy. mean_fn is the deterministic per-agent
+            # forward pass a real deployment would call every step.
+            _, mean_fn, _, _ = bridge._get_pipeline()._get_actor_for_eval(env, base_result, net=net)
+            latencies = []
+            obs = env.reset(seed=seed)
             for _ in range(100):
                 t0 = time.perf_counter()
-                obs = env.reset()
-                # Simulate inference
-                _ = np.random.randn(env.n_agents, env.ACT_DIM)
+                for i in range(env.n_agents):
+                    _ = mean_fn(obs[i])
                 latencies.append((time.perf_counter() - t0) * 1000)
             
             results["latency"] = {
@@ -1751,10 +2260,15 @@ def run_core_J(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     seed = seed if seed is not None else SEED
     
     config = {
-        "name": "core_J_protection", 
-        "analyses": ["coordination", "fault_contribution", "daily_profile", "relay_curves", "sympathetic_tripping"], 
+        "name": "core_J_protection",
+        "analyses": ["coordination", "fault_contribution", "daily_profile", "relay_curves", "sympathetic_tripping"],
         "seed": seed,
-        "real_eval": BRIDGE_AVAILABLE
+        "fault_type": FAULT_TYPE,
+        "real_eval": BRIDGE_AVAILABLE,
+        "real_safety_ewc": True,
+        # Bumped: coordination-diagram jitter previously drew from
+        # unseeded global np.random.normal.
+        "seeded_jitter": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1785,8 +2299,9 @@ def run_core_J(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             # Use actual relay settings from trained policy
             tms = base_result.best_tms
             ps = base_result.best_ps
-            op_times_primary = 0.1 + 0.05 * distances + np.random.normal(0, 0.01, n_pairs)
-            op_times_backup = 0.3 + 0.08 * distances + np.random.normal(0, 0.01, n_pairs)
+            _rng_j = np.random.default_rng(seed + 43)
+            op_times_primary = 0.1 + 0.05 * distances + _rng_j.normal(0, 0.01, n_pairs)
+            op_times_backup = 0.3 + 0.08 * distances + _rng_j.normal(0, 0.01, n_pairs)
             results["coordination"] = {"distances": distances, "primary": op_times_primary, "backup": op_times_backup}
             
             # Fig 44: Fault Current Contribution (REAL)
@@ -1846,10 +2361,12 @@ def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     seed = seed if seed is not None else SEED
     
     config = {
-        "name": "core_K_seasonal", 
-        "seasons": ["spring", "summer", "autumn", "winter"], 
+        "name": "core_K_seasonal",
+        "seasons": ["spring", "summer", "autumn", "winter"],
         "seed": seed,
-        "real_eval": BRIDGE_AVAILABLE
+        "fault_type": FAULT_TYPE,
+        "real_eval": BRIDGE_AVAILABLE,
+        "real_safety_ewc": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1904,7 +2421,8 @@ def _generate_synthetic_core_K(seed: int):
 # ═════════════════════════════════════════════════════════════════
 # MAIN ORCHESTRATOR
 # ═════════════════════════════════════════════════════════════════
-def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRConfig = None):
+def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRConfig = None,
+                   n_workers: int = None):
     """Run all core training runs with optional config override."""
     global FAST_MODE, USE_SYNTHETIC, CONFIG
     
@@ -1918,6 +2436,8 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
             FAST_MODE = fast
         if use_synthetic is not None:
             USE_SYNTHETIC = use_synthetic
+
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     n_runs = N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT
     n_runs_baseline = N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE
@@ -1942,12 +2462,12 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
     t0 = time.time()
     
     # Run all cores with progress tracking
-    core_A = run_core_A(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress)
-    core_B = run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_episodes // 10, seed=SEED, progress=progress)
-    core_C = run_core_C(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress)
-    core_D = run_core_D(n_runs=n_runs_baseline, n_episodes=n_episodes, seed=SEED, progress=progress)
-    core_E = run_core_E(n_seeds=n_runs_hparam, n_steps=n_episodes_hparam, seed=SEED, progress=progress)
-    core_F = run_core_F(seed=SEED, progress=progress)
+    core_A = run_core_A(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
+    core_B = run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_episodes // 10, seed=SEED, progress=progress, n_workers=n_workers)
+    core_C = run_core_C(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
+    core_D = run_core_D(n_runs=n_runs_baseline, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
+    core_E = run_core_E(n_seeds=n_runs_hparam, n_steps=n_episodes_hparam, seed=SEED, progress=progress, n_workers=n_workers)
+    core_F = run_core_F(seed=SEED, progress=progress, n_workers=n_workers)
     core_G = run_core_G(seed=SEED, progress=progress)
     core_H = run_core_H(seed=SEED, progress=progress)
     core_I = run_core_I(seed=SEED, progress=progress)
@@ -2096,7 +2616,7 @@ def main():
     fast = FAST_MODE
 
     if args.all:
-        run_all_cores(fast=fast, use_synthetic=use_synthetic, config=config)
+        run_all_cores(fast=fast, use_synthetic=use_synthetic, config=config, n_workers=args.n_workers)
     else:
         n_runs = N_RUNS_FAST if fast else N_RUNS_DEFAULT
         n_runs_baseline = N_RUNS_BASELINE_FAST if fast else N_RUNS_BASELINE
@@ -2109,12 +2629,12 @@ def main():
 
         logger.info(f"[CONFIG] Synthetic fallback: {'ENABLED' if use_synthetic else 'DISABLED'}")
 
-        if args.core_A: run_core_A(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress)
-        if args.core_B: run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_eps // 10, seed=SEED, progress=progress)
-        if args.core_C: run_core_C(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress)
-        if args.core_D: run_core_D(n_runs=n_runs_baseline, n_episodes=n_eps, seed=SEED, progress=progress)
-        if args.core_E: run_core_E(n_seeds=n_runs_hparam, n_steps=n_eps_hparam, seed=SEED, progress=progress)
-        if args.core_F: run_core_F(seed=SEED, progress=progress)
+        if args.core_A: run_core_A(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_B: run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_eps // 10, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_C: run_core_C(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_D: run_core_D(n_runs=n_runs_baseline, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_E: run_core_E(n_seeds=n_runs_hparam, n_steps=n_eps_hparam, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_F: run_core_F(seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_G: run_core_G(seed=SEED, progress=progress)
         if args.core_H: run_core_H(seed=SEED, progress=progress)
         if args.core_I: run_core_I(seed=SEED, progress=progress)

@@ -21,20 +21,36 @@ import os
 import sys
 import logging
 import argparse
+import multiprocessing as mp
 from pathlib import Path
 from typing import Dict, List
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import threadpoolctl
 
 from network.network_data import NETWORKS
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+from marl.continual_trainer import create_ewc_trainer, EWCConfig
 from network.relay_physics import check_constraints
+
+# QMIX (value decomposition) and IQL (independent Q-learning) are
+# fundamentally different algorithm families from this codebase's
+# policy-gradient MAPPOMARLTrainer — no real implementation of either
+# exists here. Both currently alias IPPO's code path below (use_comm=
+# False, no Safe RL/EWC), producing genuinely identical trained policies
+# under the same seed. This is disclosed via ALIASED_METHODS rather than
+# silently presented as distinct baselines.
+ALIASED_METHODS = {
+    "QMIX": "IPPO (no real QMIX implementation exists in this codebase)",
+    "IQL": "IPPO (no real IQL implementation exists in this codebase)",
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -70,22 +86,39 @@ def train_and_evaluate_method(method: str, pv_level: float, seed: int,
     if method == "Traditional":
         # Fixed traditional settings - no training
         return evaluate_traditional(net, env, n_eval, seed)
-    
+
+    if method in ALIASED_METHODS:
+        logger.warning("Method %r has no real implementation in this codebase — "
+                        "training identically to %s.", method, ALIASED_METHODS[method])
+
     # Determine trainer configuration
     use_comm = method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO"]
     use_safety = method in ["MAPPO-Safe-EWC", "MAPPO-Safe"]
     use_ewc = method == "MAPPO-Safe-EWC"
-    
-    trainer = MAPPOMARLTrainer(env, use_comm=use_comm,
+
+    # Safe RL is a real env wrapper (use_safety was previously a dead
+    # post-hoc attribute — MAPPOMARLTrainer never defines it — so "Safe"
+    # methods here trained identically to plain "MAPPO").
+    train_env = env
+    if use_safety:
+        train_env = create_safe_rl_env(env, SafeRLConfig(
+            project_actions=True, enforce_cti=True,
+            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+            use_pid=True, adaptive_rho=True,
+        ))
+    trainer = MAPPOMARLTrainer(train_env, use_comm=use_comm,
                                 hidden_actor=64, hidden_critic=64, seed=seed)
-    
-    # Configure safety and EWC if supported
-    if hasattr(trainer, 'use_safety'):
-        trainer.use_safety = use_safety
-    if hasattr(trainer, 'use_ewc'):
-        trainer.use_ewc = use_ewc
-    
+
     trainer.train(total_steps=train_steps, verbose=False)
+
+    if use_ewc:
+        # Register this single task with EWC so the apparatus genuinely
+        # runs (n_tasks_learned reflects reality) rather than staying
+        # completely inert — see run_core_training.py's Core A for the
+        # same pattern and its rationale (one task has nothing to
+        # protect against forgetting, by construction).
+        ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
+        ewc_trainer.ewc_regularizer.register_task(method, trainer.actor.get_all_params())
 
     # Evaluate using the correct observation dimensionality.
     # When use_comm=True the actor was trained on comm_graph.forward()
@@ -103,7 +136,7 @@ def train_and_evaluate_method(method: str, pv_level: float, seed: int,
         return trainer.actor.sample(all_obs[agent_idx], rng)
 
     for ep in range(n_eval):
-        obs = env.reset(seed=seed + 1000 + ep)
+        obs = train_env.reset(seed=seed + 1000 + ep)
         done = False
         ep_of = []
         while not done:
@@ -111,19 +144,22 @@ def train_and_evaluate_method(method: str, pv_level: float, seed: int,
             for i in range(env.n_agents):
                 a, _ = _sample_action(obs, i)
                 actions[i] = a
-            obs, _, done, info = env.step(actions)
+            obs, _, done, info = train_env.step(actions)
             ep_of.append(info.get("OF", float("inf")))
         of_list.append(float(np.min(ep_of)))
-        
-        TMS, PS = env.get_state()
+
+        TMS, PS = train_env.get_state()
         c = check_constraints(net, TMS, PS)
         cti_list.append(c["cti_violations"])
-    
-    return {
+
+    result = {
         "mean_OF": float(np.mean(of_list)),
         "std_OF": float(np.std(of_list)),
         "cti_viols": float(np.mean(cti_list)),
     }
+    if method in ALIASED_METHODS:
+        result["aliased_to"] = ALIASED_METHODS[method]
+    return result
 
 
 def evaluate_traditional(net, env, n_eval: int, seed: int) -> Dict:
@@ -141,7 +177,7 @@ def evaluate_traditional(net, env, n_eval: int, seed: int) -> Dict:
         ep_of = []
         
         # Use fixed settings throughout
-        env.set_relay_settings(fixed_TDS, fixed_PSM)
+        env.set_state(fixed_TDS, fixed_PSM)
         
         while not done:
             obs, _, done, info = env.step(np.zeros((env.n_agents, env.ACT_DIM)))
@@ -159,30 +195,57 @@ def evaluate_traditional(net, env, n_eval: int, seed: int) -> Dict:
     }
 
 
+def _pool_worker_init():
+    threadpoolctl.threadpool_limits(1)
+
+
+def _run_job(args):
+    method, pv, seed, train_steps, n_eval, system = args
+    res = train_and_evaluate_method(method, pv, seed, train_steps, n_eval, system=system)
+    return method, pv, seed, res
+
+
 def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
-         output_dir: str = "outputs", system: str = "8bus"):
+         output_dir: str = "outputs", system: str = "8bus", n_workers: int = 1):
+    # Applied unconditionally — see unified_exp_fig05.py for why: unpinned
+    # BLAS threads oversubscribe the machine under multiprocessing and can
+    # make n_workers>1 slower than sequential, and this also makes
+    # single-process results reproducible regardless of the machine's
+    # ambient BLAS thread configuration.
+    threadpoolctl.threadpool_limits(1)
+
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("Figure 5 — PV Penetration Sweep Evaluation")
     logger.info("  System: %s", system)
     logger.info("  Methods: %s", METHODS)
     logger.info("  PV levels: %s", PV_LEVELS)
     logger.info("  Seeds: %d", n_seeds)
-    
-    results = {method: {pv: [] for pv in PV_LEVELS} for method in METHODS}
-    
-    for method in METHODS:
-        logger.info("\\n=== Method: %s ===", method)
-        for pv in PV_LEVELS:
-            logger.info("  PV level: %.0f%%", pv * 100)
-            seed_results = []
-            for seed in range(n_seeds):
-                res = train_and_evaluate_method(method, pv, seed, train_steps, n_eval, system=system)
-                seed_results.append(res)
-                logger.info("    Seed %d: OF=%.4f±%.4f CTI=%.1f",
-                           seed, res["mean_OF"], res["std_OF"], res["cti_viols"])
-            results[method][pv] = seed_results
+
+    jobs = [
+        (method, pv, seed, train_steps, n_eval, system)
+        for method in METHODS for pv in PV_LEVELS for seed in range(n_seeds)
+    ]
+    logger.info("Dispatching %d jobs across %d worker(s)", len(jobs), n_workers)
+
+    # Pre-allocated by seed index rather than appended in completion order —
+    # this file's aggregation (mean/std over seeds) is order-independent,
+    # but indexing costs nothing and avoids relying on that staying true.
+    results = {method: {pv: [None] * n_seeds for pv in PV_LEVELS} for method in METHODS}
+
+    if n_workers > 1:
+        with mp.Pool(n_workers, initializer=_pool_worker_init) as pool:
+            for method, pv, seed, res in pool.imap_unordered(_run_job, jobs):
+                results[method][pv][seed] = res
+                logger.info("  [done] %s PV=%.0f%% seed=%d: OF=%.4f±%.4f CTI=%.1f",
+                            method, pv * 100, seed, res["mean_OF"], res["std_OF"], res["cti_viols"])
+    else:
+        for job in jobs:
+            method, pv, seed, res = _run_job(job)
+            results[method][pv][seed] = res
+            logger.info("  [done] %s PV=%.0f%% seed=%d: OF=%.4f±%.4f CTI=%.1f",
+                        method, pv * 100, seed, res["mean_OF"], res["std_OF"], res["cti_viols"])
     
     # Aggregate
     aggregated = {}
@@ -241,20 +304,26 @@ def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
     ax.legend(fontsize=7, loc="upper left")
     ax.grid(True, alpha=0.3)
     
+    if ALIASED_METHODS:
+        fig.text(0.5, -0.02,
+                  "* QMIX/IQL: no real implementation in this codebase — both alias IPPO's training",
+                  ha="center", fontsize=7, style="italic", color="#888888")
+
     fig.tight_layout()
     fig.savefig(out_path / "fig05_pv_sweep.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
     logger.info("Saved: %s", out_path / "fig05_pv_sweep.png")
     
     # Summary table
-    print("\\n" + "=" * 80)
+    print("\n" + "=" * 80)
     print("PV SWEEP EVALUATION SUMMARY")
     print("=" * 80)
-    print(f"{'Method':>20} {'0%':>10} {'25%':>10} {'50%':>10} {'75%':>10} {'100%':>10}")
+    header = f"{'Method':>20}" + "".join(f"{f'{int(p*100)}%':>10}" for p in PV_LEVELS)
+    print(header)
     print("-" * 80)
     for method in METHODS:
         vals = aggregated[method]["mean_OF"]
-        print(f"{method:>20} {vals[0]:>10.4f} {vals[1]:>10.4f} {vals[2]:>10.4f} {vals[3]:>10.4f} {vals[4]:>10.4f}")
+        print(f"{method:>20}" + "".join(f"{v:>10.4f}" for v in vals))
     print("=" * 80)
 
 
@@ -266,5 +335,7 @@ if __name__ == "__main__":
     p.add_argument("--output_dir", type=str, default="outputs")
     p.add_argument("--system", type=str, default="8bus",
                    help="Test system: 8bus, 14bus, 39bus, etc.")
+    p.add_argument("--n_workers", type=int, default=1,
+                   help="Parallel worker processes (default: 1 = sequential)")
     args = p.parse_args()
-    main(args.n_seeds, args.train_steps, args.n_eval, args.output_dir, args.system)
+    main(args.n_seeds, args.train_steps, args.n_eval, args.output_dir, args.system, args.n_workers)

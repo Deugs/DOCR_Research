@@ -1,7 +1,14 @@
 """
 pv_inverter.py
 ────────────
-PV Inverter Fault Ride-Through (FRT) model based on IEC 61427-1 and IEEE 1547-2018.
+PV Inverter Fault Ride-Through (FRT) model.
+
+This module uses a simplified, linear approximation of PV inverter fault
+ride-through and fault-current-injection behavior. It is loosely informed by
+the general shape of grid-code fault ride-through requirements (see IEEE 1547
+and IEC 61727 for the standards that actually govern grid-connected PV fault
+behavior) but is not a literal, certified implementation of any single
+standard's requirements.
 
 Models:
 - Normal operation: Maximum Power Point Tracking (MPPT)
@@ -31,8 +38,12 @@ class PVInverter:
     """
     PV Inverter model with fault ride-through capability.
 
-    Based on IEC 61427-1 (Utility-interconnected PV inverters) and
-    IEEE 1547-2018 (Standard for Interconnection and Interoperability).
+    Implements a simplified, linear approximation of fault ride-through and
+    fault-current injection behavior, loosely informed by the general shape
+    of grid-code requirements. IEEE 1547-2018 (Standard for Interconnection
+    and Interoperability) and IEC 61727 are the standards that actually
+    govern grid-connected PV fault behavior, referenced here for context —
+    this model does not claim to reproduce their formulas precisely.
 
     Parameters:
         rated_power_mw: Rated active power (MW)
@@ -148,8 +159,12 @@ class PVInverter:
         """
         Calculate fault current contribution during grid fault.
 
-        IEC 61427-1: Inverters contribute 1.2-1.5x rated current during fault.
-        IEEE 1547-2018: Mandatory reactive current injection for voltage support.
+        Simplified linear approximation: inverters are modeled as contributing
+        roughly 1.2-1.5x rated current during a fault (via the k_i multiplier),
+        loosely informed by the general shape of grid-code low-voltage
+        ride-through requirements. IEEE 1547-2018 mandates reactive current
+        injection for voltage support; this model applies that qualitatively
+        without claiming exact standards compliance.
 
         Returns:
             Fault current contribution in kA

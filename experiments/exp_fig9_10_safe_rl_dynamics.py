@@ -43,6 +43,7 @@ from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
 from marl.safe_rl import create_safe_rl_env, SafeRLConfig
 from network.relay_physics import check_constraints
+from evaluation.experiments._synthetic_label import mark_synthetic
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 logger = logging.getLogger(__name__)
@@ -156,7 +157,7 @@ def moving_average(data, window=WINDOW):
     return np.convolve(data, np.ones(window)/window, mode='valid')
 
 
-def main(n_seeds=5, output_dir="outputs"):
+def main(n_seeds=5, output_dir="outputs", fig10_seed=42):
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     
@@ -283,39 +284,44 @@ def main(n_seeds=5, output_dir="outputs"):
     
     # Figure 10: Individual λ_ij trajectories
     # Extract per-pair lambda trajectories from the last seed (most detailed)
-    # In practice, we'd need the safe_env to expose per-pair lambdas
-    # For now, create a synthetic representation based on electrical distance
-    
+    # In practice, we'd need the safe_env to expose per-pair lambdas.
+    # NOTE: unlike Figure 9 above (real per-episode training data from
+    # run_safe_rl_tracking), this is a SYNTHETIC representation based only on
+    # electrical distance — it is watermarked via mark_synthetic() below and
+    # must not be cited as a real per-pair training result.
+
     net = get_8bus()
     elec_dist = compute_electrical_distance(net)
     n_pairs = 0
     pair_distances = []
-    
+
     # Count P/B pairs
     for i in range(net.n_relays):
         for j in range(net.n_relays):
             if i != j and np.isfinite(elec_dist[i, j]):
                 pair_distances.append(elec_dist[i, j])
                 n_pairs += 1
-    
+
     # Generate synthetic lambda trajectories based on distance
     # Closer pairs (smaller distance) have higher lambda (more constrained)
-    np.random.seed(42)
+    rng10 = np.random.default_rng(fig10_seed)
     pair_lambdas = []
     for dist in pair_distances:
         # Steady-state lambda inversely proportional to distance
         steady_lambda = 5.0 / (dist + 0.1)
         # Convergence trajectory
-        traj = steady_lambda * (1 - np.exp(-np.arange(EPISODES) / (500 + np.random.randint(200))))
-        traj += np.random.normal(0, 0.1, EPISODES)
+        traj = steady_lambda * (1 - np.exp(-np.arange(EPISODES) / (500 + rng10.integers(0, 200))))
+        traj += rng10.normal(0, 0.1, EPISODES)
         pair_lambdas.append(traj)
     
     fig10_data = {
         "pair_lambdas": np.array(pair_lambdas),
         "pair_distances": np.array(pair_distances),
         "episodes": EPISODES,
+        "is_synthetic": np.array([True]),
+        "synthetic_seed": np.array([fig10_seed]),
     }
-    
+
     np.savez(out_path / "fig10_lagrange_v2.npz", **fig10_data)
     logger.info("Saved: %s", out_path / "fig10_lagrange_v2.npz")
     
@@ -352,6 +358,7 @@ def main(n_seeds=5, output_dir="outputs"):
     ax.grid(True, alpha=0.3)
     
     fig.tight_layout()
+    mark_synthetic(fig, note=f"seed={fig10_seed}; per-pair λ trajectories are not from real training logs")
     fig.savefig(out_path / "fig10_lagrange_v2.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
     logger.info("Saved: %s", out_path / "fig10_lagrange_v2.png")
@@ -380,5 +387,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Figures 9 & 10 v2 — Safe RL Dynamics")
     p.add_argument("--n_seeds", type=int, default=5)
     p.add_argument("--output_dir", type=str, default="outputs")
+    p.add_argument("--fig10_seed", type=int, default=42,
+                    help="Seed for Figure 10's synthetic per-pair lambda trajectories "
+                         "(Figure 9 uses real per-episode training data seeded 0..n_seeds-1)")
     args = p.parse_args()
-    main(args.n_seeds, args.output_dir)
+    main(args.n_seeds, args.output_dir, args.fig10_seed)

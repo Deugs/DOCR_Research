@@ -27,7 +27,7 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
@@ -55,7 +55,7 @@ def _time_phase_ms(fn, *args, **kwargs) -> Tuple[any, float]:
     return out, dt
 
 
-def benchmark_phases_realistic(actor, obs: np.ndarray, net, env) -> np.ndarray:
+def benchmark_phases_realistic(actor, obs: np.ndarray, net, env, rng) -> np.ndarray:
     """
     Break inference into realistic 5 phases matching deployment pipeline.
     Uses actual network forward passes where possible.
@@ -74,19 +74,19 @@ def benchmark_phases_realistic(actor, obs: np.ndarray, net, env) -> np.ndarray:
             return actor._gnn_forward(obs)
         else:
             # Simulate: matrix multiply + attention
-            h = np.dot(obs, np.random.randn(obs.shape[-1], 64).astype(np.float32))
+            h = np.dot(obs, rng.standard_normal((obs.shape[-1], 64)).astype(np.float32))
             return np.maximum(h, 0)  # ReLU
 
     _, dt = _time_phase_ms(gnn_forward)
     phases[1] = dt
 
     # Phase 3: Policy network forward (mean + log_std)
-    _, dt = _time_phase_ms(lambda: actor.mean(obs))
+    _, dt = _time_phase_ms(lambda: actor.get_mean(obs))
     phases[2] = dt
 
     # Phase 4: Safety projection (CTI feasibility check + action clipping)
     def safety_projection():
-        mean = actor.mean(obs)
+        mean = actor.get_mean(obs)
         # Simulate constraint check and projection
         projected = np.clip(mean, 0.0, 1.0)
         # Add small penalty computation
@@ -98,7 +98,7 @@ def benchmark_phases_realistic(actor, obs: np.ndarray, net, env) -> np.ndarray:
 
     # Phase 5: Post-processing (scale to relay bounds, format output)
     def post_process():
-        mean = actor.mean(obs)
+        mean = actor.get_mean(obs)
         tds = mean[..., 0] * 0.9 + 0.1  # [0.1, 1.0]
         psm = mean[..., 1] * 9.0 + 1.0   # [1.0, 10.0]
         return np.stack([tds, psm], axis=-1)
@@ -111,7 +111,7 @@ def benchmark_phases_realistic(actor, obs: np.ndarray, net, env) -> np.ndarray:
 
 def compute_percentiles(data: np.ndarray, percentiles: List[float]) -> Dict[str, float]:
     """Compute percentiles with interpolation."""
-    return {f"P{p}": float(np.percentile(data, p, interpolation='linear')) for p in percentiles}
+    return {f"P{p}": float(np.percentile(data, p, method='linear')) for p in percentiles}
 
 
 def detect_outliers(data: np.ndarray, method: str = "iqr") -> np.ndarray:
@@ -150,7 +150,7 @@ def main(train_steps: int = 8000, n_calls: int = N_CALLS,
     logger.info("  Warm-up (%d calls)...", N_WARMUP)
     for _ in range(N_WARMUP):
         obs = rng.standard_normal(obs_dim).astype(np.float32)
-        actor.mean(obs)
+        actor.get_mean(obs)
 
     total_latencies = []
     phase_latencies = {label: [] for label in PHASE_LABELS}
@@ -159,7 +159,7 @@ def main(train_steps: int = 8000, n_calls: int = N_CALLS,
         obs = rng.standard_normal(obs_dim).astype(np.float32)
 
         t0 = time.perf_counter_ns()
-        phases = benchmark_phases_realistic(actor, obs, net, env)
+        phases = benchmark_phases_realistic(actor, obs, net, env, rng)
         total_dt = (time.perf_counter_ns() - t0) * 1e-6
 
         total_latencies.append(total_dt)
@@ -250,7 +250,7 @@ def main(train_steps: int = 8000, n_calls: int = N_CALLS,
     # Panel 3: Phase breakdown boxplot
     ax3 = fig.add_subplot(gs[0, 2])
     phase_data = [phase_arr[label] for label in PHASE_LABELS]
-    bp = ax3.boxplot(phase_data, labels=[l[:8] for l in PHASE_LABELS],
+    bp = ax3.boxplot(phase_data, tick_labels=[l[:8] for l in PHASE_LABELS],
                      patch_artist=True, showmeans=True, meanline=True,
                      showfliers=False)  # Hide outliers for clarity
     colors = ["#2563eb", "#39d353", "#f7c948", "#ff6b35", "#a371f7"]

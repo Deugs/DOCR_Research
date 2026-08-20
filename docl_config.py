@@ -59,13 +59,18 @@ class FaultType(Enum):
 
 # System metadata (relays, pairs, typical training times)
 SYSTEM_METADATA = {
+    # n_relays/n_pairs are static text and can drift from the actual
+    # generated topology in network/network_data.py (a prior audit found
+    # 14/39/57/118bus stale here) — verify against
+    # NETWORKS[name]().n_pairs / Iload_max.size if these are ever
+    # suspected stale again.
     "3bus":   {"n_relays": 6,   "n_pairs": 6,   "fast_episodes": 100,  "full_episodes": 1000},
     "8bus":   {"n_relays": 14,  "n_pairs": 20,  "fast_episodes": 500,  "full_episodes": 5000},
-    "14bus":  {"n_relays": 20,  "n_pairs": 38,  "fast_episodes": 500,  "full_episodes": 5000},
+    "14bus":  {"n_relays": 20,  "n_pairs": 26,  "fast_episodes": 500,  "full_episodes": 5000},
     "30bus":  {"n_relays": 42,  "n_pairs": 70,  "fast_episodes": 500,  "full_episodes": 5000},
-    "39bus":  {"n_relays": 46,  "n_pairs": 56,  "fast_episodes": 500,  "full_episodes": 5000},
-    "57bus":  {"n_relays": 80,  "n_pairs": 128, "fast_episodes": 500,  "full_episodes": 5000},
-    "118bus": {"n_relays": 186, "n_pairs": 304, "fast_episodes": 500,  "full_episodes": 5000},
+    "39bus":  {"n_relays": 46,  "n_pairs": 42,  "fast_episodes": 500,  "full_episodes": 5000},
+    "57bus":  {"n_relays": 156, "n_pairs": 192, "fast_episodes": 500,  "full_episodes": 5000},
+    "118bus": {"n_relays": 318, "n_pairs": 440, "fast_episodes": 500,  "full_episodes": 5000},
 }
 
 
@@ -133,7 +138,8 @@ class ExperimentConfig:
     # Execution
     fast_mode: bool = False             # Reduced iterations for testing
     use_synthetic: bool = False            # Enable synthetic fallback on failure
-    parallel: bool = False                # Enable parallel execution (future)
+    parallel: bool = False                # Unused placeholder — see n_workers below for the real implementation
+    n_workers: int = 1                  # Worker processes for each Core's independent per-run training (Cores A-F)
     seed: int = 42                       # Global random seed (also in TrainingConfig.seed for training)
     
     # Cores to run (A-K)
@@ -404,7 +410,7 @@ Examples:
     sys_group.add_argument("--fault-type", type=str,
                            choices=[ft.value for ft in FaultType],
                            help="Fault type for protection study")
-    sys_group.add_argument("--use-pandapower", action="store_true",
+    sys_group.add_argument("--use-pandapower", action="store_true", default=None,
                            help="Enable pandapower dynamic simulation")
     sys_group.add_argument("--curriculum-stage", type=int, choices=range(6),
                            help="Curriculum stage (0-5)")
@@ -413,6 +419,10 @@ Examples:
     train_group = parser.add_argument_group("Training Configuration")
     train_group.add_argument("--n-runs", type=int, help="Number of independent runs")
     train_group.add_argument("--episodes", "-e", type=int, help="Episodes per run")
+    train_group.add_argument("--n-workers", type=int,
+                              help="Parallel worker processes for each Core's independent per-run "
+                                   "training (Cores A-F). Default: 1 (sequential). Results are "
+                                   "identical regardless of n_workers.")
     train_group.add_argument("--hidden-actor", type=int, help="Actor hidden layer size")
     train_group.add_argument("--hidden-critic", type=int, help="Critic hidden layer size")
     train_group.add_argument("--lr-actor", type=float, help="Actor learning rate")
@@ -423,10 +433,21 @@ Examples:
     
     # Feature toggles
     feat_group = parser.add_argument_group("Feature Toggles")
-    feat_group.add_argument("--use-comm", action="store_true", help="Enable GNN communication")
-    feat_group.add_argument("--no-safety", action="store_true", help="Disable safety layer")
-    feat_group.add_argument("--no-ewc", action="store_true", help="Disable EWC")
-    feat_group.add_argument("--curriculum", action="store_true", help="Enable curriculum learning")
+    # default=None (not the implicit False) on every store_true flag below
+    # that feeds into config_from_args()'s cli_mappings loop: that loop
+    # applies a CLI value whenever it "is not None", to distinguish "user
+    # didn't mention this flag" from "user explicitly set it". store_true's
+    # ordinary default of False doesn't satisfy that — it made every one of
+    # these flags unconditionally overwrite whatever a --preset/--config set,
+    # every single invocation, whether or not the flag was actually passed
+    # (e.g. --preset thesis_sweep_fast's fast_mode=True was silently
+    # clobbered back to False by the mere presence of --fast's untouched
+    # default, and --no-synthetic's invert-lambda forced use_synthetic=True
+    # on every run that didn't explicitly pass --no-synthetic).
+    feat_group.add_argument("--use-comm", action="store_true", default=None, help="Enable GNN communication")
+    feat_group.add_argument("--no-safety", action="store_true", default=None, help="Disable safety layer")
+    feat_group.add_argument("--no-ewc", action="store_true", default=None, help="Disable EWC")
+    feat_group.add_argument("--curriculum", action="store_true", default=None, help="Enable curriculum learning")
     
     # EWC parameters
     ewc_group = parser.add_argument_group("EWC Parameters")
@@ -435,8 +456,8 @@ Examples:
     
     # Experiment control
     exp_group = parser.add_argument_group("Experiment Control")
-    exp_group.add_argument("--fast", action="store_true", help="Fast mode (reduced iterations)")
-    exp_group.add_argument("--no-synthetic", action="store_true", help="Disable synthetic fallback")
+    exp_group.add_argument("--fast", action="store_true", default=None, help="Fast mode (reduced iterations)")
+    exp_group.add_argument("--no-synthetic", action="store_true", default=None, help="Disable synthetic fallback")
     exp_group.add_argument("--cores", type=str, nargs="+", 
                            help="Specific cores to run (A-K)")
     exp_group.add_argument("--seed", type=int, help="Global random seed")
@@ -451,7 +472,7 @@ Examples:
     
     # Cache
     cache_group = parser.add_argument_group("Cache")
-    cache_group.add_argument("--clear-cache", action="store_true", help="Clear cache before running")
+    cache_group.add_argument("--clear-cache", action="store_true", default=None, help="Clear cache before running")
     cache_group.add_argument("--cache-dir", type=str, help="Cache directory")
     
     return parser
@@ -538,6 +559,7 @@ def config_from_args(args: argparse.Namespace) -> DOCRConfig:
         'alpha_lambda': ('training', 'alpha_lambda'),
         'seed': ('training', 'seed'),
         'fast': ('experiment', 'fast_mode'),
+        'n_workers': ('experiment', 'n_workers'),
         'no_synthetic': ('experiment', 'use_synthetic', lambda x: not x),
         'cores': ('experiment', 'cores'),
         'output_dir': ('experiment', 'output_dir'),

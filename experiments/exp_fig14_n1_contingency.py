@@ -27,7 +27,7 @@ import logging
 import argparse
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
@@ -57,52 +57,88 @@ def train_base_policy(seed: int = 42, steps: int = 10000):
     return trainer, net
 
 
+def _policy_obs(trainer, obs, rng):
+    """Route raw env obs through the trainer's comm graph when use_comm is
+    enabled, matching MAPPOMARLTrainer's own training-loop pattern (see
+    marl/marl_agents.py, comm_graph.forward() before actor.sample()) —
+    trainer.actor was built expecting the enhanced (obs+message) dimension
+    whenever use_comm is on, so feeding it raw obs directly mismatches
+    dimensions and crashes.
+    """
+    if getattr(trainer, "use_comm", False) and getattr(trainer, "comm_graph", None) is not None:
+        enhanced_obs, _, _ = trainer.comm_graph.forward(obs, rng)
+        return enhanced_obs
+    return obs
+
+
 def evaluate_line_outage(trainer, net, line_idx: int, n_eval: int = 20, seed: int = 0):
-    """Evaluate policy when a specific line is outaged."""
+    """Evaluate policy when a specific line is outaged.
+
+    line_idx < 0 means "no outage" (baseline): the network is used as-is.
+    line_idx >= 0 genuinely applies an N-1 single-line outage via
+    NetworkData.apply_n1_outage() (fault currents on relays adjacent to
+    the removed line are rescaled by the resulting outage factor) before
+    the policy is evaluated on the mutated network.
+    """
     rng = np.random.default_rng(seed)
-    
-    # Create modified network (simulate line outage)
-    # In practice, this would modify the actual network topology
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
+
+    # Apply a genuine N-1 outage to a COPY of the network (baseline uses
+    # the network unmodified).
+    if line_idx >= 0:
+        outaged_net, outage_factor = net.apply_n1_outage(line_idx)
+        logger.info("    Line %d outaged (outage_factor=%.4f)", line_idx, outage_factor)
+    else:
+        outaged_net, outage_factor = net, 1.0
+
+    env = DynamicDOCREnv(outaged_net, seed=seed, use_pandapower=False,
                           fault_type="3ph", curriculum_stage=5)
-    
+
     of_list, cti_list = [], []
     for ep in range(n_eval):
         obs = env.reset(seed=seed + ep)
         done = False
         ep_of = []
         while not done:
+            policy_obs = _policy_obs(trainer, obs, rng)
             actions = np.zeros((env.n_agents, env.ACT_DIM))
             for i in range(env.n_agents):
-                a, _ = trainer.actor.sample(obs[i], rng)
+                a, _ = trainer.actor.sample(policy_obs[i], rng)
                 actions[i] = a
             obs, _, done, info = env.step(actions)
             ep_of.append(info.get("OF", float("inf")))
         of_list.append(float(np.min(ep_of)))
         TMS, PS = env.get_state()
-        c = check_constraints(net, TMS, PS)
+        c = check_constraints(outaged_net, TMS, PS)
         cti_list.append(c["cti_violations"])
-    
-    return {"mean_OF": np.mean(of_list), "std_OF": np.std(of_list), "cti_viols": np.mean(cti_list)}
+
+    return {"mean_OF": np.mean(of_list), "std_OF": np.std(of_list), "cti_viols": np.mean(cti_list),
+            "outage_factor": outage_factor}
 
 
 def fine_tune_policy(trainer, net, line_idx: int, n_finetune_episodes: int = 50, seed: int = 0):
     """Fine-tune policy after line outage."""
     rng = np.random.default_rng(seed)
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
+
+    # Fine-tune on the same outaged network the policy will be evaluated on.
+    if line_idx >= 0:
+        outaged_net, _ = net.apply_n1_outage(line_idx)
+    else:
+        outaged_net = net
+    env = DynamicDOCREnv(outaged_net, seed=seed, use_pandapower=False,
                           fault_type="3ph", curriculum_stage=5)
-    
+
     # Fine-tune
     for ep in range(n_finetune_episodes):
         obs = env.reset(seed=seed + ep)
         done = False
         while not done:
+            policy_obs = _policy_obs(trainer, obs, rng)
             actions = np.zeros((env.n_agents, env.ACT_DIM))
             for i in range(env.n_agents):
-                a, _ = trainer.actor.sample(obs[i], rng)
+                a, _ = trainer.actor.sample(policy_obs[i], rng)
                 actions[i] = a
             obs, _, done, info = env.step(actions)
-    
+
     # Evaluate after fine-tuning
     return evaluate_line_outage(trainer, net, line_idx, n_eval=20, seed=seed + 1000)
 
@@ -122,7 +158,7 @@ def main(train_steps: int = 10000, n_eval: int = 20, n_finetune: int = 50,
     logger.info("  Baseline OF=%.4f", baseline["mean_OF"])
     
     # Test N-1 contingencies (subset for speed)
-    n_lines = min(max_lines, len(net.lines))
+    n_lines = min(max_lines, net.n_lines)
     logger.info("Testing %d line outages...", n_lines)
     
     results = []
@@ -140,7 +176,10 @@ def main(train_steps: int = 10000, n_eval: int = 20, n_finetune: int = 50,
         
         results.append({
             "line_idx": line_idx,
-            "line_name": f"L{net.lines[line_idx].from_bus}-{net.lines[line_idx].to_bus}" if line_idx < len(net.lines) else f"Line_{line_idx}",
+            # NetworkData has no `.lines` table (topology is implicit in
+            # RelayPair relay/bus indices — see NetworkData.n_lines /
+            # apply_n1_outage docstrings), so lines are identified by index.
+            "line_name": f"Line_{line_idx}",
             "baseline_OF": baseline["mean_OF"],
             "pretrain_OF": pretrain["mean_OF"],
             "finetuned_OF": finetuned["mean_OF"],

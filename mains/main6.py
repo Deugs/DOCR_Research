@@ -48,7 +48,7 @@ Usage:
 """
 
 import sys, os, argparse
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
 from network.network_data import NETWORKS
@@ -179,6 +179,43 @@ def run_mappo_safe_ewc(net, total_steps=30000, seed=0, verbose=True, use_pandapo
     result = base_trainer.train(total_steps=total_steps, verbose=verbose,
                                 log_every=max(total_steps // 10, 1))
     result["constraints"] = check_constraints(net, result["TMS"], result["PS"], fault_type="3ph")
+
+    # Register this (single) task with EWC so the apparatus genuinely runs
+    # rather than staying completely inert (ewc_trainer was previously
+    # built but base_trainer.train() bypassed it entirely). A lone task
+    # has nothing to protect against forgetting — expected, not a bug —
+    # but the machinery should reflect that it actually ran.
+    cur_params = base_trainer.actor.get_all_params()
+    obs_f = safe_env.reset(seed=seed + 9000)
+    s_obs, s_act = [], []
+    done_f, sf = False, 0
+    rng = np.random.default_rng(seed + 9999)
+    while not done_f and sf < 30:
+        acts = np.zeros((safe_env.n_agents, safe_env.ACT_DIM))
+        for i in range(safe_env.n_agents):
+            a, _ = base_trainer.actor.sample(obs_f[i], rng)
+            acts[i] = a
+            s_obs.append(obs_f[i].copy())
+            s_act.append(a.copy())
+        obs_f, _, done_f, _ = safe_env.step(acts); sf += 1
+    n_p = len(cur_params)
+    fisher = np.zeros(n_p)
+    if s_obs:
+        idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+        h = 1e-3
+        for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+            bl = np.mean([base_trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            b2 = cur_params.copy(); b2[p_idx] += h
+            base_trainer.actor.set_all_params(b2)
+            ul = np.mean([base_trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            fisher[p_idx] = ((ul - bl) / h) ** 2
+        base_trainer.actor.set_all_params(cur_params)
+    ewc_trainer.ewc_regularizer.register_task("MAPPO-Safe-EWC", cur_params)
+    ewc_trainer.ewc_regularizer.update_fisher("MAPPO-Safe-EWC", fisher)
+    # No "next" task will ever register here to trigger the lagged
+    # consolidation (this is a single-shot call, not a task sequence) —
+    # finalize() closes this one out explicitly.
+    ewc_trainer.ewc_regularizer.finalize()
 
     safe_stats = safe_env.get_safe_rl_stats()
     ewc_stats = ewc_trainer.get_adaptation_stats()

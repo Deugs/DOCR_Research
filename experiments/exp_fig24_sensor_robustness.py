@@ -26,7 +26,7 @@ import argparse
 from pathlib import Path
 from typing import Dict, Tuple
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
@@ -52,14 +52,15 @@ def _add_gaussian_noise(obs: np.ndarray, sigma: float, rng: np.random.Generator,
     return np.clip(obs + noise, -5.0, 5.0)
 
 
-def _add_systematic_bias(obs: np.ndarray, bias: float, direction: str = "positive") -> np.ndarray:
+def _add_systematic_bias(obs: np.ndarray, bias: float, direction: str = "positive",
+                         rng: np.random.Generator = None) -> np.ndarray:
     """Apply multiplicative systematic bias with direction control."""
     if direction == "positive":
         factor = 1.0 + bias
     elif direction == "negative":
         factor = 1.0 - bias
     else:  # random per-dimension
-        factor = 1.0 + bias * np.sign(np.random.randn(len(obs)))
+        factor = 1.0 + bias * np.sign(rng.standard_normal(len(obs)))
     return np.clip(obs * factor, -5.0, 5.0)
 
 

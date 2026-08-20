@@ -1,5 +1,22 @@
 
 """
+*** FILENAME/CONTENT MISMATCH — READ BEFORE USING ***
+
+This file is named exp_fig12_convergence_curves.py but its content (below)
+is actually an older copy of the Figure 39 ablation study — an earlier,
+buggier draft of marl/experiments/exp_fig39_ablation.py (that file's
+run_config() docstring documents a real AttributeError this version does
+not fix: an EWC-enabled trainer's .train() call that previously either
+crashed or silently trained without applying any EWC penalty at all).
+
+  - Real Figure 12 (convergence curves): experiments/exp_fig12_convergence_curves.py
+  - Real, fixed Figure 39 (ablation study): marl/experiments/exp_fig39_ablation.py
+
+This file is being left in place (not deleted) only because
+marl/experiments/batch_runs.py currently imports `main` from this exact
+module path as `fig12_main`. Do not treat its output as Figure 12 data, and
+prefer marl/experiments/exp_fig39_ablation.py for the ablation study itself.
+
 exp_ablation_v2.py — Figure 39 (IMPROVED)
 ───────────────────────────────────────────
 Systematic Ablation Study — Component Contribution.
@@ -27,7 +44,7 @@ import argparse
 import logging
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib

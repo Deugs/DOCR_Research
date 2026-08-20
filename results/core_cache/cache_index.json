@@ -1,7 +1,7 @@
 {
-  "b49eaa6997a39bb7": {
+  "3079e65643b1df10": {
     "name": "core_A_mappo_safe_ewc_8bus_100pv",
-    "created": "2026-06-22T09:53:25.102986",
+    "created": "2026-08-20T06:45:58.182516",
     "config_keys": [
       "name",
       "method",
@@ -9,44 +9,147 @@
       "pv",
       "n_runs",
       "n_episodes",
-      "seed"
+      "seed",
+      "fault_type",
+      "real_safety_ewc"
     ],
-    "size_mb": 0.2974233627319336
+    "size_mb": 0.12528133392333984
   },
-  "c6882b2e182cdf5b": {
-    "name": "core_B_curriculum",
-    "created": "2026-06-22T09:53:25.384433",
-    "config_keys": [
-      "name",
-      "tasks",
-      "episodes_per_task",
-      "n_runs",
-      "seed"
-    ],
-    "size_mb": 0.006617546081542969
-  },
-  "3469a5d021a4848f": {
-    "name": "core_B_curriculum",
-    "created": "2026-06-25T13:54:06.961611",
-    "config_keys": [
-      "name",
-      "tasks",
-      "episodes_per_task",
-      "n_runs",
-      "seed"
-    ],
-    "size_mb": 0.004906654357910156
-  },
-  "8ef557e9e5d0fd8f": {
+  "231a3acbd86d59c1": {
     "name": "core_C_baselines",
-    "created": "2026-06-30T05:22:25.702225",
+    "created": "2026-08-20T08:53:08.531010",
     "config_keys": [
       "name",
       "methods",
       "n_runs",
       "n_episodes",
-      "seed"
+      "seed",
+      "fault_type",
+      "real_safety_ewc"
     ],
-    "size_mb": 0.020175933837890625
+    "size_mb": 0.02017688751220703
+  },
+  "64353ed3bb63ad9e": {
+    "name": "core_D_ablation",
+    "created": "2026-08-20T10:19:56.445049",
+    "config_keys": [
+      "name",
+      "configs",
+      "n_runs",
+      "n_episodes",
+      "seed",
+      "fault_type",
+      "real_safety_ewc"
+    ],
+    "size_mb": 0.0004291534423828125
+  },
+  "28b14fe96ef27938": {
+    "name": "core_E_hparam",
+    "created": "2026-08-20T10:30:37.329186",
+    "config_keys": [
+      "name",
+      "lambda_ewc",
+      "alpha_lambda",
+      "hidden_dim",
+      "n_seeds",
+      "n_steps",
+      "seed",
+      "fault_type",
+      "real_hparam_effect"
+    ],
+    "size_mb": 0.00787353515625
+  },
+  "86ef40a3dd756e02": {
+    "name": "core_F_scalability",
+    "created": "2026-08-20T10:48:17.540342",
+    "config_keys": [
+      "name",
+      "systems",
+      "seed",
+      "fault_type"
+    ],
+    "size_mb": 0.00023174285888671875
+  },
+  "6b5f668042b8bec4": {
+    "name": "core_G_robustness",
+    "created": "2026-08-20T10:49:45.697412",
+    "config_keys": [
+      "name",
+      "stress_types",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc"
+    ],
+    "size_mb": 0.0005865097045898438
+  },
+  "5655903f0e529509": {
+    "name": "core_H_transfer",
+    "created": "2026-08-20T10:51:12.509488",
+    "config_keys": [
+      "name",
+      "evaluations",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc"
+    ],
+    "size_mb": 0.00014019012451171875
+  },
+  "d5163a43d5271ee6": {
+    "name": "core_I_deployment",
+    "created": "2026-08-20T10:52:31.194989",
+    "config_keys": [
+      "name",
+      "benchmarks",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_inference_timing"
+    ],
+    "size_mb": 0.0010938644409179688
+  },
+  "aad3e854030d6219": {
+    "name": "core_J_protection",
+    "created": "2026-08-20T10:53:57.224585",
+    "config_keys": [
+      "name",
+      "analyses",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "seeded_jitter"
+    ],
+    "size_mb": 0.031279563903808594
+  },
+  "31027c769c1483fb": {
+    "name": "core_K_seasonal",
+    "created": "2026-08-20T10:55:21.753644",
+    "config_keys": [
+      "name",
+      "seasons",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc"
+    ],
+    "size_mb": 0.0001277923583984375
+  },
+  "6c47c1b99292a7e1": {
+    "name": "core_B_curriculum",
+    "created": "2026-08-20T12:48:42.000000",
+    "config_keys": [
+      "name",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed",
+      "fault_type",
+      "real_safety",
+      "real_pv_eval"
+    ],
+    "size_mb": 0.00157928466796875
   }
 }

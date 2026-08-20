@@ -28,11 +28,14 @@ from pathlib import Path
 from typing import List, Tuple, Dict
 
 sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.makedirs("outputs", exist_ok=True)
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+from evaluation.experiments._synthetic_label import mark_synthetic
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -91,12 +94,17 @@ def compute_hypervolume(pareto_points: np.ndarray, reference_point: np.ndarray) 
     return max(hv, 0.0)
 
 
-def generate_synthetic_data(n_seeds: int = 50) -> Dict[str, np.ndarray]:
+def generate_synthetic_data(n_seeds: int = 50, seed: int = 42) -> Dict[str, np.ndarray]:
     """
     Generate realistic synthetic data for all methods.
     Returns dict: method_name -> (n_points, 2) array of (OF, CTI_violations).
+
+    NOTE: this is 100% fabricated illustrative data — there is no real-data
+    loading path in this script (unlike Figs 11/55 which pull from prior
+    experiment .npz outputs when present). The caller marks the figure as
+    synthetic accordingly.
     """
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(seed)
     data = {}
 
     # Method characteristics (mean OF, std OF, mean CTI, std CTI)
@@ -130,8 +138,8 @@ def main(n_seeds: int = 50, seed: int = 42, output_dir: str = "outputs"):
     logger.info("Figure 56 — Multi-Objective Pareto Front (Speed vs. Selectivity)")
     logger.info("  Seeds per method: %d", n_seeds)
 
-    # Generate or load data
-    data = generate_synthetic_data(n_seeds)
+    # Generate data (fully synthetic — see generate_synthetic_data docstring)
+    data = generate_synthetic_data(n_seeds, seed)
 
     # Find Pareto front across all methods
     all_points = np.vstack(list(data.values()))
@@ -227,6 +235,7 @@ def main(n_seeds: int = 50, seed: int = 42, output_dir: str = "outputs"):
                 color='white', fontweight='bold')
 
     fig.tight_layout()
+    mark_synthetic(fig, note=f"seed={seed}; fully fabricated, no real experiment data path")
     fig.savefig(out_path / "fig56_pareto_front.png", dpi=200, bbox_inches="tight",
                 facecolor='#0d1117')
     plt.close(fig)

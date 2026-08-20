@@ -18,14 +18,14 @@ Usage:
 """
 
 import sys, os, argparse
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
 from network.network_data import NETWORKS
 from network.relay_physics import check_constraints, FAULT_TYPES
 from baselines.ga_sqp import run_ga_sqp
 from marl.marl_env import DynamicDOCREnv
-from marl.marl_agents import MARLTrainer
+from marl.marl_agents import MAPPOMARLTrainer
 from evaluation.evaluation import (
     plot_convergence, plot_relay_times,
     plot_cti_distribution, plot_relay_settings,
@@ -60,7 +60,7 @@ def run_marl(
         curriculum_stage=curriculum_stage,
         fault_type=fault_type,
     )
-    trainer = MARLTrainer(
+    trainer = MAPPOMARLTrainer(
         env,
         hidden_actor=32,
         hidden_critic=64,
@@ -280,7 +280,7 @@ def experiment_curriculum(args, sys_key, net):
         curriculum_stage=0,
     )
 
-    trainer = MARLTrainer(
+    trainer = MAPPOMARLTrainer(
         env,
         hidden_actor=32,
         hidden_critic=64,

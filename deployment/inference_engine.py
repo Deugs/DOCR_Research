@@ -65,6 +65,57 @@ class InferenceConfig:
     input_shape: tuple = (10,)
 
 
+# ── Quantization ─────────────────────────────────────────────────────────
+#
+# Symmetric per-tensor "fake quantization": round weights to the nearest of
+# 2**quantization_bits representable levels, then dequantize back to float
+# so the numpy/onnxruntime forward pass can run unchanged. This mirrors
+# quantize_int8() in experiments/exp_fig53_model_compression.py (the
+# reference implementation used for Fig 53's model-compression figure),
+# generalized here from a hardcoded 8-bit/127-level scale to an arbitrary
+# ``quantization_bits`` so InferenceConfig.quantization_bits actually has
+# an effect. Without this, use_quantization=True was a no-op: the "INT8
+# model" was bit-identical to the full-precision one and any reported
+# accuracy/size deltas were fabricated by construction.
+
+
+def fake_quantize(weights: np.ndarray, bits: int) -> np.ndarray:
+    """Simulate fixed-point quantization of ``weights`` at ``bits`` bit-width.
+
+    Symmetric signed quantization: scale = max(|w|) / (2**(bits-1) - 1),
+    round(w / scale) clipped to the representable signed integer range,
+    then dequantized (q * scale) back to float. Bit widths >= 32 are a
+    no-op (nothing coarser than float32 to simulate).
+
+    Parameters
+    ----------
+    weights : np.ndarray
+        Full-precision weight tensor.
+    bits : int
+        Target bit-width (e.g. 8, 4, 16).
+
+    Returns
+    -------
+    np.ndarray
+        Dequantized weights, same shape/dtype as the input, perturbed by
+        the quantization round-trip (identical to the input only in the
+        degenerate all-zero case).
+    """
+    weights = np.asarray(weights)
+    if bits >= 32:
+        return weights.copy()
+
+    qmax = 2 ** (bits - 1) - 1  # e.g. 127 for 8 bits, 7 for 4 bits
+    max_abs = np.max(np.abs(weights)) if weights.size else 0.0
+    if max_abs < 1e-9:
+        return weights.copy()
+
+    scale = max_abs / qmax
+    quantized = np.clip(np.round(weights / scale), -qmax - 1, qmax)
+    dequantized = quantized * scale
+    return dequantized.astype(weights.dtype)
+
+
 # ── ONNX Exporter ───────────────────────────────────────────────────────────
 
 class ONNXExporter:
@@ -219,7 +270,7 @@ class ONNXExporter:
 
     def _verify_export(self, path: Path) -> dict:
         """Verify exported model produces finite outputs on a random input."""
-        test_input = np.random.randn(1, *self.input_shape).astype(np.float32)
+        test_input = np.random.default_rng(0).standard_normal((1, *self.input_shape)).astype(np.float32)
         original_output = self.model(test_input)
 
         if hasattr(original_output, "__len__"):
@@ -275,6 +326,7 @@ class InferenceEngine:
         self._model: Callable | None = None
         self._backend: str = "unloaded"
         self._initialized: bool = False
+        self._quantization_applied: bool = False
 
     # ── Initialisation ──────────────────────────────────────────────────────
 
@@ -294,12 +346,23 @@ class InferenceEngine:
     def _load_model(self) -> tuple[Callable, str]:
         """Return (model_callable, backend_name)."""
         path = self.model_path
+        quantize = self.config.use_quantization
+        bits = self.config.quantization_bits
 
         # 1. Try onnxruntime
         try:
             import onnxruntime as ort
 
-            sess = ort.InferenceSession(path)
+            session_path = path
+            if quantize:
+                # Quantize the ONNX graph's weight initializers in-place
+                # (fake quantize -> dequantize, so the graph shape/ops are
+                # unchanged) and run inference from the perturbed copy.
+                quantized_path = self._quantize_onnx_model(path, bits)
+                if quantized_path is not None:
+                    session_path = quantized_path
+
+            sess = ort.InferenceSession(session_path)
             in_name = sess.get_inputs()[0].name
             out_name = sess.get_outputs()[0].name
 
@@ -307,6 +370,7 @@ class InferenceEngine:
                 x = obs.reshape(1, -1).astype(np.float32)
                 return sess.run([out_name], {in_name: x})[0][0]
 
+            self._quantization_applied = bool(quantize and session_path != path)
             return _ort_infer, "onnxruntime"
         except Exception as exc:
             logger.debug("onnxruntime load failed: %s", exc)
@@ -317,10 +381,15 @@ class InferenceEngine:
             W = data["W"].astype(np.float64)  # (out, in)
             b = data["b"].astype(np.float64)  # (out,)
 
+            if quantize:
+                W = fake_quantize(W, bits)
+                b = fake_quantize(b, bits)
+
             def _npz_infer(obs: np.ndarray) -> np.ndarray:
                 x = obs.ravel().astype(np.float64)
                 return (W @ x + b).astype(np.float32)
 
+            self._quantization_applied = bool(quantize)
             return _npz_infer, "numpy-npz"
         except Exception as exc:
             logger.debug("npz load failed: %s", exc)
@@ -331,12 +400,48 @@ class InferenceEngine:
         W = rng.standard_normal((2, in_features)).astype(np.float32) * 0.01
         b = np.zeros(2, dtype=np.float32)
 
+        if quantize:
+            W = fake_quantize(W, bits)
+            b = fake_quantize(b, bits)
+
         def _synth_infer(obs: np.ndarray) -> np.ndarray:
             x = obs.ravel().astype(np.float32)
             return W @ x + b
 
         logger.warning("Using synthetic fallback model (no real weights loaded)")
+        self._quantization_applied = bool(quantize)
         return _synth_infer, "synthetic-fallback"
+
+    def _quantize_onnx_model(self, path: str, bits: int) -> str | None:
+        """Write a copy of the ONNX model at ``path`` with all float
+        initializers passed through :func:`fake_quantize`. Returns the path
+        to the quantized copy, or ``None`` if the ``onnx`` package isn't
+        available or the model can't be parsed (caller falls back to the
+        original, unquantized path in that case).
+        """
+        try:
+            import onnx
+            import onnx.numpy_helper as onh
+        except ImportError:
+            logger.debug("onnx package unavailable; cannot quantize ONNX initializers")
+            return None
+
+        try:
+            model_proto = onnx.load(path)
+            for init in model_proto.graph.initializer:
+                arr = onh.to_array(init)
+                if not np.issubdtype(arr.dtype, np.floating):
+                    continue
+                q_arr = fake_quantize(arr, bits)
+                new_init = onh.from_array(q_arr, name=init.name)
+                init.CopyFrom(new_init)
+
+            quantized_path = str(Path(path).with_suffix(f".int{bits}.onnx"))
+            onnx.save(model_proto, quantized_path)
+            return quantized_path
+        except Exception as exc:
+            logger.debug("ONNX quantization failed, using unquantized model: %s", exc)
+            return None
 
     # ── Inference ─────────────────────────────────────────────────────────
 
@@ -395,7 +500,7 @@ class InferenceEngine:
             self.initialize()
 
         n_runs = n_runs or self.config.benchmark_runs
-        dummy = np.random.randn(*self.config.input_shape).astype(np.float32)
+        dummy = np.random.default_rng(0).standard_normal(self.config.input_shape).astype(np.float32)
 
         # Warmup (JIT / cache priming)
         for _ in range(self.config.warmup_runs):
@@ -430,6 +535,18 @@ class InferenceEngine:
             "=" * 60,
             "INFERENCE LATENCY REPORT",
             "=" * 60,
+        ]
+        if stats["backend"] == "synthetic-fallback":
+            lines.append("  *** WARNING: SYNTHETIC FALLBACK MODEL — no real weights were")
+            lines.append("  *** loaded (ONNX/npz unavailable). Numbers below time a random")
+            lines.append("  *** untrained model, not the actual DOCR-MARL policy.")
+        if self._quantization_applied:
+            lines.append(
+                f"  Quantization:       ENABLED ({self.config.quantization_bits}-bit "
+                "fake-quantize/dequantize applied to weights)"
+            )
+        lines += [
+            f"  Backend:            {stats['backend']}",
             f"  Target latency:     {stats['target_ms']:.1f} ms",
             f"  Mean latency:       {stats['mean_ms']:.2f} ms",
             f"  Std deviation:      {stats['std_ms']:.2f} ms",
@@ -527,7 +644,7 @@ def export_marl_deployment(
         Paths to relay deployment packages.
     """
     config = config or InferenceConfig()
-    exporter = ONNXExporter(actor_network)
+    exporter = ONNXExporter(actor_network, input_shape=config.input_shape)
 
     # Export shared model
     model_path = f"{output_dir}/shared_actor.onnx"
