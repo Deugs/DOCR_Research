@@ -1,7 +1,7 @@
 {
-  "b49eaa6997a39bb7": {
+  "3079e65643b1df10": {
     "name": "core_A_mappo_safe_ewc_8bus_100pv",
-    "created": "2026-08-08T07:42:49.197573",
+    "created": "2026-08-20T06:45:58.182516",
     "config_keys": [
       "name",
       "method",
@@ -9,61 +9,43 @@
       "pv",
       "n_runs",
       "n_episodes",
-      "seed"
+      "seed",
+      "fault_type",
+      "real_safety_ewc"
     ],
-    "size_mb": 0.1252450942993164
+    "size_mb": 0.12528133392333984
   },
-  "3469a5d021a4848f": {
-    "name": "core_B_curriculum",
-    "created": "2026-08-08T09:36:07.887540",
-    "config_keys": [
-      "name",
-      "tasks",
-      "episodes_per_task",
-      "n_runs",
-      "seed"
-    ],
-    "size_mb": 0.0059032440185546875
-  },
-  "8ef557e9e5d0fd8f": {
+  "231a3acbd86d59c1": {
     "name": "core_C_baselines",
-    "created": "2026-08-08T10:30:43.085959",
+    "created": "2026-08-20T08:53:08.531010",
     "config_keys": [
       "name",
       "methods",
       "n_runs",
       "n_episodes",
-      "seed"
+      "seed",
+      "fault_type",
+      "real_safety_ewc"
     ],
     "size_mb": 0.02017688751220703
   },
-  "01956cace7236f39": {
-    "name": "core_B_curriculum",
-    "created": "2026-08-08T17:04:34.438093",
-    "config_keys": [
-      "name",
-      "tasks",
-      "episodes_per_task",
-      "n_runs",
-      "seed"
-    ],
-    "size_mb": 0.0012664794921875
-  },
-  "3366d47c93ca9f00": {
+  "64353ed3bb63ad9e": {
     "name": "core_D_ablation",
-    "created": "2026-08-08T18:08:50.547944",
+    "created": "2026-08-20T10:19:56.445049",
     "config_keys": [
       "name",
       "configs",
       "n_runs",
       "n_episodes",
-      "seed"
+      "seed",
+      "fault_type",
+      "real_safety_ewc"
     ],
     "size_mb": 0.0004291534423828125
   },
-  "1cc9342c3c300784": {
+  "28b14fe96ef27938": {
     "name": "core_E_hparam",
-    "created": "2026-08-08T18:15:27.797042",
+    "created": "2026-08-20T10:30:37.329186",
     "config_keys": [
       "name",
       "lambda_ewc",
@@ -71,73 +53,103 @@
       "hidden_dim",
       "n_seeds",
       "n_steps",
-      "seed"
+      "seed",
+      "fault_type",
+      "real_hparam_effect"
     ],
-    "size_mb": 0.0073394775390625
+    "size_mb": 0.00787353515625
   },
-  "71b0d1e1edbed40c": {
+  "86ef40a3dd756e02": {
     "name": "core_F_scalability",
-    "created": "2026-08-15T01:40:26.880706",
+    "created": "2026-08-20T10:48:17.540342",
     "config_keys": [
       "name",
       "systems",
-      "seed"
+      "seed",
+      "fault_type"
     ],
     "size_mb": 0.00023174285888671875
   },
-  "b88cfba770e004b9": {
+  "6b5f668042b8bec4": {
     "name": "core_G_robustness",
-    "created": "2026-08-15T01:41:00.000707",
+    "created": "2026-08-20T10:49:45.697412",
     "config_keys": [
       "name",
       "stress_types",
       "seed",
-      "real_eval"
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc"
     ],
-    "size_mb": 0.0008306503295898438
+    "size_mb": 0.0005865097045898438
   },
-  "73c316a0c2a48590": {
+  "5655903f0e529509": {
     "name": "core_H_transfer",
-    "created": "2026-08-15T08:30:45.848763",
+    "created": "2026-08-20T10:51:12.509488",
     "config_keys": [
       "name",
       "evaluations",
       "seed",
-      "real_eval"
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc"
     ],
     "size_mb": 0.00014019012451171875
   },
-  "a625709064c92945": {
+  "d5163a43d5271ee6": {
     "name": "core_I_deployment",
-    "created": "2026-08-15T08:32:01.931886",
+    "created": "2026-08-20T10:52:31.194989",
     "config_keys": [
       "name",
       "benchmarks",
       "seed",
-      "real_eval"
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_inference_timing"
     ],
     "size_mb": 0.0010938644409179688
   },
-  "c97585bca5f3fd3f": {
+  "aad3e854030d6219": {
     "name": "core_J_protection",
-    "created": "2026-08-15T08:33:27.069667",
+    "created": "2026-08-20T10:53:57.224585",
     "config_keys": [
       "name",
       "analyses",
       "seed",
-      "real_eval"
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "seeded_jitter"
     ],
-    "size_mb": 0.03118419647216797
+    "size_mb": 0.031279563903808594
   },
-  "5b145985b6947a01": {
+  "31027c769c1483fb": {
     "name": "core_K_seasonal",
-    "created": "2026-08-15T08:34:49.514156",
+    "created": "2026-08-20T10:55:21.753644",
     "config_keys": [
       "name",
       "seasons",
       "seed",
-      "real_eval"
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc"
     ],
     "size_mb": 0.0001277923583984375
+  },
+  "6c47c1b99292a7e1": {
+    "name": "core_B_curriculum",
+    "created": "2026-08-20T12:48:42.000000",
+    "config_keys": [
+      "name",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed",
+      "fault_type",
+      "real_safety",
+      "real_pv_eval"
+    ],
+    "size_mb": 0.00157928466796875
   }
 }

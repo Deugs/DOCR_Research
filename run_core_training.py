@@ -894,7 +894,13 @@ def _core_B_job(args):
                                   True, run_seed, episodes_per_task)
     result_noewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
                                     False, run_seed + 10000, episodes_per_task)
-    eval_results = _evaluate_across_pv("checkpoint", tasks)
+    # Figs 5/6 are labeled "MAPPO-Safe-EWC" (see fig_05_objective_vs_pv's
+    # legend), so use the EWC run's real per-PV evaluation. Only the
+    # synthetic fallback path (_generate_synthetic_curriculum, taken
+    # when USE_SYNTHETIC=True and real training raised) lacks a
+    # "pv_evaluation" key, since that fallback never touches the real
+    # env/policy at all.
+    eval_results = result_ewc.get("pv_evaluation") or _evaluate_across_pv("checkpoint", tasks)
     return run_idx, (result_ewc, result_noewc, eval_results)
 
 
@@ -915,6 +921,13 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
         # Bumped: Safe RL was previously a dead post-hoc attribute set;
         # now genuinely wraps the env (see _run_curriculum_single).
         "real_safety": True,
+        # Bumped: eval_results (Figs 5/6's data) previously came from
+        # _evaluate_across_pv("checkpoint", tasks) — a placeholder that
+        # ignored its args and returned a fixed formula with zero
+        # dependence on training. Now genuinely evaluates the trained
+        # policy via objective_function/check_constraints (see
+        # _run_curriculum_single's "pv_evaluation").
+        "real_pv_eval": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1087,10 +1100,48 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
         # without this: finalize() closes it out explicitly.
         ewc_wrapper.ewc_regularizer.finalize()
 
+    # Final objective/CTI evaluation of the fully-trained policy across
+    # all PV levels — this is what Figs 5 (Objective vs PV) and 6 (CTI
+    # Violation Rate vs PV) actually need. Previously run_core_B's
+    # caller got this from _evaluate_across_pv("checkpoint", tasks) — a
+    # placeholder that ignored its "checkpoint" argument (a literal
+    # string, never an actual trained policy — this function never
+    # returned anything a checkpoint could even be built from) and
+    # returned a fixed formula (1.0 + pv*2, max(0, 0.5 - pv*0.3)) with
+    # zero dependence on training. Because it was cached under the real
+    # "core_B_curriculum" name, is_synthetic was never True for Figs
+    # 5/6 and the fabricated numbers were never disclosed. This uses
+    # the actual final trained policy's (TMS, PS) state, averaged over
+    # real evaluation episodes per PV level.
+    from network.relay_physics import objective_function as _of_fn, check_constraints as _cc_fn
+    pv_evaluation = {}
+    for eval_pv in TASKS:
+        env.curriculum_stage = int(eval_pv * 5)
+        of_vals, cti_rates = [], []
+        for ep in range(30):
+            obs = safe_env.reset(seed=seed + 70000 + int(eval_pv * 1000) + ep)
+            done = False
+            while not done:
+                actions = np.zeros((env.n_agents, env.ACT_DIM))
+                for i in range(env.n_agents):
+                    a, _ = act_fn(obs, i, rng)
+                    actions[i] = a
+                obs, _, done, _ = safe_env.step(actions)
+            TMS, PS = env.get_state()
+            of_val, _, _ = _of_fn(net, TMS, PS, fault_type=FAULT_TYPE)
+            c = _cc_fn(net, TMS, PS, fault_type=FAULT_TYPE)
+            of_vals.append(of_val)
+            cti_rates.append(c["cti_violations"] / net.n_pairs)
+        pv_evaluation[eval_pv] = {
+            "objective": float(np.mean(of_vals)),
+            "cti_rate": float(np.mean(cti_rates)),
+        }
+
     return {
         "task_performances": np.array(task_performances),
         "use_ewc": use_ewc,
         "final_checkpoint": "saved",
+        "pv_evaluation": pv_evaluation,
     }
 
 
@@ -1117,6 +1168,17 @@ def _generate_synthetic_curriculum(use_ewc: bool, seed: int, episodes_per_task: 
 
 
 def _evaluate_across_pv(checkpoint, pv_levels):
+    """Synthetic-fallback-only partner for _core_B_job's eval_results.
+
+    Real per-PV evaluation now comes from _run_curriculum_single's
+    "pv_evaluation" (a genuine trained-policy evaluation via
+    objective_function/check_constraints). This formulaic stand-in is
+    only reached when the real training path raised AND
+    USE_SYNTHETIC=True routed to _generate_synthetic_curriculum instead
+    (which has no real policy to evaluate) — `checkpoint` is accepted
+    for backward-compatible call shape but intentionally unused, since
+    there is no real checkpoint in that fallback case.
+    """
     return {pv: {"objective": 1.0 + pv * 2, "cti_rate": max(0, 0.5 - pv * 0.3)} for pv in pv_levels}
 
 # ═════════════════════════════════════════════════════════════════

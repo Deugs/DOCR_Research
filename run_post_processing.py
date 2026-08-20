@@ -307,11 +307,29 @@ def load_cache(name: str):
         if index_file.exists():
             with open(index_file) as f:
                 index = json.load(f)
-            for key, info in index.items():
-                if info.get("name") == name:
-                    cache_file = get_cache_dir() / f"{key}.pkl"
-                    break
-    
+            # A Core's cache config gets a new content-hash key every
+            # time it's re-run under a different config (a bumped
+            # version marker after a bug fix, a different --fast/n_runs
+            # setting, ...) — the OLD key/entry is never removed from
+            # the index. Picking the first name-match in dict iteration
+            # order (== insertion/chronological order) silently kept
+            # returning whichever run happened to be cached FIRST under
+            # that name forever, regardless of which one is actually the
+            # intended, current result. Prefer the most recently created
+            # entry — the standard "last write wins" cache semantic, and
+            # the correct one as long as the cache directory doesn't
+            # accumulate leftover smoke-test artifacts alongside real
+            # runs (clean those up rather than relying on some other
+            # heuristic, e.g. size, to guess around them — see git
+            # history around 2026-08-20 for a case where exactly that
+            # had happened and briefly caused this function to prefer a
+            # larger but pre-bugfix cached result over a smaller, fresh,
+            # correct one).
+            matches = [(key, info) for key, info in index.items() if info.get("name") == name]
+            if matches:
+                key, _ = max(matches, key=lambda kv: kv[1].get("created", ""))
+                cache_file = get_cache_dir() / f"{key}.pkl"
+
     if cache_file.exists():
         import pickle
         with open(cache_file, "rb") as f:
