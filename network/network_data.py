@@ -56,6 +56,13 @@ class NetworkData:
     dg_buses:    List[DGConfig] = field(default_factory=list)
     line_data:   Optional[Dict] = None  # pandapower line parameters
     trafo_data:  Optional[Dict] = None  # transformer parameters
+    # Authoritative 0-indexed relay->bus mapping, captured directly from
+    # each line's (from_bus, to_bus) at construction time. Only set by
+    # get_14/39/57/118bus (the line-based networks) — get_relay_bus()
+    # falls back to deriving it from RelayPair.bus_pri/bus_bkp when this
+    # is None, which is correct only for relays that appear in at least
+    # one pair (see get_relay_bus() docstring).
+    relay_bus:   Optional[np.ndarray] = None
 
     @property
     def n_pairs(self) -> int:
@@ -63,15 +70,29 @@ class NetworkData:
 
     def get_relay_bus(self, relay_idx: int) -> int:
         """
-        Real 0-indexed bus a relay is physically located at, from its
-        RelayPair's bus_pri/bus_bkp (1-indexed on RelayPair, matching the
-        convention already used elsewhere — see pandapower_network.py's
-        `b1, b2 = p.bus_pri - 1, p.bus_bkp - 1`).
+        Real 0-indexed bus a relay is physically located at.
+
+        Prefers `self.relay_bus` (captured directly from each line's
+        from/to bus at construction time in get_14/39/57/118bus) when
+        available — this covers every relay, including ones that never
+        appear in any RelayPair. Otherwise derives it from RelayPair's
+        bus_pri/bus_bkp (1-indexed on RelayPair, matching the convention
+        already used elsewhere — see pandapower_network.py's
+        `b1, b2 = p.bus_pri - 1, p.bus_bkp - 1`), which is only correct
+        for relays that DO appear in at least one pair — a real gap this
+        method previously had, silently falling back to a placeholder
+        for line-end relays with no reciprocal backup relationship (e.g.
+        terminal buses), reintroducing the exact wrong-bus bug this
+        method exists to fix for a meaningful fraction of relays on the
+        14/39/57/118-bus systems (~10-30%).
 
         Callers previously used a placeholder `min(relay_idx, n_buses-1)`
-        instead of this, silently mis-locating loads/sensor readings for
-        any relay whose index didn't happen to coincide with its real bus.
+        instead of any of this, silently mis-locating loads/sensor
+        readings for any relay whose index didn't happen to coincide
+        with its real bus.
         """
+        if self.relay_bus is not None and 0 <= relay_idx < len(self.relay_bus):
+            return int(self.relay_bus[relay_idx])
         for p in self.pairs:
             if p.primary == relay_idx:
                 return p.bus_pri - 1
@@ -300,6 +321,14 @@ def _ensure_feasible_ps_bounds(If_min: np.ndarray, Iload_max: np.ndarray,
 # IEEE 3-BUS  (6 relays, 6 P/B pairs) — Toy validation only
 # ─────────────────────────────────────────────────────────────────────────────
 def get_3bus() -> NetworkData:
+    # NOTE: relay 5's bus is inconsistent across its two pair appearances
+    # (bus_bkp=3 as backup in pair 0, bus_pri=1 as primary in pair 5) —
+    # a data-entry inconsistency in this hand-authored toy system, not
+    # derivable/correctable from a real line topology like the
+    # programmatically-generated networks below. get_relay_bus(5) will
+    # return whichever pair it encounters first (bus 3). Real-world
+    # impact is limited since this system is explicitly toy validation
+    # only, but flagged here rather than silently guessing a "fix".
     pairs = [
         RelayPair(0, 5, 1961.2, 172.7, bus_pri=1, bus_bkp=3),
         RelayPair(1, 3, 1515.4, 544.9, bus_pri=2, bus_bkp=2),
@@ -555,6 +584,10 @@ def get_39bus() -> NetworkData:
         Irated[k]  = (mva_lim / (np.sqrt(3) * V_base_kv)) * 1000.0  # A
 
     # Assign to relays: each relay sees the fault current of its own line as primary
+    # Authoritative relay->bus mapping, captured directly from each line's
+    # own (from_bus, to_bus) — covers every relay regardless of whether it
+    # ends up in any RelayPair (see get_relay_bus() docstring).
+    relay_bus = np.zeros(n_relays, dtype=int)
     for k in range(n_lines):
         r_from = 2 * k        # from-bus relay index
         r_to   = 2 * k + 1   # to-bus relay index
@@ -562,6 +595,8 @@ def get_39bus() -> NetworkData:
         Iload_max[r_to]   = Irated[k] * 0.8
         If_min[r_from]    = If_line[k] * 0.60  # min fault = 60% of 3ph max
         If_min[r_to]      = If_line[k] * 0.60
+        relay_bus[r_from] = lines[k][0] - 1
+        relay_bus[r_to]   = lines[k][1] - 1
 
     # ── Primary / backup pairs ────────────────────────────────────────────────
     # Protection principle for meshed networks:
@@ -653,7 +688,7 @@ def get_39bus() -> NetworkData:
     return NetworkData(
         "IEEE-39Bus", n_relays, pairs, Iload_max, If_min,
         n_buses=39, base_voltage=345.0, base_mva=100.0,
-        dg_buses=dg_buses
+        dg_buses=dg_buses, relay_bus=relay_bus
     )
 
 
@@ -732,6 +767,20 @@ def get_14bus() -> NetworkData:
             Iload_max[r_to] = Irated[k] * 0.8
             If_min[r_to] = If_line[k] * 0.60
 
+    # Authoritative relay->bus mapping, captured directly from each
+    # line's own (from_bus, to_bus) — covers every relay regardless of
+    # whether it ends up in any RelayPair (unlike deriving it from
+    # pairs after the fact, which misses line-end relays with no
+    # reciprocal backup relationship, e.g. terminal buses).
+    relay_bus = np.zeros(n_relays, dtype=int)
+    for k, (fb, tb, r, x, b, mva_lim) in enumerate(lines):
+        r_from = 2 * k
+        r_to = 2 * k + 1
+        if r_from < n_relays:
+            relay_bus[r_from] = fb - 1
+        if r_to < n_relays:
+            relay_bus[r_to] = tb - 1
+
     # Build P/B pairs using adjacency-based backup selection
     bus_lines: Dict[int, List[Tuple[int, int, int]]] = {}
     for k, (fb, tb, r, x, b, mva) in enumerate(lines):
@@ -793,7 +842,7 @@ def get_14bus() -> NetworkData:
     return NetworkData(
         "IEEE-14Bus", n_relays, pairs, Iload_max, If_min,
         n_buses=14, base_voltage=13.8, base_mva=100.0,
-        dg_buses=dg_buses
+        dg_buses=dg_buses, relay_bus=relay_bus
     )
 
 
@@ -888,6 +937,10 @@ def get_57bus() -> NetworkData:
         If_line[k] = If_pu * I_base_a
         Irated[k] = (mva_lim / (np.sqrt(3) * V_base_kv)) * 1000.0
 
+    # Authoritative relay->bus mapping, captured directly from each line's
+    # own (from_bus, to_bus) — covers every relay regardless of whether it
+    # ends up in any RelayPair (see get_relay_bus() docstring).
+    relay_bus = np.zeros(n_relays, dtype=int)
     for k in range(n_lines):
         r_from = 2 * k
         r_to = 2 * k + 1
@@ -895,6 +948,8 @@ def get_57bus() -> NetworkData:
         Iload_max[r_to] = Irated[k] * 0.8
         If_min[r_from] = If_line[k] * 0.60
         If_min[r_to] = If_line[k] * 0.60
+        relay_bus[r_from] = lines[k][0] - 1
+        relay_bus[r_to] = lines[k][1] - 1
 
     # Build P/B pairs
     bus_lines: Dict[int, List[Tuple[int, int, int]]] = {}
@@ -956,7 +1011,7 @@ def get_57bus() -> NetworkData:
     return NetworkData(
         "IEEE-57Bus", n_relays, pairs, Iload_max, If_min,
         n_buses=57, base_voltage=138.0, base_mva=100.0,
-        dg_buses=dg_buses
+        dg_buses=dg_buses, relay_bus=relay_bus
     )
 
 
@@ -1090,6 +1145,10 @@ def get_118bus() -> NetworkData:
         If_line[k] = If_pu * I_base_a
         Irated[k] = (mva_lim / (np.sqrt(3) * V_base_kv)) * 1000.0
 
+    # Authoritative relay->bus mapping, captured directly from each line's
+    # own (from_bus, to_bus) — covers every relay regardless of whether it
+    # ends up in any RelayPair (see get_relay_bus() docstring).
+    relay_bus = np.zeros(n_relays, dtype=int)
     for k in range(n_lines):
         r_from = 2 * k
         r_to = 2 * k + 1
@@ -1097,6 +1156,8 @@ def get_118bus() -> NetworkData:
         Iload_max[r_to] = Irated[k] * 0.8
         If_min[r_from] = If_line[k] * 0.60
         If_min[r_to] = If_line[k] * 0.60
+        relay_bus[r_from] = lines[k][0] - 1
+        relay_bus[r_to] = lines[k][1] - 1
 
     # Build P/B pairs
     bus_lines: Dict[int, List[Tuple[int, int, int]]] = {}
@@ -1161,7 +1222,7 @@ def get_118bus() -> NetworkData:
     return NetworkData(
         "IEEE-118Bus", n_relays, pairs, Iload_max, If_min,
         n_buses=118, base_voltage=138.0, base_mva=100.0,
-        dg_buses=dg_buses
+        dg_buses=dg_buses, relay_bus=relay_bus
     )
 
 

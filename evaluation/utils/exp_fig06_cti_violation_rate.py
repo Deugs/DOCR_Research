@@ -31,7 +31,21 @@ import matplotlib.pyplot as plt
 from network.network_data import NETWORKS
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+from marl.continual_trainer import create_ewc_trainer, EWCConfig
 from network.relay_physics import check_constraints
+
+# QMIX (value decomposition) and IQL (independent Q-learning) are
+# fundamentally different algorithm families from this codebase's
+# policy-gradient MAPPOMARLTrainer — no real implementation of either
+# exists here. Both currently alias IPPO's code path below (use_comm=
+# False, no Safe RL/EWC), producing genuinely identical trained policies
+# under the same seed. Disclosed via ALIASED_METHODS rather than
+# silently presented as distinct baselines.
+ALIASED_METHODS = {
+    "QMIX": "IPPO (no real QMIX implementation exists in this codebase)",
+    "IQL": "IPPO (no real IQL implementation exists in this codebase)",
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -132,18 +146,38 @@ def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
                 env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
                                       fault_type="3ph", curriculum_stage=stage)
                 
+                if method in ALIASED_METHODS and pv == PV_LEVELS[0] and seed == 0:
+                    logger.warning("Method %r has no real implementation in this codebase — "
+                                    "training identically to %s.", method, ALIASED_METHODS[method])
+
                 trainer = None
                 use_comm = False
+                eval_env = env
                 if method != "Traditional":
                     use_comm = method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO"]
-                    trainer = MAPPOMARLTrainer(env, use_comm=use_comm, seed=seed)
-                    if hasattr(trainer, 'use_safety'):
-                        trainer.use_safety = method in ["MAPPO-Safe-EWC", "MAPPO-Safe"]
-                    if hasattr(trainer, 'use_ewc'):
-                        trainer.use_ewc = method == "MAPPO-Safe-EWC"
+                    use_safety = method in ["MAPPO-Safe-EWC", "MAPPO-Safe"]
+                    use_ewc = method == "MAPPO-Safe-EWC"
+                    # Safe RL is a real env wrapper (use_safety was
+                    # previously a dead post-hoc attribute — MAPPOMARLTrainer
+                    # never defines it — so "Safe" methods here trained
+                    # identically to plain "MAPPO").
+                    if use_safety:
+                        eval_env = create_safe_rl_env(env, SafeRLConfig(
+                            project_actions=True, enforce_cti=True,
+                            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+                            use_pid=True, adaptive_rho=True,
+                        ))
+                    trainer = MAPPOMARLTrainer(eval_env, use_comm=use_comm, seed=seed)
                     trainer.train(total_steps=train_steps, verbose=False)
-                
-                res = evaluate_cti_severity(net, env, trainer, n_eval, seed, use_comm=use_comm)
+                    if use_ewc:
+                        # Register this single task with EWC so the
+                        # apparatus genuinely runs rather than staying
+                        # completely inert (see run_core_training.py's
+                        # Core A for the same rationale).
+                        ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
+                        ewc_trainer.ewc_regularizer.register_task(method, trainer.actor.get_all_params())
+
+                res = evaluate_cti_severity(net, eval_env, trainer, n_eval, seed, use_comm=use_comm)
                 results[method][pv].append(res)
                 logger.info("    Seed %d: viol=%.2f%% mild=%.2f%% mod=%.2f%% sev=%.2f%%",
                            seed, res["violation_rate"], res["mild_rate"],
@@ -207,6 +241,11 @@ def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3, axis="y")
     
+    if ALIASED_METHODS:
+        fig.text(0.5, -0.02,
+                  "* QMIX/IQL: no real implementation in this codebase — both alias IPPO's training",
+                  ha="center", fontsize=7, style="italic", color="#888888")
+
     fig.tight_layout()
     fig.savefig(out_path / "fig06_cti_violations.png", dpi=200, bbox_inches="tight")
     plt.close(fig)

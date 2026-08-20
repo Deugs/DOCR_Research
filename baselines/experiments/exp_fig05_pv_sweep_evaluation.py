@@ -36,7 +36,21 @@ import threadpoolctl
 from network.network_data import NETWORKS
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+from marl.continual_trainer import create_ewc_trainer, EWCConfig
 from network.relay_physics import check_constraints
+
+# QMIX (value decomposition) and IQL (independent Q-learning) are
+# fundamentally different algorithm families from this codebase's
+# policy-gradient MAPPOMARLTrainer — no real implementation of either
+# exists here. Both currently alias IPPO's code path below (use_comm=
+# False, no Safe RL/EWC), producing genuinely identical trained policies
+# under the same seed. This is disclosed via ALIASED_METHODS rather than
+# silently presented as distinct baselines.
+ALIASED_METHODS = {
+    "QMIX": "IPPO (no real QMIX implementation exists in this codebase)",
+    "IQL": "IPPO (no real IQL implementation exists in this codebase)",
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -72,22 +86,39 @@ def train_and_evaluate_method(method: str, pv_level: float, seed: int,
     if method == "Traditional":
         # Fixed traditional settings - no training
         return evaluate_traditional(net, env, n_eval, seed)
-    
+
+    if method in ALIASED_METHODS:
+        logger.warning("Method %r has no real implementation in this codebase — "
+                        "training identically to %s.", method, ALIASED_METHODS[method])
+
     # Determine trainer configuration
     use_comm = method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO"]
     use_safety = method in ["MAPPO-Safe-EWC", "MAPPO-Safe"]
     use_ewc = method == "MAPPO-Safe-EWC"
-    
-    trainer = MAPPOMARLTrainer(env, use_comm=use_comm,
+
+    # Safe RL is a real env wrapper (use_safety was previously a dead
+    # post-hoc attribute — MAPPOMARLTrainer never defines it — so "Safe"
+    # methods here trained identically to plain "MAPPO").
+    train_env = env
+    if use_safety:
+        train_env = create_safe_rl_env(env, SafeRLConfig(
+            project_actions=True, enforce_cti=True,
+            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+            use_pid=True, adaptive_rho=True,
+        ))
+    trainer = MAPPOMARLTrainer(train_env, use_comm=use_comm,
                                 hidden_actor=64, hidden_critic=64, seed=seed)
-    
-    # Configure safety and EWC if supported
-    if hasattr(trainer, 'use_safety'):
-        trainer.use_safety = use_safety
-    if hasattr(trainer, 'use_ewc'):
-        trainer.use_ewc = use_ewc
-    
+
     trainer.train(total_steps=train_steps, verbose=False)
+
+    if use_ewc:
+        # Register this single task with EWC so the apparatus genuinely
+        # runs (n_tasks_learned reflects reality) rather than staying
+        # completely inert — see run_core_training.py's Core A for the
+        # same pattern and its rationale (one task has nothing to
+        # protect against forgetting, by construction).
+        ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
+        ewc_trainer.ewc_regularizer.register_task(method, trainer.actor.get_all_params())
 
     # Evaluate using the correct observation dimensionality.
     # When use_comm=True the actor was trained on comm_graph.forward()
@@ -105,7 +136,7 @@ def train_and_evaluate_method(method: str, pv_level: float, seed: int,
         return trainer.actor.sample(all_obs[agent_idx], rng)
 
     for ep in range(n_eval):
-        obs = env.reset(seed=seed + 1000 + ep)
+        obs = train_env.reset(seed=seed + 1000 + ep)
         done = False
         ep_of = []
         while not done:
@@ -113,19 +144,22 @@ def train_and_evaluate_method(method: str, pv_level: float, seed: int,
             for i in range(env.n_agents):
                 a, _ = _sample_action(obs, i)
                 actions[i] = a
-            obs, _, done, info = env.step(actions)
+            obs, _, done, info = train_env.step(actions)
             ep_of.append(info.get("OF", float("inf")))
         of_list.append(float(np.min(ep_of)))
-        
-        TMS, PS = env.get_state()
+
+        TMS, PS = train_env.get_state()
         c = check_constraints(net, TMS, PS)
         cti_list.append(c["cti_violations"])
-    
-    return {
+
+    result = {
         "mean_OF": float(np.mean(of_list)),
         "std_OF": float(np.std(of_list)),
         "cti_viols": float(np.mean(cti_list)),
     }
+    if method in ALIASED_METHODS:
+        result["aliased_to"] = ALIASED_METHODS[method]
+    return result
 
 
 def evaluate_traditional(net, env, n_eval: int, seed: int) -> Dict:
@@ -270,6 +304,11 @@ def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
     ax.legend(fontsize=7, loc="upper left")
     ax.grid(True, alpha=0.3)
     
+    if ALIASED_METHODS:
+        fig.text(0.5, -0.02,
+                  "* QMIX/IQL: no real implementation in this codebase — both alias IPPO's training",
+                  ha="center", fontsize=7, style="italic", color="#888888")
+
     fig.tight_layout()
     fig.savefig(out_path / "fig05_pv_sweep.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
