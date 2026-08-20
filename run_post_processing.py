@@ -1353,19 +1353,25 @@ def fig_23_unseen_faults():
         logger.warning("Fig 23: 'core_H_transfer' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         data = {"unseen_faults": {"bolted": 0.85, "high-impedance": 0.78, "evolving": 0.72, "simultaneous": 0.68}}
     
+    # Real shape (see run_core_H) is {real_fault_type_name: relative_perf},
+    # keyed by whichever IEEE fault types weren't used during training —
+    # same {name: float} shape as the synthetic fallback, so no branching
+    # needed here, just an honest axis label/limit (relative performance
+    # can exceed 1.0, unlike the fallback's fixed illustrative scores).
     faults = data.get("unseen_faults", {})
     names = list(faults.keys())
     values = list(faults.values())
-    
+
     fig, ax = plt.subplots(figsize=(10, 6))
     colors = ["#2563eb", "#39d353", "#f7c948", "#ff6b35"]
     bars = ax.barh(names, values, color=colors, edgecolor="white", linewidth=2, alpha=0.85)
     for bar, val in zip(bars, values):
-        ax.text(val + 0.01, bar.get_y() + bar.get_height()/2, f"{val:.2f}", 
+        ax.text(val + 0.01, bar.get_y() + bar.get_height()/2, f"{val:.2f}",
                 ha="left", va="center", fontsize=11, fontweight="bold")
-    ax.set_xlabel("Performance", fontsize=12)
+    ax.set_xlabel("Performance" if is_synthetic else "Relative Performance (base_of / unseen_of)", fontsize=12)
     ax.set_title("Figure 23 — Generalization to Unseen Fault Types", fontsize=13)
-    ax.set_xlim(0, 1)
+    if is_synthetic:
+        ax.set_xlim(0, 1)
     ax.grid(True, alpha=0.3, axis="x")
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
@@ -1442,32 +1448,60 @@ def fig_25_zero_shot_transfer():
         data = {"zero_shot": {"warm_start": {"performance": 0.75, "convergence_ep": 500}, "cold_start": {"performance": 0.20, "convergence_ep": 2000}}}
     
     zs = data.get("zero_shot", {})
-    warm = zs.get("warm_start", {})
-    cold = zs.get("cold_start", {})
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    categories = ["Warm Start\\n(Transfer)", "Cold Start\\n(Scratch)"]
-    perfs = [warm.get("performance", 0.75), cold.get("performance", 0.20)]
-    convs = [warm.get("convergence_ep", 500), cold.get("convergence_ep", 2000)]
-    
-    x = np.arange(len(categories))
-    width = 0.35
-    ax.bar(x - width/2, perfs, width, label="Final Performance", color="#2563eb", alpha=0.8, edgecolor="white")
-    ax2 = ax.twinx()
-    ax2.bar(x + width/2, convs, width, label="Convergence Episodes", color="#ff6b35", alpha=0.8, edgecolor="white")
-    
-    ax.set_ylabel("Final Performance", fontsize=12, color="#2563eb")
-    ax2.set_ylabel("Convergence Episodes", fontsize=12, color="#ff6b35")
-    ax.set_xticks(x)
-    ax.set_xticklabels(categories)
-    ax.set_title("Figure 25 — Zero-Shot Transfer: 8-Bus -> 30-Bus (100% PV)", fontsize=13)
-    ax.set_ylim(0, 1)
-    ax.grid(True, alpha=0.3, axis="y")
-    
-    lines1, labels1 = ax.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
-    
+    # _eval_zero_shot_transfer's real output (see core_eval_bridge.
+    # _extract_fig_data, fig 25) is keyed "transfer_of"/"cti_ok"/"system"
+    # (+ "base_of", added in run_core_H) — there is no "warm_start"/
+    # "cold_start" split anywhere: no code path here trains this target
+    # system's own policy from scratch to provide a genuine cold-start
+    # baseline. Reading zs.get("warm_start"/"cold_start") against a REAL
+    # cache hit always missed and fell back to the identical fabricated
+    # 0.75/0.20 placeholders, undisclosed. Plot only what's actually real:
+    # one relative-performance bar for the zero-shot transfer itself.
+    if not is_synthetic and "transfer_of" in zs:
+        base_of = zs.get("base_of")
+        transfer_of = zs["transfer_of"]
+        rel_perf = float(base_of / max(transfer_of, 1e-9)) if base_of else None
+        cti_ok = zs.get("cti_ok")
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        if rel_perf is not None:
+            ax.bar(["Zero-Shot Transfer\\n(learned -> " + str(zs.get("system", "target")) + ")"],
+                   [rel_perf], color="#2563eb", alpha=0.85, edgecolor="white", width=0.5)
+            ax.text(0, rel_perf + 0.02, f"{rel_perf:.2f}", ha="center", fontsize=12, fontweight="bold")
+        ax.set_ylabel("Relative Performance (base_of / transfer_of)", fontsize=12)
+        ax.set_title(f"Figure 25 — Zero-Shot Transfer: 8-Bus -> {zs.get('system', 'target')}", fontsize=13)
+        ax.grid(True, alpha=0.3, axis="y")
+        cti_text = "CTI satisfied" if cti_ok else "CTI violated"
+        _annotate_panel_synthetic(
+            ax, f"cold-start (train-from-scratch) baseline not measured — {cti_text} on transfer"
+        )
+    else:
+        warm = zs.get("warm_start", {})
+        cold = zs.get("cold_start", {})
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        categories = ["Warm Start\\n(Transfer)", "Cold Start\\n(Scratch)"]
+        perfs = [warm.get("performance", 0.75), cold.get("performance", 0.20)]
+        convs = [warm.get("convergence_ep", 500), cold.get("convergence_ep", 2000)]
+
+        x = np.arange(len(categories))
+        width = 0.35
+        ax.bar(x - width/2, perfs, width, label="Final Performance", color="#2563eb", alpha=0.8, edgecolor="white")
+        ax2 = ax.twinx()
+        ax2.bar(x + width/2, convs, width, label="Convergence Episodes", color="#ff6b35", alpha=0.8, edgecolor="white")
+
+        ax.set_ylabel("Final Performance", fontsize=12, color="#2563eb")
+        ax2.set_ylabel("Convergence Episodes", fontsize=12, color="#ff6b35")
+        ax.set_xticks(x)
+        ax.set_xticklabels(categories)
+        ax.set_title("Figure 25 — Zero-Shot Transfer: 8-Bus -> 30-Bus (100% PV)", fontsize=13)
+        ax.set_ylim(0, 1)
+        ax.grid(True, alpha=0.3, axis="y")
+
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
         mark_synthetic(fig, note="core_H_transfer cache missing")
@@ -1491,12 +1525,26 @@ def fig_29_ewc_continual():
     noewc_mats = [r["task_performances"] for r in data.get("without_ewc", [])]
     ewc_avg = np.mean(ewc_mats, axis=0) if ewc_mats else np.eye(5) * 0.7
     noewc_avg = np.mean(noewc_mats, axis=0) if noewc_mats else np.eye(5) * 0.5
+    # Number of curriculum tasks actually trained (run_core_B's real
+    # task_performances matrices are n_tasks x n_tasks, e.g. 4x4 in fast
+    # mode) — the right panel below previously hardcoded 5 regardless,
+    # crashing with a shape mismatch whenever the real matrix wasn't 5x5
+    # (np.diag(ewc_avg) has len == ewc_avg.shape[0]).
+    n_tasks = ewc_avg.shape[0]
     
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle("Figure 29 — Elastic Weight Consolidation (EWC) for Continual Adaptation", fontsize=13)
     
     ax = axes[0]
-    fisher = np.random.exponential(1.0, 100)
+    # core_B_curriculum never stores a per-parameter Fisher Information
+    # diagonal (FisherInformationEstimator's real output — see
+    # marl/continual_trainer.py) — only aggregate task_performances
+    # matrices, used in the right panel below. This left panel was always
+    # illustrative regardless of is_synthetic, but previously used an
+    # unseeded np.random.exponential() and was never watermarked, so it
+    # looked identical to a real per-parameter Fisher plot even when the
+    # rest of the figure was real. Explicitly seeded + annotated instead.
+    fisher = np.random.default_rng(29).exponential(1.0, 100)
     fisher = np.sort(fisher)[::-1]
     ax.bar(range(100), fisher, color="#2563eb", edgecolor="white", alpha=0.8)
     ax.set_xlabel("Parameter Index (sorted)", fontsize=11)
@@ -1504,13 +1552,14 @@ def fig_29_ewc_continual():
     ax.set_title("Parameter Importance", fontsize=12)
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3, axis="y")
+    _annotate_panel_synthetic(ax, "no per-parameter Fisher diagonal in core_B_curriculum cache")
     
     ax = axes[1]
-    x = np.arange(5)
+    x = np.arange(n_tasks)
     ax.plot(x, np.diag(ewc_avg), "o-", color="#2563eb", lw=2, markersize=8, label="With EWC")
     ax.plot(x, np.diag(noewc_avg), "s-", color="#ff6b35", lw=2, markersize=8, label="Without EWC")
     ax.set_xticks(x)
-    ax.set_xticklabels([f"T{i}" for i in range(5)], fontsize=10)
+    ax.set_xticklabels([f"T{i}" for i in range(n_tasks)], fontsize=10)
     ax.set_xlabel("Task", fontsize=11)
     ax.set_ylabel("Performance on Task 0", fontsize=11)
     ax.set_title("Catastrophic Forgetting Prevention", fontsize=12)
@@ -1631,25 +1680,38 @@ def fig_33_radar_chart():
     
     fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
     colors = {"MAPPO-Safe-EWC": "#2563eb", "MAPPO-Safe": "#39d353", "MAPPO": "#f7c948", "IPPO": "#ff6b35", "Traditional": "#ff6b6b"}
-    
+
+    # core_C_baselines only stores each method's per-episode return array —
+    # a single real scalar per method (its mean), never a genuine breakdown
+    # across "CTI Satisfaction"/"Convergence Speed"/"Sample Efficiency"/
+    # "Robustness". This function fabricated all 5 radar axes as that ONE
+    # real scalar plus independent random jitter per axis, unconditionally
+    # (even when is_synthetic was False, i.e. even for a real cache hit) —
+    # a fake multi-dimensional shape built from one real number. Seeded so
+    # the illustrative jitter is at least reproducible, and always
+    # watermarked regardless of is_synthetic since there is no code path
+    # (real or synthetic) that computes genuine values for 4 of these 5 axes.
+    rng = np.random.default_rng(33)
     for method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]:
         if method in data:
             vals = data[method]
             base = np.mean(vals[-100:] if hasattr(vals, '__len__') and len(vals) > 100 else vals)
-            values = [base / 5.0 + np.random.uniform(-0.1, 0.1) for _ in range(N)]
+            values = [base / 5.0 + rng.uniform(-0.1, 0.1) for _ in range(N)]
             values += values[:1]
             ax.plot(angles, values, 'o-', color=colors.get(method, "#333"), lw=2, label=method, markersize=6)
             ax.fill(angles, values, alpha=0.1, color=colors.get(method, "#333"))
-    
+
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(categories, fontsize=10)
     ax.set_ylim(0, 1)
     ax.set_title("Figure 33 — Multi-Dimensional Method Comparison (8-Bus, 100% PV)", fontsize=13, y=1.08)
     ax.legend(fontsize=9, loc="upper right", bbox_to_anchor=(1.3, 1.1))
     ax.grid(True)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_C_baselines cache missing")
+    from evaluation.experiments._synthetic_label import mark_synthetic
+    note = ("core_C_baselines cache missing" if is_synthetic else
+            "core_C_baselines has no per-dimension breakdown — 4 of 5 axes are "
+            "illustrative jitter around the one real scalar (mean objective)")
+    mark_synthetic(fig, note=note)
     save_fig(fig, get_fig_path(33, "figs_31_40"))
 
 
@@ -1741,25 +1803,34 @@ def fig_36_action_space_geometry():
     
     ax.contourf(TMS, PS, constraint.astype(float), levels=[0, 0.5, 1], colors=["#ff6b35", "#39d353"], alpha=0.3)
     ax.contour(TMS, PS, constraint.astype(float), levels=[0.5], colors="white", linewidths=2)
-    
-    np.random.seed(42)
-    raw_actions = np.random.rand(50, 2) * [1.9, 9.0] + [0.1, 1.0]
+
+    # No Core currently calls bridge.run_evaluation(36) (the real
+    # _eval_action_space_grid/action_space_grid_data path exists in
+    # core_eval_bridge.py but nothing populates a cache from it), and the
+    # constraint boundary above (TMS*0.5 + PS*0.05 >= 0.3) is an
+    # illustrative formula, not the real CTI constraint — so this whole
+    # figure is unconditionally synthetic. Seeded explicitly (was a bare
+    # np.random.seed(42) global reseed) and always watermarked.
+    rng = np.random.default_rng(36)
+    raw_actions = rng.random((50, 2)) * [1.9, 9.0] + [0.1, 1.0]
     ax.scatter(raw_actions[:, 0], raw_actions[:, 1], c="#ff6b35", s=50, alpha=0.6, label="Raw Actions", edgecolors="white")
-    
+
     proj_actions = raw_actions.copy()
     proj_actions[:, 0] = np.maximum(proj_actions[:, 0], 0.3)
     ax.scatter(proj_actions[:, 0], proj_actions[:, 1], c="#39d353", s=50, alpha=0.6, label="Projected (Safe)", edgecolors="white")
-    
+
     for i in range(0, 50, 5):
-        ax.annotate("", xy=(proj_actions[i, 0], proj_actions[i, 1]), 
+        ax.annotate("", xy=(proj_actions[i, 0], proj_actions[i, 1]),
                    xytext=(raw_actions[i, 0], raw_actions[i, 1]),
                    arrowprops=dict(arrowstyle="->", color="gray", lw=1, alpha=0.5))
-    
+
     ax.set_xlabel("Time Multiplier Setting (TMS)", fontsize=12)
     ax.set_ylabel("Plug Setting (PS)", fontsize=12)
     ax.set_title("Figure 36 — Action Space Bounds & Safety Projection Geometry", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
+    from evaluation.experiments._synthetic_label import mark_synthetic
+    mark_synthetic(fig, note="no Core evaluation feeds this figure — illustrative constraint geometry + random action sample")
     save_fig(fig, get_fig_path(36, "figs_31_40"))
 
 
@@ -2209,10 +2280,27 @@ def fig_45_daily_profile():
         data = {"daily_profile": {"hours": hours, "pv_generation": pv_gen, "relay_response": relay_response}}
     
     profile = data.get("daily_profile", {})
-    hours = profile.get("hours", np.arange(24))
-    pv_gen = profile.get("pv_generation", np.maximum(0, np.sin(np.pi * hours / 12) * 100))
-    relay_response = profile.get("relay_response", 0.2 + 0.1 * (1 - pv_gen / 100))
-    
+    # _eval_daily_pv's real output (see core_eval_bridge._extract_fig_data,
+    # fig 45) is keyed "tms"/"ps"/"of"/"irradiance" — completely different
+    # keys from the synthetic fallback's "hours"/"pv_generation"/
+    # "relay_response". Reading the fallback's key names against a REAL
+    # cache hit silently missed every .get() and fell back to the exact
+    # same fabricated sinusoidal formulas — undisclosed, since is_synthetic
+    # stayed False. Branch on which shape is actually present instead.
+    if not is_synthetic and "irradiance" in profile:
+        irradiance = np.asarray(profile["irradiance"], dtype=float)
+        hours = np.arange(len(irradiance))
+        pv_gen = 100.0 * irradiance / max(float(np.max(irradiance)), 1e-9)
+        relay_response = np.asarray(profile.get("of", []), dtype=float)
+        response_label = "Objective Function (learned TMS/PS that hour)"
+        response_ylim = None
+    else:
+        hours = profile.get("hours", np.arange(24))
+        pv_gen = profile.get("pv_generation", np.maximum(0, np.sin(np.pi * hours / 12) * 100))
+        relay_response = profile.get("relay_response", 0.2 + 0.1 * (1 - pv_gen / 100))
+        response_label = "Relay Response Time (s)"
+        response_ylim = (0.1, 0.4)
+
     fig, ax1 = plt.subplots(figsize=(12, 6))
     color1 = "#f7c948"
     ax1.fill_between(hours, pv_gen, alpha=0.3, color=color1)
@@ -2222,14 +2310,15 @@ def fig_45_daily_profile():
     ax1.tick_params(axis='y', labelcolor=color1)
     ax1.set_xlim(0, 23)
     ax1.set_xticks(range(0, 24, 2))
-    
+
     ax2 = ax1.twinx()
     color2 = "#2563eb"
-    ax2.plot(hours, relay_response, color=color2, lw=2, label="Relay Response Time (s)")
-    ax2.set_ylabel("Relay Response Time (s)", color=color2, fontsize=12)
+    ax2.plot(hours, relay_response, color=color2, lw=2, label=response_label)
+    ax2.set_ylabel(response_label, color=color2, fontsize=12)
     ax2.tick_params(axis='y', labelcolor=color2)
-    ax2.set_ylim(0.1, 0.4)
-    
+    if response_ylim is not None:
+        ax2.set_ylim(*response_ylim)
+
     fig.suptitle("Figure 45 — Daily PV Generation Profile & Adaptive Relay Response", fontsize=13)
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
@@ -2258,22 +2347,51 @@ def fig_46_relay_curves():
         data = {"relay_curves": {"current_multiples": current_multiples, "operating_time": op_time, "TDS": tds, "PSM": psm}}
     
     curves = data.get("relay_curves", {})
-    current_multiples = curves.get("current_multiples", np.linspace(1, 20, 100))
-    op_time = curves.get("operating_time", 0.5 * 0.14 / ((current_multiples / 2.0) ** 0.02 - 1))
-    tds = curves.get("TDS", 0.5)
-    psm = curves.get("PSM", 2.0)
-    
+    # _eval_relay_curves's real output (see core_eval_bridge._extract_fig_data,
+    # fig 46) is keyed "relay_0".."relay_{n-1}", each holding "If_range_A"
+    # (Amps, not current multiples) / "t_op_s" / "TDS" / "PSM" — none of
+    # curves.get("current_multiples"/"operating_time"/"TDS"/"PSM") exist on
+    # a real cache hit, so every .get() silently missed and fell back to
+    # the identical fabricated IDMT formula even when real per-relay curves
+    # were available. Plot relay 0's real curve (converting Amps to current
+    # multiples via I/PSM) when present.
+    real_relay_keys = sorted(k for k in curves.keys() if str(k).startswith("relay_"))
+    if not is_synthetic and real_relay_keys:
+        relay0 = curves[real_relay_keys[0]]
+        tds = relay0["TDS"]
+        psm = relay0["PSM"]
+        if_range_a = np.asarray(relay0["If_range_A"], dtype=float)
+        current_multiples = if_range_a / psm
+        # t_op_s is +inf for If <= PS (relay does not trip) — replace with
+        # NaN so matplotlib leaves a real gap instead of plotting garbage.
+        op_time = np.asarray(relay0["t_op_s"], dtype=float)
+        op_time[~np.isfinite(op_time)] = np.nan
+        relay_note = f" (relay 0 of {len(real_relay_keys)})"
+    else:
+        current_multiples = curves.get("current_multiples", np.linspace(1, 20, 100))
+        op_time = curves.get("operating_time", 0.5 * 0.14 / ((current_multiples / 2.0) ** 0.02 - 1))
+        tds = curves.get("TDS", 0.5)
+        psm = curves.get("PSM", 2.0)
+        relay_note = ""
+
     fig, ax = plt.subplots(figsize=(10, 7))
-    ax.plot(current_multiples, op_time, color="#2563eb", lw=2, label=f"Learned: TDS={tds:.2f}, PS={psm:.2f}")
-    
-    traditional = 0.3 * 0.14 / ((current_multiples / 1.5) ** 0.02 - 1)
+    ax.plot(current_multiples, op_time, color="#2563eb", lw=2,
+            label=f"Learned: TDS={tds:.2f}, PS={psm:.2f}{relay_note}")
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        traditional = 0.3 * 0.14 / ((current_multiples / 1.5) ** 0.02 - 1)
+    # Only defined (and only means "does not trip") for I/PS > 1.5 — below
+    # that the formula produces a negative/non-physical "operating time".
+    traditional = np.where(current_multiples > 1.5, traditional, np.nan)
     ax.plot(current_multiples, traditional, '--', color="#ff6b35", lw=2, label="Traditional: TDS=0.30, PS=1.50")
-    
+
     ax.set_xlabel("Current Multiple (I / I_pickup)", fontsize=12)
     ax.set_ylabel("Operating Time (s)", fontsize=12)
     ax.set_title("Figure 46 — Relay Operating Characteristic Curves with Learned Settings", fontsize=13)
-    ax.set_xlim(1, 20)
-    ax.set_ylim(0, 5)
+    if is_synthetic:
+        # Fixed range/scale the synthetic formula above was authored for.
+        ax.set_xlim(1, 20)
+        ax.set_ylim(0, 5)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     if is_synthetic:
@@ -2647,29 +2765,42 @@ def fig_55_comparison_table():
     methods = list(data.keys())
     fig, ax = plt.subplots(figsize=(14, 6))
     ax.axis('off')
-    
+
+    # core_C_baselines only stores each method's per-episode POST-TRAINING
+    # evaluation returns (see run_core_training._core_C_job) — no CTI-
+    # satisfaction tracking and no training curve (so no real "episode
+    # training converged at" value can be derived even from real data).
+    # The last two columns were always np.random.uniform/randint, drawn
+    # unconditionally (even on a real cache hit) and never disclosed since
+    # is_synthetic only reflects whether the CACHE itself was found.
+    # Seeded so the illustrative values are at least reproducible, and the
+    # table always footnotes them regardless of is_synthetic.
+    rng = np.random.default_rng(55)
     table_data = []
     for method in methods:
         vals = data[method]
         if hasattr(vals, '__len__') and len(vals) > 0:
             mean_val = np.mean(vals[-100:] if len(vals) > 100 else vals)
             std_val = np.std(vals[-100:] if len(vals) > 100 else vals)
-            table_data.append([method, f"{mean_val:.3f}", f"{std_val:.3f}", 
-                             f"{np.random.uniform(0.7, 0.95):.2f}", f"{np.random.randint(500, 5000)}"])
+            table_data.append([method, f"{mean_val:.3f}", f"{std_val:.3f}",
+                             f"{rng.uniform(0.7, 0.95):.2f}*", f"{rng.integers(500, 5000)}*"])
         else:
             table_data.append([method, "N/A", "N/A", "N/A", "N/A"])
-    
+
     columns = ["Method", "Final OF (s)", "Std Dev", "CTI Satisfied (%)", "Conv. Episodes"]
     table = ax.table(cellText=table_data, colLabels=columns, cellLoc='center', loc='center',
                      colWidths=[0.25, 0.15, 0.15, 0.2, 0.15])
     table.auto_set_font_size(False)
     table.set_fontsize(10)
     table.scale(1, 2)
-    
+
     for i in range(len(columns)):
         table[(0, i)].set_facecolor("#2563eb")
         table[(0, i)].set_text_props(weight='bold', color='white')
-    
+
+    ax.text(0.5, 0.02, "* illustrative — core_C_baselines tracks neither CTI "
+            "satisfaction nor a training convergence curve", transform=ax.transAxes,
+            ha="center", fontsize=8, style="italic", color="#555")
     ax.set_title("Figure 55 — Comprehensive Method Comparison Table (8-Bus, 100% PV)", fontsize=13, pad=20)
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
@@ -2691,12 +2822,22 @@ def fig_56_pareto_front():
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
-    np.random.seed(42)
+    # core_C_baselines stores only each method's per-episode returns — no
+    # per-relay "operating speed" vs "selectivity" trade-off is measured
+    # anywhere in Core C, so `data` (real or synthetic fallback) was never
+    # actually read below; this whole scatter + the 5 named method_points
+    # were fabricated unconditionally. Because is_synthetic only reflects
+    # whether the cache FILE was found (not whether its contents were
+    # used), a real cache hit still produced this identical fabricated
+    # plot with no disclosure. Seeded explicitly and always watermarked —
+    # there is no code path, real or synthetic, that measures this
+    # trade-off.
+    rng = np.random.default_rng(56)
     n_points = 100
-    speed = np.random.uniform(0.1, 0.9, n_points)
-    selectivity = 1 - speed + np.random.normal(0, 0.05, n_points)
+    speed = rng.uniform(0.1, 0.9, n_points)
+    selectivity = 1 - speed + rng.normal(0, 0.05, n_points)
     selectivity = np.clip(selectivity, 0, 1)
-    
+
     fig, ax = plt.subplots(figsize=(10, 8))
     scatter = ax.scatter(speed, selectivity, c=speed + selectivity, cmap="RdYlGn", s=100, alpha=0.6, edgecolors="white")
     
@@ -2716,9 +2857,11 @@ def fig_56_pareto_front():
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     plt.colorbar(scatter, ax=ax, label="Combined Score")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_C_baselines cache missing")
+    from evaluation.experiments._synthetic_label import mark_synthetic
+    note = ("core_C_baselines cache missing" if is_synthetic else
+            "core_C_baselines has no speed/selectivity trade-off data — "
+            "entire plot is illustrative")
+    mark_synthetic(fig, note=note)
     save_fig(fig, get_fig_path(56, "figs_51_58"))
 
 

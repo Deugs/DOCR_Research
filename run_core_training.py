@@ -2166,12 +2166,26 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         "fault_type": FAULT_TYPE,
         "real_eval": BRIDGE_AVAILABLE,
         "real_safety_ewc": True,
+        # Bumped: Fig 23 previously called bridge.run_evaluation(23) ONCE
+        # with fault_impedance_ohm=1.0, a config field _eval_unseen_faults
+        # doesn't actually consume (the real generalization axis is
+        # unseen_fault_type) — so it silently re-evaluated on the SAME
+        # fault_type used in training, then stored the result under a key
+        # ("unseen_faults") that run_post_processing.py's fig_23 expected
+        # to be a {fault_type_name: relative_performance} sweep. Now a
+        # genuine 3-point sweep over the other IEEE fault types, plus
+        # base_of added to Fig 25's payload so it can report a real
+        # relative-performance number instead of undisclosed
+        # warm_start/cold_start placeholders (fig_25 never actually had
+        # that shape from a real eval).
+        "real_unseen_sweep_v2": True,
     }
     cached = cache.get(config)
     if cached is not None:
         logger.info("[Core H] Using cached results")
         return cached
-        
+
+    from network.relay_physics import FAULT_TYPES
     run_name = "Core H"
     if progress:
         progress.start_run(run_name, total_steps=2,
@@ -2189,14 +2203,26 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             bridge = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE)
             
             # Fig 23: Unseen Fault Types
+            # Real sweep over the env's actual generalization axis (fault
+            # TYPE — see _eval_unseen_faults' docstring) rather than a
+            # single point: "3ph" is the training-time fault_type, so the
+            # genuinely unseen conditions are the other 3 IEEE fault types.
             logger.info("\n[Core H] Fig 23: Unseen Fault Types (REAL)")
-            fig23 = bridge.run_evaluation(23, impedance=1.0, evolving=False)
-            results["unseen_faults"] = fig23.raw_data
-            
-            # Fig 25: Zero-Shot Transfer 8->30 Bus
+            unseen_types = [ft for ft in FAULT_TYPES if ft != FAULT_TYPE]
+            unseen_faults = {}
+            for ft in unseen_types:
+                fig23 = bridge.run_evaluation(23, unseen_fault_type=ft)
+                base_of = bridge._get_base_result().best_of
+                unseen_faults[ft] = float(base_of / max(fig23.raw_data["unseen_of"], 1e-9))
+            results["unseen_faults"] = unseen_faults
+
+            # Fig 25: Zero-Shot Transfer 8->30 Bus (REAL)
             logger.info("[Core H] Fig 25: Zero-Shot Transfer 8->30 Bus (REAL)")
             fig25 = bridge.run_evaluation(25, eval_system="30bus")
-            results["zero_shot"] = fig25.raw_data
+            results["zero_shot"] = {
+                **fig25.raw_data,
+                "base_of": bridge._get_base_result().best_of,
+            }
             
             is_synthetic = False
         except Exception as e:

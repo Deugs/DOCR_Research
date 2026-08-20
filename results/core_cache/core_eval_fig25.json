@@ -1,13 +1,13 @@
 {
   "fig_num": 25,
   "data": {
-    "transfer_of": 570.1974421844678,
+    "transfer_of": 574.9074522631936,
     "cti_ok": true,
     "system": "30bus"
   },
   "metadata": {
     "method": "_eval_zero_shot_transfer",
-    "duration": 7.69423770904541,
+    "duration": 7.908157110214233,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -43,6 +43,7 @@
       "unseen_fault_type": null,
       "sensor_noise_std": 0.0,
       "missing_sensor_rate": 0.0,
+      "sensor_bias": 0.0,
       "train_system": "8bus",
       "eval_system": "30bus",
       "freeze_transfer_weights": true,
@@ -79,7 +80,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 109.24167185091324
+    "base_of": 77.84522844468644
   },
-  "timestamp": 1787223072.5087028
+  "timestamp": 1787246957.6526413
 }
