@@ -136,5 +136,20 @@
       "real_safety_ewc"
     ],
     "size_mb": 0.0001277923583984375
+  },
+  "6c47c1b99292a7e1": {
+    "name": "core_B_curriculum",
+    "created": "2026-08-20T12:48:42.000000",
+    "config_keys": [
+      "name",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed",
+      "fault_type",
+      "real_safety",
+      "real_pv_eval"
+    ],
+    "size_mb": 0.00157928466796875
   }
 }
