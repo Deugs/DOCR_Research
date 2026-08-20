@@ -1244,7 +1244,8 @@ def fig_20_byzantine():
                 ha="center", va="bottom", fontsize=11, fontweight="bold")
     ax.set_ylabel("Relative Performance", fontsize=12)
     ax.set_title("Figure 20 — Byzantine Agent Detection via Trust Score Evolution", fontsize=13)
-    ax.set_ylim(0, 1)
+    if is_synthetic:
+        ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3, axis="y")
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
@@ -1302,20 +1303,32 @@ def fig_22_bandwidth_tradeoff():
     bw = data.get("bandwidth", {})
     depths = sorted([int(k) for k in bw.keys()])
     perfs = [bw[d]["performance"] for d in depths]
-    bws = [bw[d]["bandwidth_mb"] for d in depths]
-    
+    # Real values are in kbps (the actual quantity _eval_bandwidth
+    # computes: message size x agent count x compression, converted to
+    # kilobits/sec) — a different unit than the synthetic fallback's
+    # invented "MB/episode" scale. Read whichever key is present and
+    # label the axis honestly rather than forcing both onto one
+    # (mis-scaled) unit.
+    if depths and "bandwidth_kbps" in bw[depths[0]]:
+        bws = [bw[d]["bandwidth_kbps"] for d in depths]
+        bw_label = "Bandwidth (kbps)"
+    else:
+        bws = [bw[d]["bandwidth_mb"] for d in depths]
+        bw_label = "Bandwidth (MB/episode)"
+
     fig, ax1 = plt.subplots(figsize=(10, 6))
     color1 = "#2563eb"
     ax1.set_xlabel("GNN Depth (Communication Hops)", fontsize=12)
     ax1.set_ylabel("Performance", color=color1, fontsize=12)
     ax1.plot(depths, perfs, 'o-', color=color1, lw=2, markersize=10, label="Performance")
     ax1.tick_params(axis='y', labelcolor=color1)
-    ax1.set_ylim(0.7, 0.9)
+    if is_synthetic:
+        ax1.set_ylim(0.7, 0.9)
     ax1.grid(True, alpha=0.3)
-    
+
     ax2 = ax1.twinx()
     color2 = "#ff6b35"
-    ax2.set_ylabel("Bandwidth (MB/episode)", color=color2, fontsize=12)
+    ax2.set_ylabel(bw_label, color=color2, fontsize=12)
     ax2.bar(depths, bws, alpha=0.3, color=color2, width=0.3, label="Bandwidth")
     ax2.tick_params(axis='y', labelcolor=color2)
     
@@ -2608,7 +2621,8 @@ def fig_54_adversarial():
     ax.set_ylabel("Relative Performance", fontsize=12)
     ax.set_title("Figure 54 — Adversarial Robustness: Perturbed Observation Response", fontsize=13)
     ax.legend(fontsize=11)
-    ax.set_ylim(0, 1)
+    if is_synthetic:
+        ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3)
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
