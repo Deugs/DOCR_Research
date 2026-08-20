@@ -307,11 +307,26 @@ def load_cache(name: str):
         if index_file.exists():
             with open(index_file) as f:
                 index = json.load(f)
-            for key, info in index.items():
-                if info.get("name") == name:
-                    cache_file = get_cache_dir() / f"{key}.pkl"
-                    break
-    
+            # A Core's cache config gets a new content-hash key every
+            # time it's re-run under a different config (a bumped
+            # version marker after a bug fix, a different --fast/n_runs
+            # setting, ...) — the OLD key/entry is never removed from
+            # the index. Picking the first name-match in dict iteration
+            # order (== insertion/chronological order) silently kept
+            # returning whichever run happened to be cached FIRST under
+            # that name forever, regardless of which one is actually the
+            # real, full run. Timestamp alone isn't a reliable tie-break
+            # either — a quick fast-mode/smoke-test run can easily be
+            # cached AFTER the real one (e.g. while verifying a fix).
+            # size_mb correlates with how much real data a run actually
+            # produced (n_runs, episode count, ...), so prefer the
+            # largest cached blob for a given name, using created as a
+            # secondary tie-break only between equally-sized entries.
+            matches = [(key, info) for key, info in index.items() if info.get("name") == name]
+            if matches:
+                key, _ = max(matches, key=lambda kv: (kv[1].get("size_mb", 0), kv[1].get("created", "")))
+                cache_file = get_cache_dir() / f"{key}.pkl"
+
     if cache_file.exists():
         import pickle
         with open(cache_file, "rb") as f:
