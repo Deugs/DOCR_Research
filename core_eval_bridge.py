@@ -511,8 +511,9 @@ class CoreEvalBridge:
         return TrainingConfig(
             method="MAPPO-Safe-EWC", system=self.system, pv_level=self.pv_level,
             fault_type=self.fault_type,
-            sensor_noise_std=kwargs.get("noise_std", 0.05),
-            missing_sensor_rate=kwargs.get("missing_rate", 0.1),
+            sensor_noise_std=kwargs.get("noise_std", 0.0),
+            missing_sensor_rate=kwargs.get("missing_rate", 0.0),
+            sensor_bias=kwargs.get("bias", 0.0),
         )
 
     def _build_config_fig25(self, **kwargs) -> TrainingConfig:

@@ -99,6 +99,7 @@ class TrainingConfig:
     # ── Fig 24: Sensor Robustness ──
     sensor_noise_std: float = 0.0              # Std dev of Gaussian noise on observations
     missing_sensor_rate: float = 0.0             # Probability of sensor dropout
+    sensor_bias: float = 0.0                     # Constant offset on observations (systematic bias)
 
     # ── Fig 25: Zero-Shot Transfer ──
     train_system: Optional[str] = None         # System trained on (None = same as system)
@@ -519,7 +520,7 @@ class TrainingPipeline:
             result = self._eval_unseen_faults(config, net, result)
 
         # Fig 24: Sensor Robustness
-        if config.sensor_noise_std > 0 or config.missing_sensor_rate > 0:
+        if config.sensor_noise_std > 0 or config.missing_sensor_rate > 0 or config.sensor_bias != 0:
             result = self._eval_sensor_robustness(config, net, result)
 
         # Fig 25: Zero-Shot Transfer
@@ -650,11 +651,14 @@ class TrainingPipeline:
         if config.use_curriculum:
             env.set_curriculum_stage(config.curriculum_stage)
 
-        # Apply sensor noise / missing sensors if configured (Fig 24 prep)
-        if config.sensor_noise_std > 0:
-            env.sensor_noise_std = config.sensor_noise_std
-        if config.missing_sensor_rate > 0:
-            env.missing_sensor_rate = config.missing_sensor_rate
+        # Sensor noise/missing-sensor robustness (Fig 24) is tested at
+        # EVAL time only (_eval_sensor_robustness corrupts observations
+        # explicitly there — see its docstring: does a policy trained
+        # under CLEAN conditions degrade gracefully when its inputs are
+        # corrupted, not whether training itself was noisy). This used
+        # to set env.sensor_noise_std/env.missing_sensor_rate here, but
+        # DynamicDOCREnv never defines or reads either attribute — a
+        # dead assignment left over from an earlier design, removed.
 
         # Safe RL wrapper
         if config.use_safe_rl or "Safe" in config.method:
@@ -1121,10 +1125,22 @@ class TrainingPipeline:
                 elif config.byzantine_strategy == "reverse":
                     honest_a, _ = act_fn(obs, i, rng)
                     actions[i] = -honest_a
-                elif config.byzantine_strategy == "colluding":
+                elif config.byzantine_strategy in ("colluding", "collusion"):
                     actions[i] = np.ones(env.ACT_DIM) * 0.9
+                elif config.byzantine_strategy == "fdi":
+                    # False Data Injection: a compromised agent reports a
+                    # small, deliberately-wrong but plausible-looking
+                    # action (a fixed, modest bias) rather than either
+                    # colluding agents' extreme saturated push (0.9) or
+                    # pure random noise — the point of FDI is to evade
+                    # detection by staying inside the normal operating
+                    # range while still being systematically wrong.
+                    actions[i] = np.full(env.ACT_DIM, 0.3)
                 else:
-                    actions[i] = rng.uniform(-1, 1, env.ACT_DIM)
+                    raise ValueError(
+                        f"Unknown byzantine_strategy {config.byzantine_strategy!r}; "
+                        f"expected one of 'random', 'reverse', 'colluding'/'collusion', 'fdi'."
+                    )
 
             obs, reward, done, info = env.step(actions)
 
@@ -1342,6 +1358,11 @@ class TrainingPipeline:
             o = o.copy()
             if config.sensor_noise_std > 0:
                 o = o + rng.normal(0, config.sensor_noise_std, o.shape)
+            if config.sensor_bias != 0:
+                # Systematic bias: unlike Gaussian noise, a constant
+                # offset every step (a miscalibrated CT/PT, not random
+                # measurement error).
+                o = o + config.sensor_bias
             if config.missing_sensor_rate > 0:
                 mask = rng.random(o.shape) < config.missing_sensor_rate
                 o[mask] = 0.0

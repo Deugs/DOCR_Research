@@ -1977,6 +1977,20 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # plain MAPPO+GNN despite being labeled MAPPO-Safe-EWC (dead
         # hasattr guards). Now genuinely Safe RL + EWC wrapped.
         "real_safety_ewc": True,
+        # Bumped: figs 13/20/22/24/54 each need a multi-point sweep
+        # (packet loss curve, 3 named Byzantine strategies, GNN-depth
+        # curve, 3 sensor-corruption curves, 2 attack-type epsilon
+        # curves) to plot anything meaningful, but this previously
+        # called bridge.run_evaluation() exactly ONCE per figure with a
+        # single fixed configuration — a scalar masquerading as a
+        # sweep. Also: CommGraph never actually implemented
+        # packet_loss_rate/latency_steps/quantization_bits (Fig 13's
+        # stress knobs were dead hasattr guards against attributes that
+        # never existed), and _eval_byzantine's "collusion"/"fdi"
+        # strategy names silently fell through to the same random-noise
+        # branch as "random" (only "colluding", misspelled relative to
+        # what this sweep passes, and "reverse" were ever recognized).
+        "real_sweep_v2": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1998,32 +2012,86 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     if BRIDGE_AVAILABLE:
         try:
             bridge = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE)
-            
-            # Fig 13: Communication Stress
+            # The trained base policy is cached on the bridge instance
+            # (_get_base_result trains once, on first access) — every
+            # run_evaluation() call below re-runs only a cheap eval
+            # rollout against it, so sweeping many points here is fast,
+            # not N independent retrains.
+            base_of = bridge._get_base_result().best_of
+
+            def _rel_perf(of_value):
+                # "Relative performance" = baseline objective / observed
+                # objective (lower OF is better in this codebase; 1.0 =
+                # matches unstressed baseline). Same convention as Fig
+                # 14's real-data path.
+                return float(base_of / max(of_value, 1e-9))
+
+            # Fig 13: Communication Stress — sweep packet loss (latency
+            # held at 0) and latency (packet loss held at 0) separately,
+            # matching the two panels fig_13_communication_stress plots.
             logger.info("\n[Core G] Fig 13: Communication Stress (REAL)")
-            fig13 = bridge.run_evaluation(13, stress_level=0.5, packet_loss=0.1, latency_ms=100)
-            results["communication"] = fig13.raw_data
-            
-            # Fig 20: Byzantine Resilience
+            packet_loss_sweep = {}
+            for pl in [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]:
+                r = bridge.run_evaluation(13, stress_level=pl, packet_loss=pl, latency_ms=0)
+                packet_loss_sweep[pl] = _rel_perf(r.raw_data["packet_loss"])
+            latency_sweep = {}
+            for lat in [0, 100, 200, 300, 400, 500]:
+                r = bridge.run_evaluation(13, stress_level=lat / 500.0, packet_loss=0.0, latency_ms=lat)
+                latency_sweep[lat] = _rel_perf(r.raw_data["packet_loss"])
+            results["communication"] = {"packet_loss": packet_loss_sweep, "latency": latency_sweep}
+
+            # Fig 20: Byzantine Resilience — one real evaluation per
+            # named attack strategy.
             logger.info("[Core G] Fig 20: Byzantine Resilience (REAL)")
-            fig20 = bridge.run_evaluation(20, byzantine_agents=[1], strategy="random")
-            results["byzantine"] = fig20.raw_data
-            
-            # Fig 22: Bandwidth Tradeoff
+            byzantine_sweep = {}
+            for strategy in ["random", "collusion", "fdi"]:
+                r = bridge.run_evaluation(20, byzantine_agents=[1], strategy=strategy)
+                byzantine_sweep[strategy] = _rel_perf(r.raw_data["byzantine_of"])
+            results["byzantine"] = byzantine_sweep
+
+            # Fig 22: Bandwidth Tradeoff — sweep GNN depth; bandwidth_kbps
+            # is the real quantity _eval_bandwidth computes (message size
+            # x agent count x compression), not the fabricated fallback's
+            # invented "MB/episode" scale — fig_22 is updated to plot and
+            # label it honestly as kbps.
             logger.info("[Core G] Fig 22: Bandwidth Tradeoff (REAL)")
-            fig22 = bridge.run_evaluation(22, gnn_depth=2, compression=1.0, message_dim=8)
-            results["bandwidth"] = fig22.raw_data
-            
-            # Fig 24: Sensor Robustness
+            bandwidth_sweep = {}
+            for depth in [1, 2, 3, 4]:
+                compression = min(1.0, depth / 4.0)
+                r = bridge.run_evaluation(22, gnn_depth=depth, compression=compression, message_dim=8)
+                bandwidth_sweep[depth] = {
+                    "performance": _rel_perf(r.raw_data["of"]),
+                    "bandwidth_kbps": float(r.raw_data["bandwidth"]),
+                }
+            results["bandwidth"] = bandwidth_sweep
+
+            # Fig 24: Sensor Robustness — three independent sweeps
+            # (noise, systematic bias, missing-measurement rate), each
+            # holding the other two corruption knobs at zero.
             logger.info("[Core G] Fig 24: Sensor Robustness (REAL)")
-            fig24 = bridge.run_evaluation(24, noise_std=0.05, missing_rate=0.1)
-            results["sensor"] = fig24.raw_data
-            
-            # Fig 54: Adversarial Robustness
+            noise_sweep, bias_sweep, missing_sweep = {}, {}, {}
+            for sigma in [0.0, 0.05, 0.1, 0.15, 0.2]:
+                r = bridge.run_evaluation(24, noise_std=sigma, missing_rate=0.0, bias=0.0)
+                noise_sweep[sigma] = _rel_perf(r.raw_data["noisy_of"])
+            for bias_level in [0.0, 0.05, 0.1]:
+                r = bridge.run_evaluation(24, noise_std=0.0, missing_rate=0.0, bias=bias_level)
+                bias_sweep[bias_level] = _rel_perf(r.raw_data["noisy_of"])
+            for missing_rate in [0.0, 0.1, 0.2]:
+                r = bridge.run_evaluation(24, noise_std=0.0, missing_rate=missing_rate, bias=0.0)
+                missing_sweep[missing_rate] = _rel_perf(r.raw_data["noisy_of"])
+            results["sensor"] = {"noise": noise_sweep, "bias": bias_sweep, "missing": missing_sweep}
+
+            # Fig 54: Adversarial Robustness — FGSM/PGD epsilon sweeps.
             logger.info("[Core G] Fig 54: Adversarial Robustness (REAL)")
-            fig54 = bridge.run_evaluation(54, attack="FGSM", epsilon=0.01)
-            results["adversarial"] = fig54.raw_data
-            
+            fgsm_sweep, pgd_sweep = {}, {}
+            for eps in [0.01, 0.05, 0.1, 0.2]:
+                r = bridge.run_evaluation(54, attack="FGSM", epsilon=eps)
+                fgsm_sweep[eps] = _rel_perf(r.raw_data["of"])
+            for eps in [0.01, 0.05, 0.1, 0.2]:
+                r = bridge.run_evaluation(54, attack="PGD", epsilon=eps)
+                pgd_sweep[eps] = _rel_perf(r.raw_data["of"])
+            results["adversarial"] = {"fgsm": fgsm_sweep, "pgd": pgd_sweep}
+
             is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")

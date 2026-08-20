@@ -70,19 +70,6 @@
     ],
     "size_mb": 0.00023174285888671875
   },
-  "6b5f668042b8bec4": {
-    "name": "core_G_robustness",
-    "created": "2026-08-20T10:49:45.697412",
-    "config_keys": [
-      "name",
-      "stress_types",
-      "seed",
-      "fault_type",
-      "real_eval",
-      "real_safety_ewc"
-    ],
-    "size_mb": 0.0005865097045898438
-  },
   "5655903f0e529509": {
     "name": "core_H_transfer",
     "created": "2026-08-20T10:51:12.509488",
@@ -151,5 +138,19 @@
       "real_pv_eval"
     ],
     "size_mb": 0.00157928466796875
+  },
+  "b78f3ecb56a2557f": {
+    "name": "core_G_robustness",
+    "created": "2026-08-20T17:11:32.642349",
+    "config_keys": [
+      "name",
+      "stress_types",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_sweep_v2"
+    ],
+    "size_mb": 0.0008592605590820312
   }
 }

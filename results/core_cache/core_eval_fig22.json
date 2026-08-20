@@ -2,12 +2,12 @@
   "fig_num": 22,
   "data": {
     "bandwidth": 3.584,
-    "of": 144.91488388142704,
+    "of": 145.1127534287996,
     "params": 1978
   },
   "metadata": {
     "method": "_eval_bandwidth",
-    "duration": 1.3102309703826904,
+    "duration": 1.3457965850830078,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -34,7 +34,7 @@
       "n1_recovery_eval": false,
       "byzantine_agents": [],
       "byzantine_strategy": "random",
-      "gnn_depth": 2,
+      "gnn_depth": 4,
       "compression_ratio": 1.0,
       "message_dim": 8,
       "fault_impedance_ohm": 0.0,
@@ -43,6 +43,7 @@
       "unseen_fault_type": null,
       "sensor_noise_std": 0.0,
       "missing_sensor_rate": 0.0,
+      "sensor_bias": 0.0,
       "train_system": null,
       "eval_system": null,
       "freeze_transfer_weights": false,
@@ -79,7 +80,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 109.24167185091324
+    "base_of": 77.84522844468644
   },
-  "timestamp": 1787222984.2489035
+  "timestamp": 1787245875.90104
 }

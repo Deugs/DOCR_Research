@@ -1,13 +1,13 @@
 {
   "fig_num": 13,
   "data": {
-    "packet_loss": 144.39834650797783,
-    "latency": 100,
+    "packet_loss": 145.24883876044333,
+    "latency": 500,
     "cti_ok": true
   },
   "metadata": {
     "method": "_eval_comm_stress",
-    "duration": 1.3226039409637451,
+    "duration": 1.3683645725250244,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -26,9 +26,9 @@
       "use_safe_rl": true,
       "use_ewc": true,
       "use_comm": true,
-      "comm_stress_level": 0.5,
-      "packet_loss_rate": 0.1,
-      "latency_ms": 100,
+      "comm_stress_level": 1.0,
+      "packet_loss_rate": 0.0,
+      "latency_ms": 500,
       "quantization_bits": 32,
       "n1_line_outage": null,
       "n1_recovery_eval": false,
@@ -43,6 +43,7 @@
       "unseen_fault_type": null,
       "sensor_noise_std": 0.0,
       "missing_sensor_rate": 0.0,
+      "sensor_bias": 0.0,
       "train_system": null,
       "eval_system": null,
       "freeze_transfer_weights": false,
@@ -79,7 +80,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 109.24167185091324
+    "base_of": 77.84522844468644
   },
-  "timestamp": 1787222981.626743
+  "timestamp": 1787245866.5160413
 }
