@@ -1,12 +1,12 @@
 {
   "fig_num": 58,
   "data": {
-    "of": 1044.1145681820865,
-    "cti_ok": false
+    "of": 134.69622184533878,
+    "cti_ok": true
   },
   "metadata": {
     "method": "_eval_seasonal",
-    "duration": 1.5117881298065186,
+    "duration": 1.3379840850830078,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -78,7 +78,7 @@
       "season": "winter",
       "seasonal_temperature": 35.0
     },
-    "base_of": 272.65072016622344
+    "base_of": 109.24167185091324
   },
-  "timestamp": 1786782889.5134914
+  "timestamp": 1787223321.7528527
 }

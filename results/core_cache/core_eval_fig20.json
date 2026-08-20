@@ -1,0 +1,102 @@
+{
+  "fig_num": 20,
+  "data": {
+    "byzantine_of": 139.61107193355915,
+    "detected": false,
+    "trust": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "metadata": {
+    "method": "_eval_byzantine",
+    "duration": 1.3101279735565186,
+    "config": {
+      "method": "MAPPO-Safe-EWC",
+      "system": "8bus",
+      "pv_level": 0.6,
+      "fault_type": "3ph",
+      "topology_changes": null,
+      "n_runs": 10,
+      "seed_offset": 0,
+      "ga_pop": 100,
+      "ga_gen": 200,
+      "meta_pop": 30,
+      "meta_iter": 500,
+      "marl_steps": 30000,
+      "use_curriculum": false,
+      "curriculum_stage": 0,
+      "use_safe_rl": false,
+      "use_ewc": false,
+      "use_comm": true,
+      "comm_stress_level": 0.0,
+      "packet_loss_rate": 0.0,
+      "latency_ms": 0.0,
+      "quantization_bits": 32,
+      "n1_line_outage": null,
+      "n1_recovery_eval": false,
+      "byzantine_agents": [
+        1
+      ],
+      "byzantine_strategy": "random",
+      "gnn_depth": 2,
+      "compression_ratio": 1.0,
+      "message_dim": 8,
+      "fault_impedance_ohm": 0.0,
+      "evolving_fault": false,
+      "unseen_fault_eval": false,
+      "unseen_fault_type": null,
+      "sensor_noise_std": 0.0,
+      "missing_sensor_rate": 0.0,
+      "train_system": null,
+      "eval_system": null,
+      "freeze_transfer_weights": false,
+      "action_space_grid": false,
+      "grid_tds_range": [
+        0.5,
+        2.0
+      ],
+      "grid_psm_range": [
+        1.0,
+        5.0
+      ],
+      "grid_resolution": 20,
+      "run_shortcircuit_study": false,
+      "daily_profile": false,
+      "irradiance_profile": null,
+      "relay_curve_eval": false,
+      "fault_current_range": [
+        100.0,
+        10000.0
+      ],
+      "sympathetic_tripping_eval": false,
+      "shap_eval": false,
+      "shap_n_background": 100,
+      "tsne_eval": false,
+      "tsne_n_samples": 500,
+      "critical_pair_eval": false,
+      "quantize_bits": null,
+      "prune_ratio": 0.0,
+      "compression_eval": false,
+      "adversarial_attack": null,
+      "attack_epsilon": 0.01,
+      "adversarial_eval": false,
+      "season": null,
+      "seasonal_temperature": null
+    },
+    "base_of": 109.24167185091324
+  },
+  "timestamp": 1787222982.937772
+}

@@ -1,12 +1,12 @@
 {
   "fig_num": 47,
   "data": {
-    "sympathetic": 20,
+    "sympathetic": 0,
     "traditional": 0
   },
   "metadata": {
     "method": "_eval_sympathetic_tripping",
-    "duration": 3.599428176879883,
+    "duration": 2.88850474357605,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -78,7 +78,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 272.65072016622344
+    "base_of": 109.24167185091324
   },
-  "timestamp": 1786782807.0686371
+  "timestamp": 1787223237.2236078
 }

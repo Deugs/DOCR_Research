@@ -1,11 +1,11 @@
 {
   "fig_num": 44,
   "data": {
-    "error": "pandapower not installed"
+    "error": "short circuit apparent power s_sc_max_mva needs to be specified for external grid \n Try: net.ext_grid['s_sc_max_mva'] = 1000"
   },
   "metadata": {
     "method": "_eval_fault_contributions",
-    "duration": 8.0108642578125e-05,
+    "duration": 0.34543848037719727,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -77,7 +77,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 272.65072016622344
+    "base_of": 109.24167185091324
   },
-  "timestamp": 1786782797.4417126
+  "timestamp": 1787223228.821109
 }

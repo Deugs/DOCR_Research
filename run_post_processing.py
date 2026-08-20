@@ -315,16 +315,19 @@ def load_cache(name: str):
             # order (== insertion/chronological order) silently kept
             # returning whichever run happened to be cached FIRST under
             # that name forever, regardless of which one is actually the
-            # real, full run. Timestamp alone isn't a reliable tie-break
-            # either — a quick fast-mode/smoke-test run can easily be
-            # cached AFTER the real one (e.g. while verifying a fix).
-            # size_mb correlates with how much real data a run actually
-            # produced (n_runs, episode count, ...), so prefer the
-            # largest cached blob for a given name, using created as a
-            # secondary tie-break only between equally-sized entries.
+            # intended, current result. Prefer the most recently created
+            # entry — the standard "last write wins" cache semantic, and
+            # the correct one as long as the cache directory doesn't
+            # accumulate leftover smoke-test artifacts alongside real
+            # runs (clean those up rather than relying on some other
+            # heuristic, e.g. size, to guess around them — see git
+            # history around 2026-08-20 for a case where exactly that
+            # had happened and briefly caused this function to prefer a
+            # larger but pre-bugfix cached result over a smaller, fresh,
+            # correct one).
             matches = [(key, info) for key, info in index.items() if info.get("name") == name]
             if matches:
-                key, _ = max(matches, key=lambda kv: (kv[1].get("size_mb", 0), kv[1].get("created", "")))
+                key, _ = max(matches, key=lambda kv: kv[1].get("created", ""))
                 cache_file = get_cache_dir() / f"{key}.pkl"
 
     if cache_file.exists():
