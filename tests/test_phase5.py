@@ -280,6 +280,65 @@ class TestTrainingPipeline(unittest.TestCase):
         expected = 2 * 2 * 3 * 2 * 3  # systems * methods * pv * faults * runs
         self.assertEqual(len(configs), expected)
 
+    def _make_untrained_result(self, net, env):
+        """Build a minimal TrainingResult with a real (but untrained)
+        actor's params, sufficient for _get_actor_for_eval() to reconstruct
+        a callable policy without paying for a full training run."""
+        from marl.marl_agents import SharedGaussianActor
+        actor = SharedGaussianActor(env.OBS_DIM, env.ACT_DIM, hidden=64, seed=0)
+        base_config = TrainingConfig(method="MAPPO-Safe-EWC", system="3bus",
+                                      pv_level=0.0, fault_type="3ph")
+        return TrainingResult(
+            config=base_config, run_id=0, best_of=1.0,
+            best_tms=np.full(net.n_relays, 0.5),
+            best_ps=(net.ps_bounds()[0] + net.ps_bounds()[1]) / 2,
+            cti_satisfied=True, cti_violations=0, cti_min=0.35,
+            elapsed_seconds=0.0, history=[],
+            actor_params=actor.get_all_params(), obs_dim=env.OBS_DIM,
+            act_dim=env.ACT_DIM, actor_hidden=64, use_comm=False,
+        )
+
+    def test_eval_byzantine_strategy_dispatch(self):
+        """Round-5 regression: _eval_byzantine's "collusion" and "fdi"
+        strategy names previously fell through to the same random-noise
+        branch as "random" (only "colluding", a different spelling than
+        what Core G's sweep passes, and "reverse" were ever recognized) —
+        discovered because all three strategies produced bit-identical
+        byzantine_of in a real sweep. Verify each recognized strategy name
+        runs without error, and an unrecognized one now raises instead of
+        silently behaving like "random"."""
+        from network.network_data import get_3bus
+        from marl.marl_env import DynamicDOCREnv
+
+        net = get_3bus()
+        env = DynamicDOCREnv(net, action_scale=0.05, max_steps=300, seed=0, fault_type="3ph")
+        result = self._make_untrained_result(net, env)
+        pipeline = TrainingPipeline(configs=[], n_workers=1)
+
+        ofs = {}
+        for strategy in ["random", "reverse", "colluding", "collusion", "fdi"]:
+            cfg = TrainingConfig(method="MAPPO-Safe-EWC", system="3bus", pv_level=0.0,
+                                  fault_type="3ph", byzantine_agents=[0],
+                                  byzantine_strategy=strategy, seed_offset=0)
+            r = pipeline._eval_byzantine(cfg, net, result)
+            self.assertIsNotNone(r.byzantine_of)
+            ofs[strategy] = r.byzantine_of
+
+        # "colluding" and its "collusion" synonym must be identical (same
+        # code path), and both must differ from "random" — i.e. they are
+        # genuinely dispatched to distinct strategies, not all collapsed
+        # onto the random-noise branch as before the fix.
+        self.assertEqual(ofs["colluding"], ofs["collusion"])
+        self.assertNotEqual(ofs["random"], ofs["colluding"])
+
+        # An unrecognized strategy name must raise, not silently fall
+        # through to random-noise behavior.
+        cfg_bad = TrainingConfig(method="MAPPO-Safe-EWC", system="3bus", pv_level=0.0,
+                                  fault_type="3ph", byzantine_agents=[0],
+                                  byzantine_strategy="not_a_real_strategy", seed_offset=0)
+        with self.assertRaises(ValueError):
+            pipeline._eval_byzantine(cfg_bad, net, result)
+
 
 class TestConfigManager(unittest.TestCase):
     """Test configuration management."""
