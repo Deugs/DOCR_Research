@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 from network.network_data import load_network, get_network_metadata, NETWORKS
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
 from network.relay_physics import check_constraints
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
@@ -69,17 +70,24 @@ def run_curriculum_training(
 ) -> Dict:
     """Run full curriculum training with comprehensive logging."""
     net = load_network(network_name)
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
-                          fault_type="3ph", curriculum_stage=0)
-    
+    raw_env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
+                              fault_type="3ph", curriculum_stage=0)
+    # This run is "MAPPO-Safe-EWC" (see title everywhere below) — wrap with
+    # the real Safe RL layer BEFORE building the trainer.
+    # `trainer.use_safety = True` was a dead attribute set (MAPPOMARLTrainer
+    # never defines `use_safety`), so this run was silently unconstrained.
+    env = create_safe_rl_env(raw_env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
+
     # ── FIX: use_comm=False to avoid obs_dim mismatch, or keep True and use _get_current_obs ──
     # Option A (recommended for now): disable communication to match the manual loop
     trainer = MAPPOMARLTrainer(env, use_comm=False, hidden_actor=64,
                                hidden_critic=64, seed=seed)
-    
-    # Enable EWC and safety
-    if hasattr(trainer, 'use_safety'):
-        trainer.use_safety = True
+
+    # Enable EWC
     if hasattr(trainer, 'use_ewc'):
         trainer.use_ewc = True
     

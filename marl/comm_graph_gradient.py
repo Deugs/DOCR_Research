@@ -464,15 +464,13 @@ def build_relay_adjacency(net) -> np.ndarray:
 
     np.fill_diagonal(adj, 1.0)
 
+    # Use net.get_relay_bus() (falls back to checking both primary AND
+    # backup roles in pairs) rather than a primary-only pair scan, which
+    # silently missed any relay that only ever appears as a backup.
     for i in range(n):
+        bus_i = net.get_relay_bus(i)
         for j in range(i+1, n):
-            bus_i = None
-            bus_j = None
-            for pair in net.pairs:
-                if pair.primary == i:
-                    bus_i = pair.bus_pri
-                if pair.primary == j:
-                    bus_j = pair.bus_pri
+            bus_j = net.get_relay_bus(j)
             if bus_i is not None and bus_j is not None and bus_i == bus_j:
                 adj[i, j] = 1.0
                 adj[j, i] = 1.0

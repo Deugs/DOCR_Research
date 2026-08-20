@@ -37,6 +37,7 @@ import threadpoolctl
 from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
 from network.relay_physics import check_constraints
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
@@ -135,16 +136,25 @@ def run_metaheuristic(method: str, net, n_agents: int, seed: int) -> Tuple[np.nd
 def evaluate_method(method: str, system: str, seed: int, n_eval_episodes: int = 50) -> Dict:
     """Evaluate one method on one system."""
     net = get_network(system)
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
-                          fault_type="3ph", curriculum_stage=5)
+    raw_env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
+                              fault_type="3ph", curriculum_stage=5)
+    env = raw_env
 
     t0 = time.perf_counter()
 
     if method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO"]:
         use_comm = True
+        # Safe RL is a real env wrapper and must be applied BEFORE the
+        # trainer is constructed — `trainer.use_safety = ...` was a dead
+        # attribute set (MAPPOMARLTrainer never defines `use_safety`), so
+        # "MAPPO-Safe(-EWC)" and plain "MAPPO" ran identically unconstrained.
+        if method in ["MAPPO-Safe-EWC", "MAPPO-Safe"]:
+            env = create_safe_rl_env(raw_env, SafeRLConfig(
+                project_actions=True, enforce_cti=True,
+                lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+                use_pid=True, adaptive_rho=True,
+            ))
         trainer = MAPPOMARLTrainer(env, use_comm=use_comm, seed=seed)
-        if hasattr(trainer, 'use_safety'):
-            trainer.use_safety = method in ["MAPPO-Safe-EWC", "MAPPO-Safe"]
         if hasattr(trainer, 'use_ewc'):
             trainer.use_ewc = (method == "MAPPO-Safe-EWC")
 

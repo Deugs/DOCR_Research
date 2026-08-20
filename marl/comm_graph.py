@@ -276,6 +276,28 @@ class CommGraph:
         self.total_bytes_sent = 0
         self.bandwidth_estimate_bps = 0.0
 
+        # Real network-stress knobs for evaluation (Fig 13: communication
+        # stress). Previously experiments/training_pipeline.py's
+        # _eval_comm_stress set these exact attribute names via
+        # hasattr(comm_graph, ...) guards, but CommGraph never defined
+        # them — every guard was permanently False, so every Fig-13
+        # configuration (any packet-loss rate, any latency, any
+        # quantization) drove the identical unperturbed rollout. These
+        # now genuinely degrade the message-passing forward pass:
+        #   - packet_loss_rate: whole per-agent messages dropped (zeroed)
+        #     with this probability each step — distinct from
+        #     config.dropout, which zeros individual message components
+        #     for training regularization, not simulating lost packets.
+        #   - latency_steps: aggregation uses the message each agent sent
+        #     this many steps ago (a real delay buffer), not this step's.
+        #   - quantization_bits: messages are quantized to this many bits
+        #     before transmission (same technique as
+        #     deployment/inference_engine.py's fake_quantize).
+        self.packet_loss_rate: float = 0.0
+        self.latency_steps: int = 0
+        self.quantization_bits: int = 32
+        self._message_history: List[np.ndarray] = []
+
     def forward(self, observations: np.ndarray, rng: Optional[np.random.Generator] = None
                ) -> Tuple[np.ndarray, np.ndarray, Dict]:
         """
@@ -298,16 +320,52 @@ class CommGraph:
             mask = rng.random(messages.shape) > self.config.dropout
             messages = messages * mask
 
-        # 3. Compute attention weights
+        # 2b. Quantize messages before "transmission" (Fig 13 stress knob).
+        if self.quantization_bits < 32:
+            qmax = 2 ** (self.quantization_bits - 1) - 1
+            max_abs = np.max(np.abs(messages)) if messages.size else 0.0
+            if max_abs > 1e-9:
+                scale = max_abs / qmax
+                messages = np.clip(np.round(messages / scale), -qmax - 1, qmax) * scale
+
+        # 2c. Simulate lost packets: whole per-agent messages zeroed with
+        # probability packet_loss_rate (a message either arrives intact
+        # or not at all — unlike per-component training dropout above).
+        if self.packet_loss_rate > 0 and rng is not None:
+            lost = rng.random(self.n_agents) < self.packet_loss_rate
+            messages = messages.copy()
+            messages[lost] = 0.0
+
+        # 2d. Simulate latency: aggregation sees each agent's message
+        # from `latency_steps` steps ago, not this step's, via a small
+        # history buffer of recent (post-loss/quantization) messages.
+        # Uses zeros ("nothing received yet") until the buffer has
+        # enough history — the realistic startup transient for a
+        # newly-established link, not a synthetic shortcut.
+        if self.latency_steps > 0:
+            self._message_history.append(messages)
+            delay_idx = len(self._message_history) - 1 - self.latency_steps
+            messages_for_agg = self._message_history[delay_idx] if delay_idx >= 0 else np.zeros_like(messages)
+            # Cap history length — only the last latency_steps+1 entries
+            # can ever be addressed by delay_idx above.
+            max_len = self.latency_steps + 1
+            if len(self._message_history) > max_len:
+                self._message_history = self._message_history[-max_len:]
+        else:
+            messages_for_agg = messages
+
+        # 3. Compute attention weights (over what neighbors actually
+        # receive — the delayed/lost/quantized message, not the pristine
+        # one "messages" reports as sent).
         if self.attention is not None:
-            attention = self.attention.compute_attention(messages, self.adjacency)
+            attention = self.attention.compute_attention(messages_for_agg, self.adjacency)
         else:
             # Uniform attention over neighbors
             row_sums = self.adjacency.sum(axis=1, keepdims=True)
             attention = self.adjacency / np.maximum(row_sums, 1e-8)
 
         # 4. Aggregate messages
-        aggregated = attention @ messages  # (n_agents, msg_dim)
+        aggregated = attention @ messages_for_agg  # (n_agents, msg_dim)
 
         # 5. Decode enhanced observations
         enhanced_obs = self.decoder.decode(observations, aggregated)
@@ -406,16 +464,16 @@ def build_relay_adjacency(net) -> np.ndarray:
     # Add self-loops
     np.fill_diagonal(adj, 1.0)
 
-    # Also connect relays at the same bus (same protection zone)
+    # Also connect relays at the same bus (same protection zone).
+    # Use net.get_relay_bus(), which resolves the authoritative relay_bus
+    # array (falling back to checking both primary AND backup roles in
+    # pairs) — a primary-only pair scan silently missed any relay that
+    # only ever appears as a backup, leaving it disconnected from its
+    # actual same-bus neighbors.
     for i in range(n):
+        bus_i = net.get_relay_bus(i)
         for j in range(i+1, n):
-            bus_i = None
-            bus_j = None
-            for pair in net.pairs:
-                if pair.primary == i:
-                    bus_i = pair.bus_pri
-                if pair.primary == j:
-                    bus_j = pair.bus_pri
+            bus_j = net.get_relay_bus(j)
             if bus_i is not None and bus_j is not None and bus_i == bus_j:
                 adj[i, j] = 1.0
                 adj[j, i] = 1.0

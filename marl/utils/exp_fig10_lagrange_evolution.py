@@ -33,6 +33,7 @@ import matplotlib.pyplot as plt
 from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
 from network.relay_physics import check_constraints
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
@@ -61,13 +62,11 @@ def run_with_lagrange_logging(env, trainer, n_episodes: int = 2000, seed: int = 
                 actions[i] = a
             obs, _, done, info = env.step(actions)
         
-        # Extract Lagrange multipliers
-        lambdas = np.zeros(n_pairs)
-        if hasattr(trainer, 'lagrange_multipliers'):
-            lambdas = trainer.lagrange_multipliers.copy()
-        elif hasattr(trainer, 'safety_layer') and hasattr(trainer.safety_layer, 'lambdas'):
-            lambdas = trainer.safety_layer.lambdas.copy()
-        
+        # Extract Lagrange multipliers from the real Safe RL wrapper — these
+        # evolve via genuine dual-ascent updates (SafeRLWrapper.step()
+        # auto-triggers update_lagrangian() on episode end).
+        lambdas = env.lagrangian.lambdas.copy()
+
         # Check violations per pair
         TMS, PS = env.get_state()
         c = check_constraints(env.net, TMS, PS)
@@ -95,12 +94,18 @@ def main(n_episodes: int = 2000, seed: int = 42, output_dir: str = "outputs"):
     logger.info("  Episodes: %d", n_episodes)
     
     net = get_8bus()
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
-                          fault_type="3ph", curriculum_stage=5)
+    raw_env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
+                              fault_type="3ph", curriculum_stage=5)
+    # Wrap with the real Safe RL layer BEFORE building the trainer — this is
+    # "MAPPO-Safe" (Figure 10 title), so its Lagrange multipliers must come
+    # from genuine dual-ascent updates, not a dead hasattr check.
+    env = create_safe_rl_env(raw_env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
     trainer = MAPPOMARLTrainer(env, use_comm=False, seed=seed)
-    if hasattr(trainer, 'use_safety'):
-        trainer.use_safety = True
-    
+
     log = run_with_lagrange_logging(env, trainer, n_episodes, seed)
     
     lambda_mat = np.array(log["lambda_matrix"])  # (n_episodes, n_pairs)

@@ -37,68 +37,71 @@ import matplotlib.pyplot as plt
 from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
 from network.relay_physics import check_constraints
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
 
 
-def run_with_projection_logging(env, trainer, n_episodes: int = 2000, seed: int = 42):
-    """Run training and log projection statistics."""
+def run_with_projection_logging(env, trainer, n_episodes: int = 2000, seed: int = 42,
+                                 is_safe: bool = False):
+    """Run training and log projection statistics.
+
+    `env` must already be the fully-formed environment for this condition —
+    a `SafeRLWrapper` (from `create_safe_rl_env`) when `is_safe=True`, or the
+    raw `DynamicDOCREnv` (no projection at all) when `is_safe=False`. The
+    wrapper performs real action projection inside its own `step()`, so we
+    just hand it the raw policy actions and read the real projection stats
+    back out of `info["safe_rl"]` — there is no per-agent `safety_layer` on
+    the trainer to reach into.
+    """
     rng = np.random.default_rng(seed)
     log = {
         "episode": [], "projection_freq": [], "projection_magnitude": [],
         "cti_before": [], "cti_after": [], "reward": [],
     }
-    
+
     for ep in range(n_episodes):
         obs = env.reset(seed=seed + ep)
         done = False
         ep_projections = 0
+        ep_steps = 0
         ep_proj_magnitude = []
-        ep_cti_before = 0
-        ep_cti_after = 0
         ep_reward = 0
-        
+
         while not done:
             actions_raw = np.zeros((env.n_agents, env.ACT_DIM))
-            actions_safe = np.zeros((env.n_agents, env.ACT_DIM))
-            
             for i in range(env.n_agents):
                 a_raw, _ = trainer.actor.sample(obs[i], rng)
                 actions_raw[i] = a_raw
-                
-                # Apply safety projection if available
-                if hasattr(trainer, 'safety_layer') and trainer.safety_layer is not None:
-                    a_safe = trainer.safety_layer.project(a_raw, obs[i])
-                    delta = np.linalg.norm(a_safe - a_raw)
-                    if delta > 1e-6:
-                        ep_projections += 1
-                        ep_proj_magnitude.append(delta)
-                    actions_safe[i] = a_safe
-                else:
-                    actions_safe[i] = a_raw
-            
-            # Evaluate CTI with raw actions
-            env_copy = None  # Would need env copy for before/after comparison
-            # Simplified: use current state for CTI check
-            obs, reward, done, info = env.step(actions_safe)
+
+            # `env.step` applies real action projection internally when this
+            # is the Safe RL wrapper; the raw env applies none.
+            obs, reward, done, info = env.step(actions_raw)
             ep_reward += reward
-        
+            ep_steps += 1
+
+            if is_safe:
+                safe_info = info["safe_rl"]
+                if safe_info.get("projected_actions"):
+                    ep_projections += 1
+                ep_proj_magnitude.append(safe_info.get("projection_magnitude", 0.0))
+
         # Get final CTI
         TMS, PS = env.get_state()
         c = check_constraints(env.net, TMS, PS)
-        
+
         log["episode"].append(ep)
-        log["projection_freq"].append(ep_projections / max(env.n_agents, 1) * 100)
+        log["projection_freq"].append(ep_projections / max(ep_steps, 1) * 100)
         log["projection_magnitude"].append(np.mean(ep_proj_magnitude) if ep_proj_magnitude else 0)
         log["cti_after"].append(c["cti_violations"])
         log["reward"].append(ep_reward)
-        
+
         if ep % 200 == 0:
             logger.info("Ep %d: proj_freq=%.1f%% avg_mag=%.4f cti=%.1f",
                        ep, log["projection_freq"][-1], log["projection_magnitude"][-1], c["cti_violations"])
-    
+
     return log
 
 
@@ -110,24 +113,26 @@ def main(n_episodes: int = 2000, seed: int = 42, output_dir: str = "outputs"):
     logger.info("  Episodes: %d", n_episodes)
     
     net = get_8bus()
-    
-    # MAPPO-Safe with projection logging
+
+    # MAPPO-Safe: wrap the env with the real Safe RL layer BEFORE building
+    # the trainer, so action projection genuinely happens.
     logger.info("[1/2] Training MAPPO-Safe...")
-    env_safe = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
-                               fault_type="3ph", curriculum_stage=5)
+    raw_env_safe = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
+                                   fault_type="3ph", curriculum_stage=5)
+    env_safe = create_safe_rl_env(raw_env_safe, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
     trainer_safe = MAPPOMARLTrainer(env_safe, use_comm=False, seed=seed)
-    if hasattr(trainer_safe, 'use_safety'):
-        trainer_safe.use_safety = True
-    log_safe = run_with_projection_logging(env_safe, trainer_safe, n_episodes, seed)
-    
-    # Unconstrained MAPPO
+    log_safe = run_with_projection_logging(env_safe, trainer_safe, n_episodes, seed, is_safe=True)
+
+    # Unconstrained MAPPO: genuinely raw env, no projection, no Lagrangian.
     logger.info("[2/2] Training unconstrained MAPPO...")
     env_unsafe = DynamicDOCREnv(net, seed=seed+1000, use_pandapower=False,
                                  fault_type="3ph", curriculum_stage=5)
     trainer_unsafe = MAPPOMARLTrainer(env_unsafe, use_comm=False, seed=seed+1000)
-    if hasattr(trainer_unsafe, 'use_safety'):
-        trainer_unsafe.use_safety = False
-    log_unsafe = run_with_projection_logging(env_unsafe, trainer_unsafe, n_episodes, seed+1000)
+    log_unsafe = run_with_projection_logging(env_unsafe, trainer_unsafe, n_episodes, seed+1000, is_safe=False)
     
     # Save
     np.savez(
