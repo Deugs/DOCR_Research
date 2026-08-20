@@ -9,7 +9,10 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
-from network.network_data import get_3bus, get_8bus, get_30bus, get_39bus
+from network.network_data import (
+    get_3bus, get_8bus, get_30bus, get_39bus, get_14bus, get_57bus, get_118bus,
+    NetworkData, RelayPair, _ensure_feasible_ps_bounds,
+)
 from network.relay_physics import (
     idmt_time, compute_operating_times, objective_function, 
     check_constraints, CTI, TMS_MIN, TMS_MAX
@@ -31,6 +34,79 @@ def test_network_data():
         ps_min, ps_max = net.ps_bounds()
         assert np.all(ps_min < ps_max)
         print(f"  {net.name}: {net.n_relays} relays, {net.n_pairs} pairs, {len(net.dg_buses)} DG buses")
+
+
+def test_relay_bus_mapping():
+    """get_relay_bus() must return the authoritative relay_bus array
+    (captured from each line's from/to bus at construction time) for
+    get_14/39/57/118bus, covering every relay including ones absent
+    from every RelayPair -- these previously fell through to a
+    placeholder min(relay_idx, n_buses-1) mapping that silently
+    mis-located loads/sensor readings for 8.5-30% of relays depending
+    on the system (see get_relay_bus()'s docstring)."""
+    for get_net in [get_14bus, get_39bus, get_57bus, get_118bus]:
+        net = get_net()
+        assert net.relay_bus is not None, f"{net.name}: relay_bus array should be populated"
+        assert len(net.relay_bus) == net.n_relays
+
+        for relay_idx in range(net.n_relays):
+            bus = net.get_relay_bus(relay_idx)
+            assert 0 <= bus < net.n_buses, \
+                f"{net.name}: relay {relay_idx} mapped to out-of-range bus {bus}"
+            # get_relay_bus() must actually read the authoritative array,
+            # not silently fall through to a different code path.
+            assert bus == int(net.relay_bus[relay_idx])
+
+        print(f"  {net.name}: all {net.n_relays} relays have a valid relay_bus mapping")
+
+
+def test_relay_bus_mapping_fallback_paths():
+    """get_relay_bus()'s two fallback paths (no relay_bus array; relay
+    absent from every pair) on a minimal hand-built NetworkData, since
+    get_14/39/57/118bus always populate relay_bus and so never exercise
+    them on their own."""
+    pairs = [RelayPair(primary=0, backup=1, If_pri=1000.0, If_bkp=800.0,
+                        bus_pri=2, bus_bkp=5)]  # 1-indexed bus_pri/bus_bkp
+    net = NetworkData(
+        name="fallback_test", n_relays=3, pairs=pairs,
+        Iload_max=np.array([10.0, 10.0, 10.0]),
+        If_min=np.array([1000.0, 1000.0, 1000.0]),
+        n_buses=10, relay_bus=None,
+    )
+    # relay 0 is the primary of the only pair -> bus_pri - 1
+    assert net.get_relay_bus(0) == 2 - 1
+    # relay 1 is the backup -> bus_bkp - 1
+    assert net.get_relay_bus(1) == 5 - 1
+    # relay 2 appears in no pair at all -> old placeholder fallback
+    assert net.get_relay_bus(2) == min(2, net.n_buses - 1)
+    print("  get_relay_bus() fallback paths (no relay_bus array) behave as documented")
+
+
+def test_ensure_feasible_ps_bounds():
+    """PS bounds (ps_min <= ps_max) must hold for every relay on the
+    systems _ensure_feasible_ps_bounds was introduced to fix -- without
+    it, a per-line fault-current estimate below the required overload
+    margin makes ps_min > ps_max, which np.clip then silently resolves
+    by always returning ps_max regardless of input (see
+    _ensure_feasible_ps_bounds()'s docstring)."""
+    for get_net in [get_14bus, get_57bus, get_118bus]:
+        net = get_net()
+        ps_min, ps_max = net.ps_bounds()
+        assert np.all(ps_min <= ps_max), \
+            f"{net.name}: ps_min > ps_max for at least one relay despite the feasibility floor"
+        print(f"  {net.name}: ps_min <= ps_max holds for all {net.n_relays} relays")
+
+    # Directly exercise the floor: an If_min deliberately below the
+    # required margin for one relay must get raised, and none of the
+    # already-feasible relays should be touched.
+    iload_max = np.array([100.0, 100.0])
+    olf, margin = 1.25, 1.1
+    required = margin * 1.5 * olf * iload_max
+    if_min = np.array([required[0] * 0.5, required[1] * 2.0])  # relay 0 infeasible, relay 1 fine
+    fixed = _ensure_feasible_ps_bounds(if_min, iload_max, "unit_test_system", olf=olf, margin=margin)
+    assert fixed[0] >= required[0] - 1e-9
+    assert fixed[1] == if_min[1]  # untouched: was already feasible
+    print("  _ensure_feasible_ps_bounds() floors only the infeasible relay")
 
 
 def test_idmt_relay():
@@ -169,6 +245,9 @@ def run_all_tests():
     
     tests = [
         test_network_data,
+        test_relay_bus_mapping,
+        test_relay_bus_mapping_fallback_paths,
+        test_ensure_feasible_ps_bounds,
         test_idmt_relay,
         test_objective_function,
         test_pv_inverter,

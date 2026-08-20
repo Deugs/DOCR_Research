@@ -7,8 +7,8 @@ Tests:
 1. Novelty claim initialization
 2. Claim validation (C1: MAPPO-Comm performance)
 3. Claim validation (C2: Safe RL zero violations)
-4. Claim validation (C3: EWC forgetting)
-5. Claim validation (C4: Curriculum efficiency)
+4. Claim validation (C3: EWC forgetting, incl. backward_transfer)
+5. Claim validation (C4: Curriculum efficiency / sample_efficiency_ratio)
 6. Claim validation (C5: Scalability)
 7. Validation report generation
 8. LaTeX table generation
@@ -125,8 +125,8 @@ def test_claim_c3_validation():
         "results": [
             {"method": "MAPPO-Safe", "system": "8bus", "best_of": 5.1},
             {"method": "MAPPO-Safe-EWC", "system": "8bus", "best_of": 5.0},
-            {"method": "MAPPO-Safe", "system": "30bus", "best_of": 12.0},
-            {"method": "MAPPO-Safe-EWC", "system": "30bus", "best_of": 12.1},
+            {"method": "MAPPO-Safe", "system": "30bus", "best_of": 12.1},
+            {"method": "MAPPO-Safe-EWC", "system": "30bus", "best_of": 12.0},
         ]
     }
 
@@ -136,7 +136,49 @@ def test_claim_c3_validation():
     assert result.claim_id == "C3"
     assert "forgetting_measure" in result.details
 
-    print(f"    ✓ PASS: C3 validated (forgetting={result.details['forgetting_measure']:.4f})")
+    # backward_transfer: signed proxy reusing the same best_of values as
+    # forgetting_measure (see thesis_validation.py) — EWC finishes BELOW
+    # the non-EWC baseline on both systems, and lower OF is better in
+    # this codebase, so this should score as positive transfer
+    # (improvement), not forgetting.
+    assert "backward_transfer" in result.details
+    assert result.details["backward_transfer"] > 0
+
+    print(f"    ✓ PASS: C3 validated (forgetting={result.details['forgetting_measure']:.4f}, "
+          f"backward_transfer={result.details['backward_transfer']:.4f})")
+
+
+def test_claim_c4_validation():
+    """Test: Validate C4 (Curriculum learning sample efficiency)."""
+    print("  Test: C4 validation...")
+
+    validator = ThesisValidator()
+    # MAPPO (baseline) settles late in its logged history; MAPPO-Safe-EWC
+    # (curriculum_method = required_methods[-1]) settles much earlier —
+    # samples_to_convergence is the first index after which every later
+    # OF value stays within 5% of the run's final value.
+    mappo_history = [10, 9, 8, 7, 6, 5, 4, 3.5, 3.2, 3.1, 3.05, 3.02, 3.01,
+                      3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+    ewc_history = [10, 6, 4, 3.2, 3.05, 3.0, 3.0, 3.0, 3.0, 3.0]
+    validator.results = {
+        "results": [
+            {"method": "MAPPO", "system": "8bus", "best_of": mappo_history[-1], "history": mappo_history},
+            {"method": "MAPPO-Safe-EWC", "system": "8bus", "best_of": ewc_history[-1], "history": ewc_history},
+        ]
+    }
+
+    claim = ThesisValidator.CLAIMS[3]  # C4
+    result = validator.validate_claim(claim)
+
+    assert result.claim_id == "C4"
+    assert result.details["MAPPO_samples_to_convergence"] == 9
+    assert result.details["MAPPO-Safe-EWC_samples_to_convergence"] == 4
+    assert "sample_efficiency_ratio" in result.details
+    assert abs(result.details["sample_efficiency_ratio"] - 4 / 9) < 1e-9
+    assert result.details["sample_efficiency_ratio"] < 0.60  # meets C4's pass criterion
+    assert result.details["final_of"] == ewc_history[-1]
+
+    print(f"    ✓ PASS: C4 validated (sample_efficiency_ratio={result.details['sample_efficiency_ratio']:.3f})")
 
 
 def test_claim_c5_validation():
@@ -374,6 +416,7 @@ def run_all_tests():
         test_claim_c1_validation,
         test_claim_c2_validation,
         test_claim_c3_validation,
+        test_claim_c4_validation,
         test_claim_c5_validation,
         test_validation_report,
         test_latex_table_generation,
