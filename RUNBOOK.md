@@ -126,7 +126,7 @@ python3 run_thesis_experiments.py --progress
 
 **What this step does NOT give you**: real 14-bus/39-bus data for Cores
 D–K or the figures they feed, and only an 8-bus baseline comparison for
-Core C (Core C gets re-run per-system in Step 7, which supersedes the
+Core C (Core C gets re-run per-system in Step 6, which supersedes the
 8-bus-only comparison this step produces). That's expected — those Cores
 aren't parametrized by system yet (see `CLAUDE.md`'s "adequate as-is"
 note); this step is still required because it's what produces the other
