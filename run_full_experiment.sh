@@ -2,7 +2,7 @@
 #
 # run_full_experiment.sh
 # ───────────────────────
-# Drives the multi-system sweep described in RUNBOOK.md Steps 6-11: the
+# Drives the multi-system sweep described in RUNBOOK.md Step 6: the
 # per-system Fig 5 / Fig 6 / Core C loop, regenerating the Core-C-fed
 # figures, consolidating into the results registry, and final verification.
 #
@@ -42,7 +42,12 @@ CACHE_DIR="results/core_cache"
 LOG_DIR="results/logs"
 
 usage() {
-    sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+    # Prints every leading '#'-commented line after the shebang, stopping at
+    # the first non-comment line -- self-adjusting to the comment block's
+    # actual length instead of a hardcoded line range that silently drifts
+    # (and leaks source code into --help output) whenever the header comment
+    # is edited without updating a matching magic number.
+    awk '/^#!/ {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
     exit "${1:-0}"
 }
 
@@ -116,7 +121,7 @@ if stage_enabled fig6; then
             continue
         fi
         log "NOTE:  Fig 6 has no --n-workers and no partial-save -- this can take" \
-            "many hours per system (see RUNBOOK.md Step 7); an interrupt here loses" \
+            "many hours per system (see RUNBOOK.md Step 6); an interrupt here loses" \
             "the whole run, not just the remainder."
         run_logged "$LOG_DIR/fig06_${sys}.txt" "Fig 6 ($sys)" -- \
             python3 evaluation/utils/exp_fig06_cti_violation_rate.py \
@@ -128,14 +133,19 @@ fi
 # ── Core C: MARL vs. baselines, per system ──────────────────────────────
 if stage_enabled corec; then
     for sys in $SYSTEMS; do
+        # $CACHE_DIR/$sys are passed as argv, not spliced into the Python
+        # source string -- a --systems value containing a quote character
+        # would otherwise break out of the string literal and inject
+        # arbitrary code into the interpreter.
         already_cached=$(python3 -c "
 import json, sys
+cache_dir, system = sys.argv[1], sys.argv[2]
 try:
-    idx = json.load(open('$CACHE_DIR/cache_index.json'))
+    idx = json.load(open(f'{cache_dir}/cache_index.json'))
 except FileNotFoundError:
     idx = {}
-print(any(v.get('name') == 'core_C_baselines_$sys' for v in idx.values()))
-")
+print(any(v.get('name') == f'core_C_baselines_{system}' for v in idx.values()))
+" "$CACHE_DIR" "$sys")
         if [[ "$already_cached" == "True" && "$FORCE" -ne 1 ]]; then
             log "SKIP:  Core C ($sys) -- already cached as core_C_baselines_$sys (use --force to redo)"
             SKIPPED+=("corec:$sys")
@@ -143,10 +153,11 @@ print(any(v.get('name') == 'core_C_baselines_$sys' for v in idx.values()))
         fi
         if [[ "$FORCE" -eq 1 && "$already_cached" == "True" ]]; then
             python3 -c "
+import sys
 from run_core_training import CacheManager
 from pathlib import Path
-CacheManager(Path('$CACHE_DIR')).invalidate(pattern='core_C_baselines_$sys')
-"
+CacheManager(Path(sys.argv[1])).invalidate(pattern=f'core_C_baselines_{sys.argv[2]}')
+" "$CACHE_DIR" "$sys"
         fi
         run_logged "$LOG_DIR/core_C_${sys}.txt" "Core C ($sys)" -- \
             python3 run_core_training.py --core-C --system "$sys" --seed "$CORE_C_SEED"
