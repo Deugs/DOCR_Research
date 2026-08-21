@@ -118,7 +118,17 @@ class PandapowerNetwork:
                 name=f"Load_R{i}"
             )
 
-        # Add DG/PV generators
+        # Add DG/PV generators. Assumes dg.p_mw is the DG's full RATED
+        # capacity (dg.pv_penetration==0.0, the NetworkData constructors'
+        # default) -- NOT a NetworkData already scaled by
+        # NetworkData.apply_pv_penetration(level), which bakes `level`
+        # into dg.p_mw AND sets dg.pv_penetration=level on the same
+        # object. Passing a pre-scaled NetworkData here (or into
+        # update_pv_penetration() below) would double-apply the scaling
+        # (p_mw * level again on top of the already-scaled p_mw).
+        # Currently dormant: every DistributionNetwork(use_pandapower=True)
+        # call site in this repo passes the raw, unscaled NetworkData and
+        # scales via update_pv_penetration()/reset(pv_level=...) instead.
         for dg in self.net_data.dg_buses:
             if dg.bus_idx < self.net_data.n_buses:
                 pp.create_sgen(

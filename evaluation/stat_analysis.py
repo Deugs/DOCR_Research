@@ -56,11 +56,17 @@ def friedman_test(
     if n_datasets < 2 or n_algorithms < 2:
         raise ValueError("Need at least 2 datasets and 2 algorithms")
     
-    # Rank algorithms per dataset (1 = best, n_algorithms = worst)
+    # Rank algorithms per dataset (1 = best, n_algorithms = worst).
+    # stats.rankdata(method="average") assigns tied values their mean rank
+    # (the standard Friedman-test convention) -- the previous
+    # argsort-of-argsort implementation broke ties by array position
+    # instead, which fabricated significance for identical/near-identical
+    # data: e.g. 3 algorithms tied on every one of 10 datasets were ranked
+    # [1,2,3] every time (rather than [2,2,2]), producing p=4.5e-5 and
+    # reject_null=True for data with zero real difference between methods.
     ranks = np.empty_like(results, dtype=float)
     for i in range(n_datasets):
-        # argsort of argsort gives ranks (0-based, so add 1)
-        ranks[i] = np.argsort(np.argsort(results[i])) + 1
+        ranks[i] = stats.rankdata(results[i], method="average")
     
     mean_ranks = np.mean(ranks, axis=0)
     

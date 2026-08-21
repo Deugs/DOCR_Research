@@ -136,7 +136,8 @@ class NetworkData:
             base_mva=self.base_mva,
             dg_buses=new_dg,
             line_data=self.line_data,
-            trafo_data=self.trafo_data
+            trafo_data=self.trafo_data,
+            relay_bus=self.relay_bus,
         )
         return new_net
 
@@ -160,6 +161,7 @@ class NetworkData:
             dg_buses=deepcopy(self.dg_buses),
             line_data=deepcopy(self.line_data) if self.line_data is not None else None,
             trafo_data=deepcopy(self.trafo_data) if self.trafo_data is not None else None,
+            relay_bus=self.relay_bus.copy() if self.relay_bus is not None else None,
         )
 
     @property

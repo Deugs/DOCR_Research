@@ -393,7 +393,14 @@ class LargeScaleEvaluator:
             )
 
             if m.performance_without_comm > 0:
-                m.comm_benefit_percent = ((m.performance_with_comm - m.performance_without_comm) 
+                # OF is lower-is-better throughout this codebase (see
+                # friedman_test's docstring, and n1_degradation_percent /
+                # noise_degradation_percent's "(worse - baseline)/baseline"
+                # convention just above). "with - without" had the sign
+                # backwards for a *benefit* metric: comm cutting OF in half
+                # (a strong real improvement) reported as -50%, reading as
+                # comm making things worse.
+                m.comm_benefit_percent = ((m.performance_without_comm - m.performance_with_comm)
                                          / m.performance_without_comm * 100)
 
             metrics[method] = m

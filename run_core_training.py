@@ -828,7 +828,7 @@ def _generate_synthetic_core_A(n_episodes: int, seed: int, n_agents: int = None,
             
             attn = None
             if ep in logger_obj.snapshot_episodes:
-                attn = np.random.dirichlet(np.ones(n_agents) * (1 + 3 * progress), n_agents)
+                attn = rng.dirichlet(np.ones(n_agents) * (1 + 3 * progress), n_agents)
                 
             logger_obj.log_episode(
                 ep=ep, global_return=base_return, per_agent_rewards=agent_rewards,
@@ -1097,7 +1097,16 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
         # The loop above only consolidates a task into task_memory when
         # the *next* task's register_task() call fires (lagged by one
         # iteration) — so TASKS[-1] (60% PV) is never consolidated
-        # without this: finalize() closes it out explicitly.
+        # without this: finalize() closes it out explicitly. But
+        # finalize() alone used to consolidate it with the zero-information
+        # uniform placeholder fisher, not the real fisher this loop already
+        # computed for it (held in prev_fisher/prev_task_name after the
+        # final iteration) — that real fisher was only ever handed to
+        # update_fisher() by the FOLLOWING iteration's register_task call,
+        # which doesn't exist for the last task. Stash it as the pending
+        # fisher explicitly before finalizing so the last task gets its
+        # real, just-computed Fisher information instead of the placeholder.
+        ewc_wrapper.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
         ewc_wrapper.ewc_regularizer.finalize()
 
     # Final objective/CTI evaluation of the fully-trained policy across
@@ -1572,7 +1581,13 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
         if use_ewc:
             # The loop above only consolidates a task when the *next*
             # task's register_task() fires — TASKS[-1] (60% PV) has no
-            # next task, so finalize() closes it out explicitly.
+            # next task, so finalize() closes it out explicitly. As with
+            # Core B, that used to consolidate the last task with the
+            # zero-information placeholder fisher rather than its real,
+            # already-computed one (prev_fisher, only ever handed to
+            # update_fisher() by a following iteration that doesn't exist
+            # for the last task) -- stash it as pending before finalizing.
+            ewc_trainer.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
             ewc_trainer.ewc_regularizer.finalize()
     else:
         trainer.train(total_steps=total_steps, verbose=False)
@@ -1803,6 +1818,15 @@ def _run_hparam_single(lambda_ewc, alpha_lambda, hidden_dim, seed, n_steps):
         trainer.actor.set_all_params(cur)
     ewc_trainer.ewc_regularizer.register_task("warmstart", cur)
     ewc_trainer.ewc_regularizer.update_fisher("warmstart", fisher)
+    # register_task()+update_fisher() alone never populate task_memory --
+    # consolidation is lagged until the NEXT register_task() call (there
+    # isn't one here) or an explicit finalize() (see EWCRegularizer.finalize
+    # docstring). Without this, task_memory stayed empty for every point in
+    # this grid, compute_ewc_penalty() short-circuited to (0.0, zeros), and
+    # apply_ewc_to_gradient() always returned the zero vector regardless of
+    # lambda_ewc -- voiding the entire swept lambda_ewc grid this function
+    # exists to evaluate.
+    ewc_trainer.ewc_regularizer.finalize()
     ewc_grad = ewc_trainer.apply_ewc_to_gradient(cur, np.zeros_like(cur))
     trainer.actor.set_all_params(cur - 0.01 * ewc_grad)
 
@@ -2586,6 +2610,34 @@ def _generate_synthetic_core_K(seed: int):
         "autumn": {"performance": 0.84 + rng.normal(0, 0.02), "pv_variability": 0.25},
         "winter": {"performance": 0.82 + rng.normal(0, 0.02), "pv_variability": 0.15},
     }
+ALL_CORE_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
+
+
+def resolve_requested_cores(config: Optional[DOCRConfig], global_config: Optional[DOCRConfig]) -> List[str]:
+    """
+    Which of the 11 core letters run_all_cores() should actually run,
+    given an explicit `config` argument (if any) and the module-level
+    CONFIG fallback -- factored out as a pure function (no training, no
+    I/O) so it's cheaply unit-testable on its own, separate from actually
+    exercising run_all_cores()'s real (even if fast/synthetic) training.
+
+    config.experiment.cores (--cores CLI flag, or an "experiment": {"cores":
+    [...]} preset like scalability_sweep/curriculum_learning/ablation_study)
+    used to be parsed into the config object and then never read anywhere
+    -- every run_all_cores() call ran all 11 cores regardless, silently
+    ignoring a preset's own declared scope (e.g. scalability_sweep claims
+    to run only Core F, but actually ran the full A-K budget, including
+    Core A/C's expensive 5000-episode x 50-run sweeps).
+    """
+    if config is not None:
+        requested_cores = config.experiment.cores
+    elif global_config is not None:
+        requested_cores = global_config.experiment.cores
+    else:
+        requested_cores = None
+    return [c for c in ALL_CORE_LETTERS if c in requested_cores] if requested_cores else list(ALL_CORE_LETTERS)
+
+
 # ═════════════════════════════════════════════════════════════════
 # MAIN ORCHESTRATOR
 # ═════════════════════════════════════════════════════════════════
@@ -2612,9 +2664,10 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
     n_runs_hparam = N_RUNS_HPARAM_FAST if FAST_MODE else N_RUNS_HPARAM
     n_episodes = EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT
     n_episodes_hparam = EPISODES_HPARAM_FAST if FAST_MODE else EPISODES_HPARAM
-    
+
+    all_cores = resolve_requested_cores(config, CONFIG)
+
     # Initialize experiment progress tracker
-    all_cores = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
     progress = ExperimentProgress(core_runs=[f"Core {c}" for c in all_cores], fast_mode=FAST_MODE)
     
     logger.info("\n" + "=" * 70)
@@ -2629,19 +2682,19 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
     
     t0 = time.time()
     
-    # Run all cores with progress tracking
-    core_A = run_core_A(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
-    core_B = run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_episodes // 10, seed=SEED, progress=progress, n_workers=n_workers)
+    # Run only the requested cores (all 11 by default) with progress tracking
+    core_A = run_core_A(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers) if "A" in all_cores else None
+    core_B = run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_episodes // 10, seed=SEED, progress=progress, n_workers=n_workers) if "B" in all_cores else None
     core_C = run_core_C(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers,
-                        system=CONFIG.system.name if CONFIG is not None else "8bus")
-    core_D = run_core_D(n_runs=n_runs_baseline, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
-    core_E = run_core_E(n_seeds=n_runs_hparam, n_steps=n_episodes_hparam, seed=SEED, progress=progress, n_workers=n_workers)
-    core_F = run_core_F(seed=SEED, progress=progress, n_workers=n_workers)
-    core_G = run_core_G(seed=SEED, progress=progress)
-    core_H = run_core_H(seed=SEED, progress=progress)
-    core_I = run_core_I(seed=SEED, progress=progress)
-    core_J = run_core_J(seed=SEED, progress=progress)
-    core_K = run_core_K(seed=SEED, progress=progress)
+                        system=CONFIG.system.name if CONFIG is not None else "8bus") if "C" in all_cores else None
+    core_D = run_core_D(n_runs=n_runs_baseline, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers) if "D" in all_cores else None
+    core_E = run_core_E(n_seeds=n_runs_hparam, n_steps=n_episodes_hparam, seed=SEED, progress=progress, n_workers=n_workers) if "E" in all_cores else None
+    core_F = run_core_F(seed=SEED, progress=progress, n_workers=n_workers) if "F" in all_cores else None
+    core_G = run_core_G(seed=SEED, progress=progress) if "G" in all_cores else None
+    core_H = run_core_H(seed=SEED, progress=progress) if "H" in all_cores else None
+    core_I = run_core_I(seed=SEED, progress=progress) if "I" in all_cores else None
+    core_J = run_core_J(seed=SEED, progress=progress) if "J" in all_cores else None
+    core_K = run_core_K(seed=SEED, progress=progress) if "K" in all_cores else None
     
     elapsed = time.time() - t0
     
@@ -2663,17 +2716,25 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
         "config_used": CONFIG is not None,
         "elapsed_seconds": elapsed,
         "cores": {
-            "A": {"feeds": "Figs 9,10,12,21,37,38,41,48-50,55-57", "status": "complete"},
-            "B": {"feeds": "Figs 5,6,7,16,29,39", "status": "complete"},
-            "C": {"feeds": "Figs 11,12,31-33,55-56", "status": "complete"},
-            "D": {"feeds": "Fig 39", "status": "complete"},
-            "E": {"feeds": "Fig 40", "status": "complete"},
-            "F": {"feeds": "Fig 15", "status": "complete"},
-            "G": {"feeds": "Figs 13,20,22,24,54", "status": "complete"},
-            "H": {"feeds": "Figs 23,25", "status": "complete"},
-            "I": {"feeds": "Figs 18,53", "status": "complete"},
-            "J": {"feeds": "Figs 43,44,45,46,47", "status": "complete"},
-            "K": {"feeds": "Fig 58", "status": "complete"},
+            # status reflects whether --cores/config.experiment.cores
+            # actually requested this core to run -- previously hardcoded
+            # to "complete" for all 11 regardless of which ones the config
+            # requested, falsely claiming e.g. a scalability_sweep run
+            # (cores=["F"]) had completed Cores A-E and G-K too.
+            c: {"feeds": feeds, "status": "complete" if c in all_cores else "skipped"}
+            for c, feeds in {
+                "A": "Figs 9,10,12,21,37,38,41,48-50,55-57",
+                "B": "Figs 5,6,7,16,29,39",
+                "C": "Figs 11,12,31-33,55-56",
+                "D": "Fig 39",
+                "E": "Fig 40",
+                "F": "Fig 15",
+                "G": "Figs 13,20,22,24,54",
+                "H": "Figs 23,25",
+                "I": "Figs 18,53",
+                "J": "Figs 43,44,45,46,47",
+                "K": "Fig 58",
+            }.items()
         },
         "cache_dir": str(CACHE_DIR),
         "estimated_gpu_days": "8-10 (full)" if not FAST_MODE else "~1-2 hours (fast)",
@@ -2716,6 +2777,24 @@ def main():
     parser.add_argument("--cache-status", action="store_true", help="Show cache status")
     parser.add_argument("--progress", action="store_true", help="Show last progress report")
     args = parser.parse_args()
+
+    # --list-presets/--generate-config are defined by build_config_parser()
+    # (docl_config.py) but were never actually checked here -- the same bug
+    # already found and fixed in run_thesis_experiments.py's main() this
+    # session, just never applied to this sibling file. Without this,
+    # `--list-presets` silently fell through to config_from_args()/
+    # print_config_summary() instead of listing anything, and
+    # `--generate-config PATH` never wrote the file.
+    if getattr(args, "list_presets", False):
+        print("\nAvailable Presets:")
+        print("=" * 60)
+        for name, desc in list_presets().items():
+            print(f"  {name:<25} {desc}")
+        print()
+        return
+    if getattr(args, "generate_config", None):
+        generate_example_config(args.generate_config)
+        return
 
     # Build config from all sources (CLI, config file, preset, env vars, defaults)
     config = None

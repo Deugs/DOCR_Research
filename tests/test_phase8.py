@@ -148,6 +148,37 @@ def test_claim_c3_validation():
           f"backward_transfer={result.details['backward_transfer']:.4f})")
 
 
+def test_forgetting_measure_large_improvement_is_not_forgetting():
+    """
+    Regression test: forgetting_measure used to be abs(ewc_of - base_of) /
+    base_of, which scores EWC beating the baseline as equally "forgotten"
+    as EWC losing by the same margin. test_claim_c3_validation's fixture
+    only has EWC ~1-2% better than baseline, too small a margin for that
+    bug to be visible against the claim's <10% pass threshold either way
+    -- this uses a large (~50%) improvement, which the old abs() version
+    would have scored as forgetting_measure=0.49 (failing the <0.10
+    threshold for a result that should be an unambiguous pass).
+    """
+    validator = ThesisValidator()
+    validator.results = {
+        "results": [
+            {"method": "MAPPO-Safe", "system": "8bus", "best_of": 10.0},
+            {"method": "MAPPO-Safe-EWC", "system": "8bus", "best_of": 5.0},
+        ]
+    }
+
+    claim = ThesisValidator.CLAIMS[2]  # C3
+    result = validator.validate_claim(claim)
+
+    assert result.details["forgetting_measure"] == 0.0, (
+        "EWC beating the baseline by a large margin must not be scored as "
+        f"forgetting; got {result.details['forgetting_measure']}"
+    )
+    assert result.passed, "A large EWC improvement must pass the <10% forgetting claim"
+    print("    ✓ PASS: forgetting_measure is 0 (not negative-scored-as-positive) "
+          "when EWC substantially beats the baseline")
+
+
 def test_claim_c4_validation():
     """Test: Validate C4 (Curriculum learning sample efficiency)."""
     print("  Test: C4 validation...")
@@ -416,6 +447,7 @@ def run_all_tests():
         test_claim_c1_validation,
         test_claim_c2_validation,
         test_claim_c3_validation,
+        test_forgetting_measure_large_improvement_is_not_forgetting,
         test_claim_c4_validation,
         test_claim_c5_validation,
         test_validation_report,

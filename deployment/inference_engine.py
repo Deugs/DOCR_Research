@@ -400,7 +400,17 @@ class ONNXExporter:
     def _run_exported_artifact(self, path: Path, x: np.ndarray) -> np.ndarray:
         """Load back the just-written artifact and run it on ``x``."""
         path = Path(path)
-        try:
+        # Dispatch on the artifact's actual format instead of trying
+        # onnxruntime unconditionally and hoping for ImportError to signal
+        # "this is really an npz" -- if onnxruntime is installed but onnx
+        # (the authoring package) isn't, export() writes an .npz fallback
+        # (see export()) and InferenceSession(".npz path") raises a
+        # non-ImportError exception trying to parse it as a protobuf. That
+        # only got caught by _verify_export's broad `except Exception`,
+        # producing "verification_error" and never actually running the
+        # comparison this method exists to make -- silently defeating
+        # export verification under that (plausible) dependency combination.
+        if path.suffix == ".onnx":
             import onnxruntime as ort
 
             sess = ort.InferenceSession(str(path))
@@ -409,8 +419,6 @@ class ONNXExporter:
             x_in = np.asarray(x, dtype=np.float32).reshape(1, -1)
             out = sess.run([out_name], {in_name: x_in})[0][0]
             return np.asarray(out, dtype=np.float64).ravel()
-        except ImportError:
-            pass
 
         # npz fallback artifact: reconstruct the forward pass by hand.
         data = np.load(str(path), allow_pickle=True)
@@ -674,7 +682,13 @@ class InferenceEngine:
             "max_ms": float(np.max(arr)),
             "p50_ms": float(np.percentile(arr, 50)),
             "p99_ms": float(np.percentile(arr, 99)),
-            "meets_target": bool(np.mean(arr) < self.config.target_latency_ms),
+            # Worst-case (max), not mean: this is a hard real-time deadline
+            # (module docstring: "<100 ms target"). Judging it on the mean
+            # let a run with a handful of latency spikes past the target
+            # report "meets target: YES" right next to its own printed
+            # p99/max showing otherwise. Matches hils_bridge.py's
+            # analogous GOOSE-latency check, which already uses max.
+            "meets_target": bool(np.max(arr) < self.config.target_latency_ms),
             "target_ms": self.config.target_latency_ms,
             "n_runs": n_runs,
             "backend": self._backend,
