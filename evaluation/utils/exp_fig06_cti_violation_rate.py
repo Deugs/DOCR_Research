@@ -197,7 +197,7 @@ def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
             aggregated[method][f"{metric}_std"] = [np.std([r[metric] for r in results[method][pv]]) for pv in PV_LEVELS]
     
     # Save
-    save_dict = {"pv_levels": np.array(PV_LEVELS)}
+    save_dict = {"pv_levels": np.array(PV_LEVELS), "n_seeds": np.array(n_seeds)}
     for method in METHODS:
         for key in aggregated[method]:
             save_dict[f"{method}_{key}"] = np.array(aggregated[method][key])
