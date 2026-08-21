@@ -10,8 +10,8 @@ Uses shared data from Figure 5 experiment or can run standalone.
 
 Outputs
 -------
-  outputs/fig06_cti_violations.npz
-  outputs/fig06_cti_violations.png
+  outputs/{system}/fig06_cti_violations.npz
+  outputs/{system}/fig06_cti_violations.png
 """
 
 import numpy as np
@@ -125,7 +125,12 @@ def evaluate_cti_severity(net, env, trainer, n_episodes: int = 100, seed: int = 
 
 def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
          output_dir: str = "outputs", system: str = "8bus"):
-    out_path = Path(output_dir)
+    # Namespaced by system (outputs/{system}/fig06_cti_violations.*),
+    # matching unified_exp_fig05.py's convention — previously every system
+    # wrote to the same fixed output_dir/fig06_cti_violations.{npz,png},
+    # so running this for 8bus then 14bus then 39bus silently overwrote
+    # each prior system's results instead of keeping them side by side.
+    out_path = Path(output_dir) / system
     out_path.mkdir(parents=True, exist_ok=True)
     
     logger.info("Figure 6 — CTI Violation Rate vs. PV Penetration")

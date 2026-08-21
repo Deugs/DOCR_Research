@@ -1185,21 +1185,29 @@ def _evaluate_across_pv(checkpoint, pv_levels):
 # CORE RUN C — Baseline Comparison
 # ═════════════════════════════════════════════════════════════════
 def _core_C_job(args):
-    method, run_idx, run_seed, n_episodes = args
+    method, run_idx, run_seed, n_episodes, system = args
     returns = _try_experimental(_run_baseline_single, _generate_synthetic_baseline,
-                               method, run_seed, n_episodes)
+                               method, run_seed, n_episodes, system)
     return (method, run_idx), returns
 
 
 def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
-               progress: ExperimentProgress = None, n_workers: int = None):
+               progress: ExperimentProgress = None, n_workers: int = None,
+               system: str = "8bus"):
     n_runs = n_runs if n_runs is not None else (N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT)
     n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
     seed = seed if seed is not None else SEED
     n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
-    
+
     config = {
-        "name": "core_C_baselines",
+        # "system" folded into the cache name (matching Core A's
+        # "core_A_mappo_safe_ewc_8bus_100pv" convention) so
+        # cache_index.json / load_cache() keep every system's baseline
+        # comparison distinguishable and browsable together by name
+        # prefix, rather than one entry silently overwriting another's
+        # cache slot regardless of which system was requested.
+        "name": f"core_C_baselines_{system}",
+        "system": system,
         "methods": ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"],
         "n_runs": n_runs,
         "n_episodes": n_episodes,
@@ -1209,30 +1217,35 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
         # plain "MAPPO" (dead post-hoc attribute guards). Now genuinely
         # differ — see _run_baseline_single.
         "real_safety_ewc": True,
+        # Bumped: "system" was previously accepted nowhere in this
+        # function — every call trained on a hardcoded get_8bus(),
+        # regardless of what config/CLI --system requested. Now genuinely
+        # threaded through to _run_baseline_single/_evaluate_traditional.
+        "real_multi_system": True,
     }
     cached = cache.get(config)
     if cached is not None:
         logger.info("[Core C] Using cached results")
         return cached
-        
+
     run_name = "Core C"
     total_steps = len(config["methods"]) * n_runs
     if progress:
         progress.start_run(run_name, total_steps=total_steps,
-                          desc=f"Baseline comparison — {len(config['methods'])} methods x {n_runs} runs")
-        
+                          desc=f"Baseline comparison ({system}) — {len(config['methods'])} methods x {n_runs} runs")
+
     logger.info("=" * 70)
-    logger.info("CORE RUN C: Baseline Comparison")
+    logger.info(f"CORE RUN C: Baseline Comparison ({system})")
     logger.info(f"  Methods: {config['methods']}")
     logger.info("  Feeds: Figs 11, 12, 31-33, 55-56")
     logger.info("=" * 70)
-    
+
     # Pre-allocated by (method, run_idx) rather than appended in completion
     # order — required for reproducible aggregation regardless of which
     # worker finishes first.
     results = {method: [None] * n_runs for method in config["methods"]}
     jobs = [
-        (method, run_idx, seed + run_idx + _method_seed_offset(method), n_episodes)
+        (method, run_idx, seed + run_idx + _method_seed_offset(method), n_episodes, system)
         for method in config["methods"] for run_idx in range(n_runs)
     ]
 
@@ -1256,14 +1269,14 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
     return results
 
 
-def _run_baseline_single(method: str, seed: int, n_episodes: int):
-    from network.network_data import get_8bus
+def _run_baseline_single(method: str, seed: int, n_episodes: int, system: str = "8bus"):
+    from network.network_data import load_network
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
     from marl.safe_rl import create_safe_rl_env, SafeRLConfig
     from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
-    net = get_8bus()
+    net = load_network(system)
     # curriculum_stage=3 → 60% PV (active sweep max)
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=3)
     if method == "Traditional":
@@ -1371,11 +1384,16 @@ def _evaluate_traditional(env, net, n_episodes: int, seed: int):
     return np.array(returns)
 
 
-def _generate_synthetic_baseline(method: str, seed: int, n_episodes: int, n_agents: int = 14):
-    # Parameter order matches _run_baseline_single(method, seed, n_episodes)
-    # — _try_experimental() forwards the same positional args to whichever
-    # of the two runs, so a mismatched order here silently swapped seed and
-    # n_episodes whenever the synthetic fallback actually fired.
+def _generate_synthetic_baseline(method: str, seed: int, n_episodes: int, system: str = "8bus"):
+    # Parameter order matches _run_baseline_single(method, seed, n_episodes,
+    # system) — _try_experimental() forwards the same positional args to
+    # whichever of the two runs, so a mismatched order here silently
+    # scrambled seed/n_episodes/system whenever the synthetic fallback
+    # actually fired. `system` isn't otherwise used here: this fallback's
+    # illustrative profiles were never system-dependent (unlike
+    # _generate_synthetic_scalability's real net.n_relays-scaled formula)
+    # and it's already disclosed as synthetic downstream — kept only to
+    # match the real function's call signature.
     rng = np.random.default_rng(seed)
     profiles = {
         "MAPPO-Safe-EWC": (-3.0, 7.8, 800), 
@@ -2161,7 +2179,7 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     
     config = {
         "name": "core_H_transfer",
-        "evaluations": ["unseen_faults", "zero_shot_8to30"],
+        "evaluations": ["unseen_faults", "zero_shot_8to14"],
         "seed": seed,
         "fault_type": FAULT_TYPE,
         "real_eval": BRIDGE_AVAILABLE,
@@ -2179,6 +2197,11 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # warm_start/cold_start placeholders (fig_25 never actually had
         # that shape from a real eval).
         "real_unseen_sweep_v2": True,
+        # Bumped: zero-shot transfer previously targeted "30bus", which
+        # isn't in this project's confirmed active scope (8/14/39-bus,
+        # 0-60% PV) — retargeted to 14bus so Fig 25 evaluates transfer to
+        # a system this codebase actually trains/evaluates elsewhere.
+        "real_14bus_transfer": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2216,9 +2239,9 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
                 unseen_faults[ft] = float(base_of / max(fig23.raw_data["unseen_of"], 1e-9))
             results["unseen_faults"] = unseen_faults
 
-            # Fig 25: Zero-Shot Transfer 8->30 Bus (REAL)
-            logger.info("[Core H] Fig 25: Zero-Shot Transfer 8->30 Bus (REAL)")
-            fig25 = bridge.run_evaluation(25, eval_system="30bus")
+            # Fig 25: Zero-Shot Transfer 8->14 Bus (REAL)
+            logger.info("[Core H] Fig 25: Zero-Shot Transfer 8->14 Bus (REAL)")
+            fig25 = bridge.run_evaluation(25, eval_system="14bus")
             results["zero_shot"] = {
                 **fig25.raw_data,
                 "base_of": bridge._get_base_result().best_of,
@@ -2609,7 +2632,8 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
     # Run all cores with progress tracking
     core_A = run_core_A(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
     core_B = run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_episodes // 10, seed=SEED, progress=progress, n_workers=n_workers)
-    core_C = run_core_C(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
+    core_C = run_core_C(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers,
+                        system=CONFIG.system.name if CONFIG is not None else "8bus")
     core_D = run_core_D(n_runs=n_runs_baseline, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers)
     core_E = run_core_E(n_seeds=n_runs_hparam, n_steps=n_episodes_hparam, seed=SEED, progress=progress, n_workers=n_workers)
     core_F = run_core_F(seed=SEED, progress=progress, n_workers=n_workers)
@@ -2776,7 +2800,8 @@ def main():
 
         if args.core_A: run_core_A(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_B: run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_eps // 10, seed=SEED, progress=progress, n_workers=args.n_workers)
-        if args.core_C: run_core_C(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_C: run_core_C(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers,
+                                   system=config.system.name if config is not None else "8bus")
         if args.core_D: run_core_D(n_runs=n_runs_baseline, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_E: run_core_E(n_seeds=n_runs_hparam, n_steps=n_eps_hparam, seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_F: run_core_F(seed=SEED, progress=progress, n_workers=args.n_workers)

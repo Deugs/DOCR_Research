@@ -1,13 +1,13 @@
 {
   "fig_num": 25,
   "data": {
-    "transfer_of": 574.9074522631936,
-    "cti_ok": true,
-    "system": "30bus"
+    "transfer_of": 211.06940567979868,
+    "cti_ok": false,
+    "system": "14bus"
   },
   "metadata": {
     "method": "_eval_zero_shot_transfer",
-    "duration": 7.908157110214233,
+    "duration": 4.026011228561401,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -45,7 +45,7 @@
       "missing_sensor_rate": 0.0,
       "sensor_bias": 0.0,
       "train_system": "8bus",
-      "eval_system": "30bus",
+      "eval_system": "14bus",
       "freeze_transfer_weights": true,
       "action_space_grid": false,
       "grid_tds_range": [
@@ -82,5 +82,5 @@
     },
     "base_of": 77.84522844468644
   },
-  "timestamp": 1787246957.6526413
+  "timestamp": 1787280515.7977774
 }

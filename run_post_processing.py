@@ -822,10 +822,10 @@ def fig_10_lagrange_multipliers():
 def fig_11_nemenyi():
     """Fig 11: Nemenyi test — from Core C baseline comparison."""
     logger.info("\\n[Fig 11] Nemenyi Critical Difference Diagram")
-    data = load_cache("core_C_baselines")
+    data = load_cache("core_C_baselines_8bus")
     is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 11: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        logger.warning("Fig 11: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -853,7 +853,7 @@ def fig_11_nemenyi():
     ax.axis("off")
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_C_baselines cache missing")
+        mark_synthetic(fig, note="core_C_baselines_8bus cache missing")
     save_fig(fig, get_fig_path(11, "figs_11_20"))
 
 
@@ -865,11 +865,11 @@ def fig_12_convergence_bands():
     """Fig 12: Convergence — from Core A + Core C combined."""
     logger.info("\\n[Fig 12] Convergence Curves with 95% Confidence Bands")
     core_A = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
-    core_C = load_cache("core_C_baselines")
+    core_C = load_cache("core_C_baselines_8bus")
     is_synthetic = core_A is None or core_C is None
 
     if is_synthetic:
-        logger.warning("Fig 12: 'core_A_mappo_safe_ewc_8bus_100pv' and/or 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        logger.warning("Fig 12: 'core_A_mappo_safe_ewc_8bus_100pv' and/or 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         n_eps = 2000
         methods = {
             "MAPPO-Safe-EWC": {"mean": -5 + 8.5 * (1 - np.exp(-np.arange(n_eps) / 350)), "std": np.ones(n_eps) * 0.8},
@@ -931,7 +931,7 @@ def fig_12_convergence_bands():
 
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv/core_C_baselines cache missing")
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_100pv/core_C_baselines_8bus cache missing")
     save_fig(fig, get_fig_path(12, "figs_11_20"))
 
 # ==================================================================
@@ -1494,7 +1494,7 @@ def fig_25_zero_shot_transfer():
         ax2.set_ylabel("Convergence Episodes", fontsize=12, color="#ff6b35")
         ax.set_xticks(x)
         ax.set_xticklabels(categories)
-        ax.set_title("Figure 25 — Zero-Shot Transfer: 8-Bus -> 30-Bus (100% PV)", fontsize=13)
+        ax.set_title("Figure 25 — Zero-Shot Transfer: 8-Bus -> 14-Bus (60% PV)", fontsize=13)
         ax.set_ylim(0, 1)
         ax.grid(True, alpha=0.3, axis="y")
 
@@ -1579,10 +1579,10 @@ def fig_29_ewc_continual():
 def fig_31_multi_metric_ranking():
     """Fig 31: Overall performance ranking — from Core C."""
     logger.info("\\n[Fig 31] Multi-Metric Ranking")
-    data = load_cache("core_C_baselines")
+    data = load_cache("core_C_baselines_8bus")
     is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 31: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        logger.warning("Fig 31: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -1611,7 +1611,7 @@ def fig_31_multi_metric_ranking():
     ax.axis("off")
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_C_baselines cache missing")
+        mark_synthetic(fig, note="core_C_baselines_8bus cache missing")
     save_fig(fig, get_fig_path(31, "figs_31_40"))
 
 
@@ -1622,10 +1622,10 @@ def fig_31_multi_metric_ranking():
 def fig_32_effect_size():
     """Fig 32: Effect size — MAPPO-Safe-EWC vs baselines from Core C."""
     logger.info("\\n[Fig 32] Effect Size Analysis")
-    data = load_cache("core_C_baselines")
+    data = load_cache("core_C_baselines_8bus")
     is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 32: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        logger.warning("Fig 32: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -1655,7 +1655,7 @@ def fig_32_effect_size():
     ax.grid(True, alpha=0.3, axis="x")
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_C_baselines cache missing")
+        mark_synthetic(fig, note="core_C_baselines_8bus cache missing")
     save_fig(fig, get_fig_path(32, "figs_31_40"))
 
 
@@ -1666,10 +1666,10 @@ def fig_32_effect_size():
 def fig_33_radar_chart():
     """Fig 33: Multi-dimensional method comparison — from Core C."""
     logger.info("\\n[Fig 33] Multi-Dimensional Method Comparison")
-    data = load_cache("core_C_baselines")
+    data = load_cache("core_C_baselines_8bus")
     is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 33: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        logger.warning("Fig 33: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -2755,10 +2755,10 @@ def fig_54_adversarial():
 def fig_55_comparison_table():
     """Fig 55: Comprehensive method comparison table — from Core C."""
     logger.info("\\n[Fig 55] Comprehensive Method Comparison Table")
-    data = load_cache("core_C_baselines")
+    data = load_cache("core_C_baselines_8bus")
     is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 55: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        logger.warning("Fig 55: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -2798,13 +2798,13 @@ def fig_55_comparison_table():
         table[(0, i)].set_facecolor("#2563eb")
         table[(0, i)].set_text_props(weight='bold', color='white')
 
-    ax.text(0.5, 0.02, "* illustrative — core_C_baselines tracks neither CTI "
+    ax.text(0.5, 0.02, "* illustrative — core_C_baselines_8bus tracks neither CTI "
             "satisfaction nor a training convergence curve", transform=ax.transAxes,
             ha="center", fontsize=8, style="italic", color="#555")
     ax.set_title("Figure 55 — Comprehensive Method Comparison Table (8-Bus, 100% PV)", fontsize=13, pad=20)
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_C_baselines cache missing")
+        mark_synthetic(fig, note="core_C_baselines_8bus cache missing")
     save_fig(fig, get_fig_path(55, "figs_51_58"))
 
 
@@ -2815,10 +2815,10 @@ def fig_55_comparison_table():
 def fig_56_pareto_front():
     """Fig 56: Multi-objective Pareto front — from Core C."""
     logger.info("\\n[Fig 56] Multi-Objective Pareto Front")
-    data = load_cache("core_C_baselines")
+    data = load_cache("core_C_baselines_8bus")
     is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 56: 'core_C_baselines' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        logger.warning("Fig 56: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
@@ -2858,8 +2858,8 @@ def fig_56_pareto_front():
     ax.grid(True, alpha=0.3)
     plt.colorbar(scatter, ax=ax, label="Combined Score")
     from evaluation.experiments._synthetic_label import mark_synthetic
-    note = ("core_C_baselines cache missing" if is_synthetic else
-            "core_C_baselines has no speed/selectivity trade-off data — "
+    note = ("core_C_baselines_8bus cache missing" if is_synthetic else
+            "core_C_baselines_8bus has no speed/selectivity trade-off data — "
             "entire plot is illustrative")
     mark_synthetic(fig, note=note)
     save_fig(fig, get_fig_path(56, "figs_51_58"))
