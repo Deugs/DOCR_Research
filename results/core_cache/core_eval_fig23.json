@@ -7,7 +7,7 @@
   },
   "metadata": {
     "method": "_eval_unseen_faults",
-    "duration": 1.3947043418884277,
+    "duration": 0.7747945785522461,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -82,5 +82,5 @@
     },
     "base_of": 77.84522844468644
   },
-  "timestamp": 1787246949.7434306
+  "timestamp": 1787280511.771052
 }
