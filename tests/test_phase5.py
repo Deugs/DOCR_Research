@@ -17,6 +17,7 @@ import numpy as np
 import os
 import sys
 import json
+import csv
 import tempfile
 import shutil
 
@@ -484,6 +485,88 @@ class TestResultsAggregator(unittest.TestCase):
             self.assertEqual(summary["total_runs"], 4)
         finally:
             os.unlink(temp_path)
+
+    def test_ingest_preaggregated_creates_entry(self):
+        """A pre-aggregated record with no prior raw-run data creates a new entry."""
+        agg = ResultsAggregator([])
+        agg.ingest_preaggregated([{
+            "method": "MAPPO-Safe-EWC", "system": "14bus", "pv_level": 0.2, "fault_type": "3ph",
+            "n_runs": 3, "of_mean": 176.99, "of_std": 52.17,
+        }])
+        key = "method=MAPPO-Safe-EWC|system=14bus|pv_level=0.2|fault_type=3ph"
+        self.assertIn(key, agg.aggregated)
+        entry = agg.aggregated[key]
+        self.assertEqual(entry.n_runs, 3)
+        self.assertAlmostEqual(entry.of_mean, 176.99, places=5)
+        self.assertAlmostEqual(entry.of_std, 52.17, places=5)
+
+    def test_ingest_preaggregated_merges_without_clobbering(self):
+        """
+        Two ingest_preaggregated() calls for the same (method, system,
+        pv_level, fault_type) key -- one supplying OF fields (like Fig 5),
+        the other supplying CTI fields (like Fig 6) -- must merge into one
+        entry. The second call must NOT reset fields the first call set but
+        the second didn't mention (this was a real bug: a Fig 6 record
+        always carrying n_runs=0 when its own seed count was unknown used to
+        silently overwrite a correct n_runs already contributed by Fig 5).
+        """
+        agg = ResultsAggregator([])
+        agg.ingest_preaggregated([{
+            "method": "MAPPO", "system": "8bus", "pv_level": 0.0, "fault_type": "3ph",
+            "n_runs": 3, "of_mean": 100.0, "of_std": 10.0,
+        }])
+        agg.ingest_preaggregated([{
+            "method": "MAPPO", "system": "8bus", "pv_level": 0.0, "fault_type": "3ph",
+            "cti_ok_rate": 0.9,
+        }])
+        entry = agg.aggregated["method=MAPPO|system=8bus|pv_level=0.0|fault_type=3ph"]
+        self.assertEqual(entry.n_runs, 3)
+        self.assertAlmostEqual(entry.of_mean, 100.0, places=5)
+        self.assertAlmostEqual(entry.cti_ok_rate, 0.9, places=5)
+
+    def test_ingest_preaggregated_distinguishes_violation_count_from_rate(self):
+        """cti_violations_mean (a count) and cti_violation_rate_pct (a 0-100
+        percentage) are different units and must be tracked separately."""
+        agg = ResultsAggregator([])
+        agg.ingest_preaggregated([{
+            "method": "MAPPO", "system": "8bus", "pv_level": 0.0, "fault_type": "3ph",
+            "cti_violations_mean": 3.81,
+        }])
+        agg.ingest_preaggregated([{
+            "method": "MAPPO", "system": "8bus", "pv_level": 0.0, "fault_type": "3ph",
+            "cti_violation_rate_pct": 33.47,
+        }])
+        entry = agg.aggregated["method=MAPPO|system=8bus|pv_level=0.0|fault_type=3ph"]
+        self.assertAlmostEqual(entry.cti_violations_mean, 3.81, places=5)
+        self.assertAlmostEqual(entry.cti_violation_rate_pct, 33.47, places=5)
+
+    def test_export_aggregated_json_and_csv(self):
+        """Both exports work directly off self.aggregated, without requiring aggregate() first."""
+        agg = ResultsAggregator([])
+        agg.ingest_preaggregated([{
+            "method": "MAPPO", "system": "8bus", "pv_level": 0.0, "fault_type": "3ph",
+            "n_runs": 3, "of_mean": 100.0, "of_std": 10.0,
+        }])
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json_path = f.name
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            csv_path = f.name
+
+        try:
+            agg.export_aggregated_json(json_path)
+            with open(json_path) as f:
+                summary = json.load(f)
+            self.assertEqual(len(summary), 1)
+
+            agg.export_aggregated_csv(csv_path)
+            with open(csv_path) as f:
+                rows = list(csv.DictReader(f))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["method"], "MAPPO")
+        finally:
+            os.unlink(json_path)
+            os.unlink(csv_path)
 
 
 class TestLargeScaleEvaluation(unittest.TestCase):

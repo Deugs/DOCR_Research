@@ -22,8 +22,9 @@ Produces:
 import numpy as np
 import json
 import os
+import csv
 from typing import List, Dict, Tuple, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict, replace
 from collections import defaultdict
 
 
@@ -45,12 +46,22 @@ class AggregatedResult:
     cti_violations_mean: float = 0.0
     cti_min_mean: float = 0.0
     cti_min_std: float = 0.0
+    # % of CTI checks that violated (0-100 scale, from Fig 6's per-check
+    # severity sweep). Deliberately a separate field from cti_violations_mean
+    # (a raw violation COUNT, from Fig 5) -- the two are different units and
+    # must never be averaged or substituted for each other.
+    cti_violation_rate_pct: float = 0.0
 
     time_mean: float = 0.0
     time_std: float = 0.0
 
     # Convergence
     convergence_history: List[List[float]] = None
+
+    # Free-text provenance note, e.g. "outputs/14bus/fig05_pv_sweep.npz
+    # (pre-aggregated; raw per-seed values were not persisted)". Left blank
+    # for results built the normal way via aggregate() from raw per-run dicts.
+    source: str = ""
 
     def __post_init__(self):
         if self.convergence_history is None:
@@ -123,6 +134,63 @@ class ResultsAggregator:
 
         self.aggregated = aggregated
         return aggregated
+
+    def ingest_preaggregated(self, records: List[Dict]):
+        """
+        Merge already-aggregated statistics directly into self.aggregated,
+        bypassing the raw-per-run recomputation that aggregate() does.
+
+        Use this for sources whose per-run/per-seed values were never
+        persisted to disk — e.g. the Fig 5/6 PV-sweep scripts save only
+        mean/std per (method, pv_level, system), not the underlying
+        per-seed measurements — so there is no raw list to re-aggregate
+        from. Feeding a single-element list through aggregate() in that
+        case would silently report of_std=0.0 and n_runs=1, which is a
+        real number that looks precise but is wrong. This method instead
+        records the true n_runs/std the source already computed.
+
+        Composes with aggregate() and with itself: entries sharing the same
+        method/system/pv_level/fault_type key are MERGED field-by-field, not
+        replaced -- so e.g. an OF-only record from Fig 5's sweep and a
+        CTI-only record from Fig 6's sweep for the same (method, system,
+        pv_level) combine into one row instead of the second call silently
+        wiping out the first's fields.
+
+        Args:
+            records: dicts with at least method, system, pv_level,
+                fault_type. Any subset of the remaining AggregatedResult
+                fields (n_runs, of_mean, of_std, of_min, of_max,
+                cti_ok_rate, cti_violations_mean, cti_min_mean,
+                cti_min_std, time_mean, time_std, source) that IS present
+                is written; fields not present are left untouched on an
+                existing entry, or take AggregatedResult's zero-value
+                defaults on a new one.
+        """
+        mergeable_fields = (
+            "n_runs", "of_mean", "of_std", "of_min", "of_max",
+            "cti_ok_rate", "cti_violations_mean", "cti_min_mean", "cti_min_std",
+            "cti_violation_rate_pct", "time_mean", "time_std", "source",
+        )
+        for r in records:
+            method = r.get("method", "unknown")
+            system = r.get("system", "unknown")
+            pv_level = r.get("pv_level", 0.0)
+            fault_type = r.get("fault_type", "unknown")
+            key = f"method={method}|system={system}|pv_level={pv_level}|fault_type={fault_type}"
+
+            existing = self.aggregated.get(key)
+            base = existing if existing is not None else AggregatedResult(
+                method=method, system=system, pv_level=pv_level, fault_type=fault_type,
+            )
+
+            updates = {f: r[f] for f in mergeable_fields if f in r}
+            if "of_mean" in updates:
+                updates.setdefault("of_min", updates["of_mean"] if existing is None else base.of_min)
+                updates.setdefault("of_max", updates["of_mean"] if existing is None else base.of_max)
+            if "source" in updates and existing is not None and existing.source:
+                updates["source"] = existing.source + " + " + updates["source"]
+
+            self.aggregated[key] = replace(base, **updates)
 
     def _compute_aggregated(self, results: List[Dict], group_by: List[str]) -> AggregatedResult:
         """Compute aggregated statistics for a group of results."""
@@ -553,6 +621,33 @@ class ResultsAggregator:
         with open(output_path, 'w') as f:
             json.dump(summary, f, indent=2)
 
+        print(f"  ✓ {output_path}")
+
+    def export_aggregated_json(self, output_path: str):
+        """
+        Dump self.aggregated as-is to JSON, keyed the same way self.aggregated
+        already is. Unlike save_summary_json (which recomputes everything
+        from self.raw_results), this works regardless of whether entries
+        came from aggregate() (raw per-run dicts) or ingest_preaggregated()
+        (already-aggregated sources with no persisted raw values) -- both
+        can be present at once.
+        """
+        summary = {key: asdict(agg) for key, agg in sorted(self.aggregated.items())}
+        with open(output_path, "w") as f:
+            json.dump(summary, f, indent=2)
+        print(f"  ✓ {output_path}")
+
+    def export_aggregated_csv(self, output_path: str):
+        """Flat CSV of self.aggregated, one row per method/system/pv_level/fault_type group."""
+        fields = ["method", "system", "pv_level", "fault_type", "n_runs",
+                  "of_mean", "of_std", "of_min", "of_max",
+                  "cti_ok_rate", "cti_violations_mean", "cti_min_mean", "cti_min_std",
+                  "cti_violation_rate_pct", "time_mean", "time_std", "source"]
+        with open(output_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            for _, agg in sorted(self.aggregated.items()):
+                writer.writerow({k: getattr(agg, k) for k in fields})
         print(f"  ✓ {output_path}")
 
     def print_summary_table(self):

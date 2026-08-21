@@ -276,7 +276,7 @@ def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
     logger.info("Saved: %s", out_path / "fig05_pv_sweep_stats.txt")
 
     # Save
-    save_dict = {"pv_levels": np.array(active_pv_levels)}
+    save_dict = {"pv_levels": np.array(active_pv_levels), "n_seeds": np.array(n_seeds)}
     for method in active_methods:
         for key in ["mean_OF", "std_OF", "mean_cti", "norm_OF"]:
             save_dict[f"{method}_{key}"] = np.array(aggregated[method][key])

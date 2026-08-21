@@ -164,16 +164,38 @@ see `EXPERIMENT_GUIDE.md` §2.2.1 for the full data-provenance table.
 
 ---
 
-## 6. Tests
+## 6. Consolidated results registry (for later analysis)
+
+The Fig 5/6 PV-sweep scripts and Core C each write their own per-system
+output (`outputs/{system}/*.npz`, `results/core_cache/*.pkl`). To pull all
+of that into one queryable store — method × system × PV level, ready for a
+notebook, spreadsheet, or further statistical analysis — run:
 
 ```bash
-python3 -m pytest tests/ -q          # full suite (151 tests as of this writing)
+python3 experiments/build_results_registry.py
+```
+
+This writes `results/reports/results_registry.json` and `.csv`, built via
+`ResultsAggregator.ingest_preaggregated()` (see
+`experiments/results_aggregator.py`). It's additive across whatever systems
+are present under `outputs/` — rerun it any time after a new Fig 5/6 or
+Core C run to fold the new data in. It only ingests genuinely multi-system,
+multi-PV-level data (Figs 5/6 and Core C's per-system baseline comparison);
+other Core training runs feed single-condition figures better read via
+`run_post_processing.py` directly.
+
+---
+
+## 7. Tests
+
+```bash
+python3 -m pytest tests/ -q          # full suite (165 tests as of this writing)
 python3 -m pytest tests/test_phase4.py -q   # one phase's tests
 ```
 
 ---
 
-## 7. Docker
+## 8. Docker
 
 ```bash
 docker build -t docr-marl .
