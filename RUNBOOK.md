@@ -25,8 +25,12 @@ currently multi-system-aware:
    parametrized by system, and are the results that actually need
    producing three times, once per system in scope.
 
-Run them in the order below. Steps 1–4 are one-time setup; Steps 5–9 are
-the actual experiment.
+Run them in the order below. Steps 1–4 are one-time setup; Step 5 is the
+single-system pipeline; Step 6 drives the multi-system sweep via
+`run_full_experiment.sh`, a script that wraps what used to be six separate
+manual steps (per-system Fig 5, Fig 6, Core C, figure regeneration,
+results consolidation, and final verification) with skip-if-already-done
+logic, so re-running it after an interruption only redoes what's missing.
 
 ---
 
@@ -128,111 +132,111 @@ aren't parametrized by system yet (see `CLAUDE.md`'s "adequate as-is"
 note); this step is still required because it's what produces the other
 ~45 figures.
 
-## Step 6 — PV-penetration sweep, Figure 5 (OF vs. PV), for each system
-
-Run once per system in scope. This is real MARL + metaheuristic training,
-not cached — expect real wall-clock time (see the note on `--n_seeds` /
-`--train_steps` below).
+## Step 6 — Run the multi-system sweep
 
 ```bash
-for SYS in 8bus 14bus 39bus; do
-    python3 baselines/experiments/unified_exp_fig05.py \
-        --system "$SYS" --n_seeds 10 --train_steps 5000 --n_workers 4 \
-        --output_dir outputs
-done
+./run_full_experiment.sh
 ```
 
-- `--n_seeds` / `--train_steps` default to 10 / 5000 (thesis-scale). If
-  you need a faster pass first, reduce both (e.g. `--n_seeds 3
-  --train_steps 2000`) — the output is still real, just noisier and with
-  less statistical power in the significance tests it also writes to
-  `outputs/{system}/fig05_pv_sweep_stats.txt`.
-- `--n_workers` parallelizes the (method, PV level, seed) job grid within
-  one system. Verified bit-identical regardless of worker count (BLAS
-  threads are pinned specifically to guarantee this — see the comment in
-  `unified_exp_fig05.py`'s `main()`).
-- Output lands in `outputs/{system}/fig05_pv_sweep.{npz,png}` plus the
-  stats file, all system-namespaced so a subsequent system's run can't
-  overwrite a previous one's.
+This drives, for each system in scope (8bus, 14bus, 39bus), in order: Fig
+5 (OF vs. PV), Fig 6 (CTI violation rate vs. PV), and Core C (MARL vs.
+baselines) — skipping any system/stage whose output already exists —
+then regenerates the figures that read Core C's cache (Figs 11, 12,
+31–33, 55–56), consolidates everything into
+`results/reports/results_registry.{json,csv}` via
+`experiments/build_results_registry.py`, and finishes with
+`pytest tests/ -q` plus a cache-status check. Each stage's log lands in
+`results/logs/<stage>_<system>.txt`; a failure or interrupt in one
+system/stage does not abort the others, and a summary at the end lists
+what was skipped and what failed.
 
-## Step 7 — CTI violation-rate sweep, Figure 6, for each system
+**Safe to interrupt and re-run** — just run the same command again.
+Completed stages (an existing `outputs/{system}/fig05_pv_sweep.npz`, an
+existing `outputs/{system}/fig06_cti_violations.npz`, or an existing
+`core_C_baselines_<system>` cache entry) are skipped, not redone, so
+resuming after a container restart or a killed terminal only re-attempts
+what's actually missing.
+
+Useful variations:
 
 ```bash
-for SYS in 8bus 14bus 39bus; do
-    python3 evaluation/utils/exp_fig06_cti_violation_rate.py \
-        --system "$SYS" --n_seeds 10 --train_steps 5000 \
-        --output_dir outputs
-done
+# Resume only the outstanding pieces (see "Known gaps" below) -- same as
+# running with no arguments; nothing already done gets re-run
+./run_full_experiment.sh
+
+# Just one stage, one system
+./run_full_experiment.sh --stages fig6 --systems 14bus
+
+# Faster, noisier pass (real data, less statistical power)
+./run_full_experiment.sh --n-seeds 3 --train-steps 2000
+
+# Force a redo of something already completed
+./run_full_experiment.sh --force --stages fig6 --systems 14bus
+
+# All options
+./run_full_experiment.sh --help
 ```
 
-**This script has no `--n_workers` and no partial-save** — it runs fully
-sequentially (7 methods × 4 PV levels × `n_seeds`) and only writes output
-once, at the very end. In practice this is the slowest step in the whole
-runbook: at reduced settings (`n_seeds=2, train_steps=2000`) an 8-bus pass
-took roughly 2.5 hours in prior runs; a 14-bus pass at the same settings
-projected past 14 hours before completing. Plan for this to run overnight
-or longer per system at thesis-scale settings, and run it under `nohup`
-(or `screen`/`tmux`) so an interrupted terminal session doesn't lose the
-whole run:
+**What the script deliberately does NOT do**: decide whether to clear the
+cache first (Step 3) or run the single-system main pipeline (Step 5).
+Those still need a human call and a separate invocation — see Step 0 for
+why everything isn't just one script.
+
+**A caution carried over unchanged from the original per-stage
+instructions**: the Fig 6 sweep this script runs per system has no
+`--n_workers` and no partial-save — it runs fully sequentially (7 methods
+× 4 PV levels × `n_seeds`) and only writes output once, at the very end.
+At reduced settings (`n_seeds=2, train_steps=2000`) an 8-bus pass took
+roughly 2.5 hours in a prior run; a 14-bus pass at the same settings
+projected past 14 hours before completing. Run the script under `nohup`
+(or `screen`/`tmux`) for this reason:
 
 ```bash
-nohup python3 evaluation/utils/exp_fig06_cti_violation_rate.py \
-    --system 14bus --n_seeds 10 --train_steps 5000 --output_dir outputs \
-    > results/logs/fig06_14bus.log 2>&1 &
+nohup ./run_full_experiment.sh > results/logs/full_experiment.txt 2>&1 &
+echo $!   # save the PID
 ```
 
-If it's interrupted, there is nothing to resume — it must be re-run from
-the start.
+If Fig 6 for a given system is interrupted, its stage has nothing to
+resume from — re-running the script will simply redo that system's Fig 6
+sweep from scratch (correctly, since no output file exists yet to skip
+against), not silently pick up partway through.
 
-## Step 8 — Core C (MARL vs. baselines), for each system
+### Manual equivalent — running one piece by hand
 
-```bash
-for SYS in 8bus 14bus 39bus; do
-    python3 run_core_training.py --core-C --system "$SYS" --seed 42
-done
-```
-
-Drop `--seed 42` to use the config default, or set your own — just be
-consistent across systems if you want results comparable seed-for-seed.
-Cached per system under the name `core_C_baselines_<system>` (see
-`results/core_cache/cache_index.json`), so re-running a system you've
-already done is a fast no-op unless you change the config or clear the
-cache for it specifically:
+The script is exactly the commands below, looped over systems with a
+skip-if-done check in front of each. Use these directly if you want to
+run a single piece without the script, or to understand what's happening
+under the hood.
 
 ```bash
+# Fig 5, one system
+python3 baselines/experiments/unified_exp_fig05.py \
+    --system 8bus --n_seeds 10 --train_steps 5000 --n_workers 4 \
+    --output_dir outputs
+
+# Fig 6, one system
+python3 evaluation/utils/exp_fig06_cti_violation_rate.py \
+    --system 8bus --n_seeds 10 --train_steps 5000 --output_dir outputs
+
+# Core C, one system (cached under core_C_baselines_<system>; a repeat
+# call with the same config is a fast cache hit, not a full re-run)
+python3 run_core_training.py --core-C --system 8bus --seed 42
+
+# Force a specific system's Core C cache entry to retrain
 python3 -c "
 from run_core_training import CacheManager
 from pathlib import Path
 CacheManager(Path('results/core_cache')).invalidate(pattern='core_C_baselines_8bus')
 "
-```
 
-## Step 9 — Regenerate the figures that read Core C / Fig 5 / Fig 6 data
-
-Steps 6–8 write their own `.png`s directly, but the figures inside the
-main pipeline that also read Core C's cache (Figs 11, 12, 31–33, 55–56)
-need re-generating once Core C has real per-system data:
-
-```bash
+# Regenerate the figures that read Core C / Fig 5 / Fig 6 data
 python3 run_thesis_experiments.py --fig 11 12 31 32 33 55 56
-```
 
-## Step 10 — Consolidate everything into one results registry
-
-```bash
+# Consolidate into one results registry (full rebuild each time -- always
+# safe to re-run)
 python3 experiments/build_results_registry.py
-```
 
-Pulls every system's Fig 5/6 output and Core C cache entry into
-`results/reports/results_registry.{json,csv}` — one row per
-(method, system, PV level), ready for further statistical analysis,
-a spreadsheet, or a notebook. Re-run this any time after adding a new
-system's data; it's a full rebuild, not an incremental append, so it's
-always safe to re-run.
-
-## Step 11 — Final verification
-
-```bash
+# Final verification
 python3 -m pytest tests/ -q
 python3 run_thesis_experiments.py --list          # confirm every figure's data source
 python3 run_core_training.py --cache-status       # confirm all 11 Cores + per-system Core C are cached
@@ -241,9 +245,9 @@ python3 run_core_training.py --cache-status       # confirm all 11 Cores + per-s
 Cross-check `results/reports/results_registry.json` has rows for all
 three systems (8bus, 14bus, 39bus) at all four PV levels before treating
 the multi-system results as complete. Any figure still falling back to
-synthetic data prints a `[SYNTHETIC]` watermark and logs a warning
-naming the missing cache entry — search `results/logs/` for `synthetic`
-to find what's still outstanding.
+synthetic data prints a `[SYNTHETIC]` watermark and logs a warning naming
+the missing cache entry — search `results/logs/` for `synthetic` to find
+what's still outstanding.
 
 ---
 
@@ -265,11 +269,13 @@ deployment.
 
 ## Known gaps as of this writing
 
-- Fig 5 (Step 6) and Fig 6 (Step 7) have not yet been run to completion
-  for every system in this environment — 39-bus Fig 5 and 14-bus/39-bus
-  Fig 6 are outstanding (interrupted by environment restarts during a
-  prior session; Fig 6's lack of partial-save means those need a full
-  re-run, not a resume).
+- Fig 5 and Fig 6 (Step 6) have not yet been run to completion for every
+  system in this environment — 39-bus Fig 5 and 14-bus/39-bus Fig 6 are
+  outstanding (interrupted by environment restarts during a prior
+  session; Fig 6's lack of partial-save means those need a full re-run,
+  not a resume). Running `./run_full_experiment.sh` will skip the systems
+  already done (8-bus Fig 5+6, 14-bus Fig 5) and only attempt what's
+  actually missing.
 - Cores D–K and the figures they feed represent the 8-bus condition only;
   extending them to 14-bus/39-bus is out of scope for the current
   codebase (see `CLAUDE.md`) and would need the same kind of

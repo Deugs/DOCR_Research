@@ -3,9 +3,12 @@
 Multi-Agent Reinforcement Learning for Directional Overcurrent Relay (DOCR)
 coordination on distribution networks with PV penetration.
 
-This file is the quick-start command reference. For narrative detail —
-what each phase actually does, per-figure data provenance, Docker/cloud
-deployment, troubleshooting, and the reproducibility checklist — see
+This file is the quick-start command reference. For an ordered,
+start-to-finish walkthrough of running the whole thesis experiment
+(including the multi-system sweep script), see
+**[RUNBOOK.md](RUNBOOK.md)**. For narrative detail — what each phase
+actually does, per-figure data provenance, Docker/cloud deployment,
+troubleshooting, and the reproducibility checklist — see
 **[EXPERIMENT_GUIDE.md](EXPERIMENT_GUIDE.md)**. Repository layout and
 active scope are documented in **[CLAUDE.md](CLAUDE.md)**.
 
