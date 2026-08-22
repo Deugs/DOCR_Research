@@ -4,8 +4,17 @@ evaluation/utils/cti_analysis.py
 ─────────────────────────────────
 CLI wrapper for Figure 6: CTI Violation Rate vs. PV Penetration.
 
-This is a post-processing script that reads Figure 5 results and generates
-a dedicated CTI violation analysis plot. Can also run standalone.
+Runs exp_fig06_cti_violation_rate.py's full standalone training +
+evaluation from scratch every time. This module's docstring previously
+claimed it "reads Figure 5 results" via a required --data flag, but
+--data was parsed and never referenced anywhere in this file, and
+exp_fig06_cti_violation_rate.main() has no parameter to accept prior
+results even if it had been -- every invocation always retrained
+everything regardless of what path (or garbage) was passed for --data.
+Removed the flag rather than fabricate a load path that doesn't exist;
+if skipping retraining given real Figure 5 results is ever needed, that
+requires adding a real load path to exp_fig06_cti_violation_rate.main(),
+not just wiring up this wrapper's unused argument.
 
 Translates run_thesis_experiments.py CLI args to exp_fig06_cti_violation_rate.py interface.
 """
@@ -40,8 +49,6 @@ from evaluation.utils.exp_fig06_cti_violation_rate import main as fig06_main
 
 def main():
     p = argparse.ArgumentParser(description="Figure 6 — CTI Violation Analysis (CLI wrapper)")
-    p.add_argument("--data", type=str, required=True,
-                   help="Path to Figure 5 results pickle file (pv_sweep_results.pkl)")
     p.add_argument("--output", type=str, required=True, help="Output PDF path")
     args = p.parse_args()
 

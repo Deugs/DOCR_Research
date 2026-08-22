@@ -9,6 +9,20 @@ This module is a DROP-IN EXTENSION of comm_graph.py. It provides:
    - CommGraph, GNNCommTrainer
    - build_relay_adjacency, build_neighbor_observations
 
+   NOTE (drift disclosure): "unchanged API" was true when this module was
+   written, but comm_graph.py's CommGraph has since gained real Fig-13/22
+   stress/compression instrumentation -- packet_loss_rate, latency_steps,
+   quantization_bits, top_k_sparsify_fraction, and the forward() logic
+   that applies them -- that this module's own CommGraph/GradCommGraph do
+   NOT have (verified: none of those four attribute names appear anywhere
+   in this file). No current production trainer uses this module's
+   CommGraph or GradientBasedMAPPOMARLTrainer (marl/marl_agents.py imports
+   CommGraph from marl.comm_graph, not from here; the classes here are
+   exercised only by tests/test_phase2_gradient.py), so nothing is
+   currently broken by the drift -- but do not route a Fig-13/22-style
+   stress evaluation through `use_gradient_mode`/GradCommGraph expecting
+   those knobs to exist; port them here first if that's ever needed.
+
 2. NEW gradient-based versions ("Grad" prefix):
    - GradGNNMessageEncoder, GradGNNAttention, GradGNNMessageDecoder
    - GradCommGraph, GradientBasedMAPPOMARLTrainer

@@ -38,7 +38,8 @@ from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
 from marl.safe_rl import create_safe_rl_env, SafeRLConfig
-from network.relay_physics import check_constraints
+from marl.continual_trainer import create_ewc_trainer, EWCConfig
+from network.relay_physics import check_constraints, objective_function as OF_fn
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -97,8 +98,12 @@ def run_metaheuristic(method: str, net, n_agents: int, seed: int) -> Tuple[np.nd
         TDS = solution[:n_agents]
         PSM = solution[n_agents:]
         try:
+            # check_constraints() has no "objective_function" key -- that
+            # silently fell back to np.sum(TDS*PSM) (not a real objective
+            # value) on every call. objective_function() is the real Eq.(9)
+            # OF computation, returning (OF, sum_top, total_penalty).
             c = check_constraints(net, TDS, PSM)
-            of = c.get("objective_function", np.sum(TDS * PSM))
+            of, _, _ = OF_fn(net, TDS, PSM)
             penalty = c.get("cti_violations", 0) * 1000
             return of + penalty
         except Exception:
@@ -155,10 +160,45 @@ def evaluate_method(method: str, system: str, seed: int, n_eval_episodes: int = 
                 use_pid=True, adaptive_rho=True,
             ))
         trainer = MAPPOMARLTrainer(env, use_comm=use_comm, seed=seed)
-        if hasattr(trainer, 'use_ewc'):
-            trainer.use_ewc = (method == "MAPPO-Safe-EWC")
-
+        # MAPPOMARLTrainer has no `use_ewc` attribute -- this hasattr guard
+        # was always False, so "MAPPO-Safe-EWC" never actually applied any
+        # EWC penalty and trained identically to "MAPPO-Safe". Wire up the
+        # same single-task EWC pattern used for Core A/D's non-curriculum
+        # branch in run_core_training.py (register_task + finite-difference
+        # Fisher + finalize) instead.
         trainer.train(total_steps=5000, verbose=False)
+
+        if method == "MAPPO-Safe-EWC":
+            ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
+            cur = trainer.actor.get_all_params()
+            fisher_rng = np.random.default_rng(seed + 8000)
+            obs_f = env.reset(seed=seed + 9000)
+            s_obs, s_act = [], []
+            done_f, sf = False, 0
+            while not done_f and sf < 30:
+                acts = np.zeros((env.n_agents, env.ACT_DIM))
+                enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, fisher_rng) if trainer.comm_graph is not None else (obs_f, None, None)
+                for i in range(env.n_agents):
+                    a, _ = trainer.actor.sample(enhanced_f[i], fisher_rng)
+                    acts[i] = a
+                    s_obs.append(enhanced_f[i].copy())
+                    s_act.append(a.copy())
+                obs_f, _, done_f, _ = env.step(acts); sf += 1
+            n_p = len(cur)
+            fisher = np.zeros(n_p)
+            if s_obs:
+                idx = fisher_rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+                h = 1e-3
+                for p_idx in fisher_rng.choice(n_p, size=min(n_p, 50), replace=False):
+                    bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    b2 = cur.copy(); b2[p_idx] += h
+                    trainer.actor.set_all_params(b2)
+                    ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    fisher[p_idx] = ((ul - bl) / h) ** 2
+                trainer.actor.set_all_params(cur)
+            ewc_trainer.ewc_regularizer.register_task(method, cur)
+            ewc_trainer.ewc_regularizer.update_fisher(method, fisher)
+            ewc_trainer.ewc_regularizer.finalize()
 
         rng = np.random.default_rng(seed)
         returns = []
@@ -171,8 +211,16 @@ def evaluate_method(method: str, system: str, seed: int, n_eval_episodes: int = 
             ep_return = 0.0
             while not done:
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
+                # use_comm=True unconditionally for MARL methods above --
+                # the actor expects the GNN comm-enhanced observation
+                # (obs_dim+msg_dim), not the raw env observation, or this
+                # crashes with a matmul dimension mismatch.
+                if trainer.comm_graph is not None:
+                    enhanced, _, _ = trainer.comm_graph.forward(obs, rng)
+                else:
+                    enhanced = obs
                 for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
+                    a, _ = trainer.actor.sample(enhanced[i], rng)
                     actions[i] = a
                 obs, reward, done, info = env.step(actions)
                 ep_return += _ensure_scalar(reward)
@@ -181,7 +229,11 @@ def evaluate_method(method: str, system: str, seed: int, n_eval_episodes: int = 
             TMS, PS = env.get_state()
             c = check_constraints(net, TMS, PS)
             cti_violations.append(c.get("cti_violations", 0))
-            of_values.append(c.get("objective_function", 0))
+            # check_constraints() has no "objective_function" key -- this
+            # silently appended 0.0 for every episode. objective_function()
+            # is the real Eq.(9) OF computation.
+            of_val, _, _ = OF_fn(net, TMS, PS)
+            of_values.append(of_val)
 
     else:
         # Metaheuristic: optimize once, evaluate fixed settings
@@ -203,7 +255,8 @@ def evaluate_method(method: str, system: str, seed: int, n_eval_episodes: int = 
 
             c = check_constraints(net, TDS_opt, PSM_opt)
             cti_violations.append(c.get("cti_violations", 0))
-            of_values.append(c.get("objective_function", 0))
+            of_val, _, _ = OF_fn(net, TDS_opt, PSM_opt)
+            of_values.append(of_val)
 
     wall_time = time.perf_counter() - t0
 

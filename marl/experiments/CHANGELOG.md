@@ -38,7 +38,18 @@
 - Network selection based on system parameter
 
 ### 7. exp_fig38_attention_extraction_v2.py
-**Issues fixed:**
+**Correction (this pass): none of the fixes below were actually applied.**
+The file still has `Mock8BusNetwork` defined (unused), `run_figure8()`/
+`run_figure38()` reference a bare `system` name that is not a parameter
+or global (NameError on any call), `get_network()`'s "8bus" branch calls
+an undefined `real_get_network()`, and `main()` still doesn't accept
+`system`. The module nothing calls this file (the real Figure 38 path is
+`marl/experiments/attention_evolution.py`, an honestly-labelled STUB), so
+this was left as dead code with a disclosure header added to the file
+itself rather than repaired — see that file's own docstring. The claims
+below describe intended, never-completed work and should not be trusted:
+
+**Issues fixed (not actually applied — see correction above):**
 - Removed `Mock8BusNetwork` fallback (now raises `ValueError` on unknown system)
 - Replaced `get_8bus()` with `get_network(system)`
 - Added `system` parameter to `run_figure8()`, `run_figure38()`, `main()`, and argparse

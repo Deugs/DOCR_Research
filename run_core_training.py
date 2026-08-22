@@ -610,10 +610,19 @@ def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None,
     n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
     
     config = {
-        "name": "core_A_mappo_safe_ewc_8bus_100pv",
+        # Name/pv corrected from "...100pv"/1.0: _run_core_A_experimental
+        # actually trains at curriculum_stage=3 (60% PV, the active sweep
+        # max -- see that function's own comment), not 100%. Every
+        # downstream consumer (run_post_processing.py's load_cache(...)
+        # and figure titles) inherited the stale "100% PV" label from
+        # this config dict; renaming it here also changes the cache key
+        # (CacheManager hashes the whole config), so this forces a fresh,
+        # correctly-labeled run instead of silently keeping a
+        # mislabeled cached entry alive under a name nothing loads anymore.
+        "name": "core_A_mappo_safe_ewc_8bus_60pv",
         "method": "MAPPO-Safe-EWC",
         "system": "8bus",
-        "pv": 1.0,
+        "pv": 0.6,
         "n_runs": n_runs,
         "n_episodes": n_episodes,
         "seed": seed,
@@ -630,14 +639,14 @@ def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None,
     if cached is not None:
         logger.info("[Core A] Using cached results")
         return cached
-        
+
     run_name = "Core A"
     if progress:
-        progress.start_run(run_name, total_steps=n_runs, 
-                          desc=f"MAPPO-Safe-EWC 8-Bus 100% PV — {n_runs} runs x {n_episodes} episodes")
-        
+        progress.start_run(run_name, total_steps=n_runs,
+                          desc=f"MAPPO-Safe-EWC 8-Bus 60% PV — {n_runs} runs x {n_episodes} episodes")
+
     logger.info("=" * 70)
-    logger.info("CORE RUN A: MAPPO-Safe-EWC (8-Bus, 100% PV)")
+    logger.info("CORE RUN A: MAPPO-Safe-EWC (8-Bus, 60% PV)")
     logger.info(f"  Runs: {n_runs}, Episodes: {n_episodes}")
     logger.info("  Feeds: Figs 9,10,12,21,37,38,41,48-50,55-57")
     logger.info("=" * 70)
@@ -886,7 +895,9 @@ def _aggregate_runs(runs_data: List[Dict]) -> Dict:
 
 
 # ═════════════════════════════════════════════════════════════════
-# CORE RUN B — Curriculum 0% -> 100% PV
+# CORE RUN B — Curriculum 0% -> 60% PV (TASKS list below; rescoped from
+# the original 0-100% range -- see the "Was [0.0, 0.25, 0.5, 0.75, 1.0]"
+# comment on _run_curriculum_single's TASKS definition)
 # ═════════════════════════════════════════════════════════════════
 def _core_B_job(args):
     run_idx, run_seed, episodes_per_task, tasks = args
@@ -1235,7 +1246,7 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
 
     config = {
         # "system" folded into the cache name (matching Core A's
-        # "core_A_mappo_safe_ewc_8bus_100pv" convention) so
+        # "core_A_mappo_safe_ewc_8bus_60pv" convention) so
         # cache_index.json / load_cache() keep every system's baseline
         # comparison distinguishable and browsable together by name
         # prefix, rather than one entry silently overwriting another's

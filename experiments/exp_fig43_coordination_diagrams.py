@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 K_IEC = 0.14
 ALPHA_IEC = 0.02
 
+# NetworkData has no per-line length data anywhere (topology is implicit
+# in RelayPair.bus_pri/bus_bkp; see NetworkData.n_lines's own docstring:
+# "There is no separate `lines` table on NetworkData") -- this nominal
+# medium-voltage feeder segment length is an illustrative placeholder for
+# the x-axis distance scale, not a measured per-line value.
+NOMINAL_LINE_LENGTH_KM = 10.0
+
 
 def relay_operating_time(TDS: float, PSM: float, I_fault: float, I_pickup: float) -> float:
     """
@@ -49,48 +56,51 @@ def relay_operating_time(TDS: float, PSM: float, I_fault: float, I_pickup: float
 
 
 def compute_coordination_curve(net, TMS: np.ndarray, PS: np.ndarray,
-                                line_idx: int, fault_positions: np.ndarray,
+                                pair_idx: int, fault_positions: np.ndarray,
                                 I_base: float = 5000.0) -> dict:
     """
     Compute primary and backup operating times along a line.
-    
+
     Parameters
     ----------
     net : NetworkData
     TMS, PS : learned relay settings
-    line_idx : index into net.lines
+    pair_idx : index into net.pairs -- NetworkData has no separate
+        `.lines` table or RelayPair.line_idx field (topology is implicit
+        in RelayPair.bus_pri/bus_bkp; see NetworkData.n_lines's own
+        docstring), so each P/B pair is addressed directly by its own
+        index rather than looked up via a nonexistent line table.
     fault_positions : array of fractional distances [0, 1] along line
     I_base : base fault current magnitude (A)
-    
+
     Returns
     -------
     dict with distances, t_primary, t_backup, CTI_margin
     """
-    line = net.lines[line_idx]
-    pair = None
-    for p in net.pairs:
-        if p.line_idx == line_idx:
-            pair = p
-            break
-    
-    if pair is None:
-        logger.warning("No P/B pair found for line %d", line_idx)
-        return None
-
+    pair = net.pairs[pair_idx]
     prim_idx = pair.primary
     back_idx = pair.backup
-    I_pickup_prim = net.relays[prim_idx].I_pickup
-    I_pickup_back = net.relays[back_idx].I_pickup
+    # PS[i] is this codebase's real per-relay pickup setting (see
+    # network/relay_physics.py's idmt_time: ratio = If / PS) -- there is
+    # no separate `net.relays[i].I_pickup` field anywhere on NetworkData.
+    I_pickup_prim = PS[prim_idx]
+    I_pickup_back = PS[back_idx]
 
     # Fault current decreases with distance from source (simplified linear)
-    distances = fault_positions * line.length_km
+    distances = fault_positions * NOMINAL_LINE_LENGTH_KM
     I_fault_prim = I_base * (1.0 - 0.3 * fault_positions)   # primary sees higher current
     I_fault_back = I_base * (1.0 - 0.5 * fault_positions)   # backup sees lower current
 
-    t_prim = np.array([relay_operating_time(TMS[prim_idx], PS[prim_idx],
+    # PSM=1.0: this codebase's PS values already are the full pickup
+    # current (see network/relay_physics.py's idmt_time: ratio = If/PS,
+    # no separate multiplier) -- passing PS[idx] as BOTH the PSM and
+    # I_pickup args below would square it, always saturating the ratio
+    # below 1.0 and returning inf for every fault position regardless of
+    # distance (confirmed: previously did exactly that for every curve).
+    t_prim = np.array([relay_operating_time(TMS[prim_idx], 1.0,
                                                I_fault_prim[i], I_pickup_prim)
                        for i in range(len(fault_positions))])
-    t_back = np.array([relay_operating_time(TMS[back_idx], PS[back_idx],
+    t_back = np.array([relay_operating_time(TMS[back_idx], 1.0,
                                                I_fault_back[i], I_pickup_back)
                        for i in range(len(fault_positions))])
 
@@ -103,7 +113,7 @@ def compute_coordination_curve(net, TMS: np.ndarray, PS: np.ndarray,
         "cti_margin": cti_margin,
         "primary_relay": prim_idx,
         "backup_relay": back_idx,
-        "line_name": f"Line {line.from_bus}-{line.to_bus}",
+        "line_name": f"Line {pair.bus_pri}-{pair.bus_bkp}",
     }
 
 
@@ -120,13 +130,15 @@ def main(train_steps: int = 8000, seed: int = 42, output_dir: str = "outputs"):
 
     TMS, PS = env.get_state()
 
-    # Select representative lines (3-4 as per guide)
-    representative_lines = list(range(min(4, len(net.lines))))
+    # Select representative P/B pairs (3-4 as per guide). NetworkData has
+    # no `.lines` table -- net.n_pairs is the real count of addressable
+    # primary/backup relay pairs.
+    representative_pairs = list(range(min(4, net.n_pairs)))
     fault_positions = np.array([0.1, 0.3, 0.5, 0.7, 0.9])
 
     all_curves = []
-    for line_idx in representative_lines:
-        curve = compute_coordination_curve(net, TMS, PS, line_idx, fault_positions)
+    for pair_idx in representative_pairs:
+        curve = compute_coordination_curve(net, TMS, PS, pair_idx, fault_positions)
         if curve:
             all_curves.append(curve)
             logger.info("Line %s: min CTI margin = %.3f s", curve["line_name"],

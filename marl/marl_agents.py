@@ -39,7 +39,26 @@ from network.relay_physics import (
     objective_function, check_constraints,
     compute_operating_times,
     TMS_MIN, TMS_MAX, CTI, TOP_MIN, TOP_MAX,
+    FAULT_TYPES,
 )
+
+
+def _fault_type_idx(fault_type: str) -> int:
+    """Map an env's fault_type string to the critic's one-hot index.
+
+    Every real call site in this file used to pass the literal
+    `fault_type_idx=0` regardless of the env's actual fault_type --
+    MAPPOCentralCritic's global state reserves 4 dims for a one-hot over
+    FAULT_TYPES (see _critic_global_state), but that conditioning was
+    functionally inert: the critic always "saw" 3ph even when training
+    used a different fault type (e.g. via a real --fault-type CLI flag).
+    Falls back to index 0 for an unrecognized string rather than raising,
+    since a hardcoded 0 for every call was already the (broken) status quo.
+    """
+    try:
+        return FAULT_TYPES.index(fault_type)
+    except ValueError:
+        return 0
 
 # Optional GPU backend for the ES perturbation-population update
 # (_update_actor_es_gpu/_update_critic_es_gpu below). torch is not a hard
@@ -600,7 +619,7 @@ class MAPPOMARLTrainer:
                 # computed from the state at timestep t, not the state after rollout.
                 pred = self.critic.value_batch(
                     tms_batch, ps_batch, pv_batch, topo_batch,
-                    neighbor_stats_batch, fault_type_idx=0,
+                    neighbor_stats_batch, fault_type_idx=_fault_type_idx(self.env.fault_type),
                 )
                 loss = -float(np.mean((ret_batch - pred[:, None]) ** 2))
                 noises.append(sign * eps)
@@ -667,7 +686,7 @@ class MAPPOMARLTrainer:
 
         global_state = _critic_global_state(tms_batch, ps_batch, pv_batch, topo_batch,
                                              neighbor_stats_batch, self.critic.use_global_state,
-                                             fault_type_idx=0)
+                                             fault_type_idx=_fault_type_idx(self.env.fault_type))
         gs_t = torch.as_tensor(global_state, dtype=torch.float64, device=dev)
         hidden, in_dim = self.critic.net.W1.shape
         pred = _mlp_forward_population_torch(gs_t, theta_batch, in_dim, hidden, 1)[:, :, 0]  # (T, 2*n_pert)
@@ -721,7 +740,7 @@ class MAPPOMARLTrainer:
             neighbor_stats = self._get_neighbor_stats(obs)
             value = self.critic.value(
                 TMS, PS, pv_level, topology_flag,
-                fault_type_idx=0, neighbor_stats=neighbor_stats
+                fault_type_idx=_fault_type_idx(self.env.fault_type), neighbor_stats=neighbor_stats
             )
 
             next_obs, rewards, done, info = self.env.step(actions)
@@ -822,7 +841,7 @@ class MAPPOMARLTrainer:
             neighbor_stats = self._get_neighbor_stats(obs)
             last_val = self.critic.value(
                 TMS, PS, pv_level, topology_flag,
-                fault_type_idx=0, neighbor_stats=neighbor_stats
+                fault_type_idx=_fault_type_idx(self.env.fault_type), neighbor_stats=neighbor_stats
             )
             advs, rets = self.buffer.compute_gae(self.gamma, self.lam, last_val)
 

@@ -233,6 +233,49 @@ def test_comm_graph_top_k_sparsify():
     print("  CommGraph top-k sparsification: restricting neighbors alters forward()")
 
 
+def test_comm_graph_top_k_sparsify_uses_real_degree_not_n_agents():
+    """Regression: the first implementation of top_k_sparsify_fraction
+    computed k = ceil(n_agents * fraction) -- a fraction of the TOTAL
+    agent count, not of each agent's actual number of real graph
+    neighbors (its degree). Real relay-adjacency graphs in this codebase
+    are sparse (e.g. avg degree ~5 out of 14 agents on the 8-bus system),
+    so that k was always >= every row's real degree, making the knob a
+    silent no-op on every real network -- exp_fig22_bandwidth_tradeoff.py's
+    "top50" compression arm would report identical performance to
+    uncompressed while claiming a 50% bandwidth cut. k must be computed
+    relative to each row's own degree instead.
+    """
+    from marl.comm_graph import CommGraph, CommConfig, build_relay_adjacency
+    from network.network_data import get_8bus
+
+    net = get_8bus()
+    adjacency = build_relay_adjacency(net)
+    # Confirm this graph is genuinely sparse relative to n_agents, so a
+    # fraction-of-n_agents k would trivially keep every real neighbor.
+    degrees = adjacency.sum(axis=1)
+    assert degrees.max() < net.n_relays, \
+        "test fixture is not sparse -- rewrite with a sparser adjacency"
+
+    config = CommConfig(message_dim=8, hidden_dim=16, use_attention=True)
+
+    def make_comm():
+        return CommGraph(n_agents=net.n_relays, obs_dim=10, enhanced_dim=18,
+                          adjacency=adjacency, config=config, seed=42)
+
+    observations = np.random.default_rng(0).standard_normal((net.n_relays, 10))
+
+    enhanced_base, _, _ = make_comm().forward(observations, rng=np.random.default_rng(1))
+
+    comm_sparse = make_comm()
+    comm_sparse.top_k_sparsify_fraction = 0.5
+    enhanced_sparse, _, _ = comm_sparse.forward(observations, rng=np.random.default_rng(1))
+
+    assert not np.allclose(enhanced_base, enhanced_sparse), \
+        "top_k_sparsify_fraction=0.5 had no effect on the real, sparse 8-bus relay graph"
+
+    print("  CommGraph top-k sparsification: real per-node degree, not n_agents, drives k")
+
+
 def test_relay_adjacency():
     """Test relay adjacency matrix for different systems."""
     from marl.comm_graph import build_relay_adjacency
@@ -327,6 +370,34 @@ def test_mappo_critic():
     assert np.isclose(value, value2), "Critic parameter set/get failed"
 
     print(f"  MAPPO Critic: value={value:.4f}, params={critic.n_params()}")
+
+
+def test_fault_type_idx_maps_env_fault_type_not_hardcoded_zero():
+    """Regression: every real call site in MAPPOMARLTrainer used to pass
+    the literal `fault_type_idx=0` to the critic regardless of the env's
+    actual fault_type -- MAPPOCentralCritic's global state reserves 4
+    dims for a one-hot over FAULT_TYPES, but that conditioning was
+    functionally inert whenever training used a non-default fault type
+    (e.g. via a real --fault-type CLI flag). _fault_type_idx() must map
+    each real fault type string to its correct index, and a trainer
+    built on a non-"3ph" env must actually use that index.
+    """
+    from marl.marl_agents import _fault_type_idx, MAPPOMARLTrainer
+    from network.relay_physics import FAULT_TYPES
+    from network.network_data import get_8bus
+    from marl.marl_env import DynamicDOCREnv
+
+    for expected_idx, ft in enumerate(FAULT_TYPES):
+        assert _fault_type_idx(ft) == expected_idx
+    assert _fault_type_idx("not-a-real-fault-type") == 0
+
+    net = get_8bus()
+    env = DynamicDOCREnv(net, seed=1, use_pandapower=False, fault_type="LL", curriculum_stage=3)
+    trainer = MAPPOMARLTrainer(env, use_comm=False, seed=1)
+    assert trainer.env.fault_type == "LL"
+    assert _fault_type_idx(trainer.env.fault_type) == FAULT_TYPES.index("LL") != 0
+
+    print("  fault_type_idx: maps real env.fault_type, not hardcoded to 0")
 
 
 def test_mappo_buffer():
@@ -491,10 +562,12 @@ def run_all_tests():
         test_comm_graph,
         test_comm_graph_stress_mechanics,
         test_comm_graph_top_k_sparsify,
+        test_comm_graph_top_k_sparsify_uses_real_degree_not_n_agents,
         test_relay_adjacency,
         test_neighbor_observations,
         test_shared_gaussian_actor,
         test_mappo_critic,
+        test_fault_type_idx_maps_env_fault_type_not_hardcoded_zero,
         test_mappo_buffer,
         test_single_ppo,
         test_mappo_integration,

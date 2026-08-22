@@ -1,22 +1,7 @@
 
 """
 main.py
-──────    # Phase 7: Robustness & Deployment
-    if args.phase7 or args.robustness:
-        if not args.methods:
-            args.methods = ["GA-SQP", "JAYA"]
-        return run_phase7_robustness(args)
-
-    if args.deployment:
-        if not args.methods:
-            args.methods = ["MAPPO-Comm", "MAPPO-Safe-EWC"]
-        return run_phase7_deployment(args)
-
-    # Phase 8: Statistical Validation & Thesis
-    if args.phase8 or args.validate:
-        return run_phase8_validation(args)
-
-─
+──────
 Phase 4 Entry Point for DOCR-MARL Thesis.
 
 Runs comprehensive experiments comparing:
@@ -875,23 +860,30 @@ def run_phase7_robustness(args):
 
         tester = RobustnessTester(RobustnessConfig(seed=args.seed))
 
-        # Test GA-SQP
+        # Test GA-SQP. Previously called tester.test_method() with a
+        # runner accepting-and-discarding a `config=` kwarg -- test_method
+        # passed the UNPERTURBED net regardless of the requested stress
+        # condition, so every "robustness" result only reflected
+        # seed-to-seed noise, never a real stress condition.
+        # test_method_with_stress() genuinely perturbs the network's
+        # fault currents per condition via apply_stress_to_net() before
+        # calling the runner.
         if "GA-SQP" in args.methods:
             print(f"\n  Testing GA-SQP robustness...")
-            def ga_runner(net, seed=42, config=None):
-                return run_ga_sqp(net, ga_pop=30, ga_gen=50, seed=seed, verbose=False)
+            def ga_runner(stressed_net, seed=42):
+                return run_ga_sqp(stressed_net, ga_pop=30, ga_gen=50, seed=seed, verbose=False)
 
-            tester.test_method("GA-SQP", ga_runner, net, n_runs=args.n_runs, verbose=args.verbose)
+            tester.test_method_with_stress("GA-SQP", ga_runner, net, n_runs=args.n_runs, verbose=args.verbose)
             results[f"{sys_key}_GA-SQP"] = tester.compute_degradation_metrics("GA-SQP")
             print(tester.generate_report("GA-SQP"))
 
         # Test JAYA (fast metaheuristic)
         if "JAYA" in args.methods:
             print(f"\n  Testing JAYA robustness...")
-            def jaya_runner(net, seed=42, config=None):
-                return run_jaya(net, n_pop=20, max_iter=100, seed=seed, verbose=False, use_sqp=False)
+            def jaya_runner(stressed_net, seed=42):
+                return run_jaya(stressed_net, n_pop=20, max_iter=100, seed=seed, verbose=False, use_sqp=False)
 
-            tester.test_method("JAYA", jaya_runner, net, n_runs=args.n_runs, verbose=args.verbose)
+            tester.test_method_with_stress("JAYA", jaya_runner, net, n_runs=args.n_runs, verbose=args.verbose)
             results[f"{sys_key}_JAYA"] = tester.compute_degradation_metrics("JAYA")
             print(tester.generate_report("JAYA"))
 
@@ -1178,6 +1170,27 @@ def main():
         if not args.methods:
             args.methods = ["GA-SQP", "MAPPO-Safe"]
         return run_topology_robustness(args)
+
+    # Phase 7: Robustness & Deployment. This dispatch block was
+    # previously pasted into the module docstring at the top of this
+    # file instead of into main() -- a syntactically-valid but inert
+    # string literal, never executed. --phase7/--robustness/--deployment/
+    # --phase8/--validate were all dead flags that silently fell through
+    # to the default per-method Phase 4 loop below instead of dispatching
+    # to run_phase7_robustness/run_phase7_deployment/run_phase8_validation.
+    if args.phase7 or args.robustness:
+        if not args.methods:
+            args.methods = ["GA-SQP", "JAYA"]
+        return run_phase7_robustness(args)
+
+    if args.deployment:
+        if not args.methods:
+            args.methods = ["MAPPO-Comm", "MAPPO-Safe-EWC"]
+        return run_phase7_deployment(args)
+
+    # Phase 8: Statistical Validation & Thesis
+    if args.phase8 or args.validate:
+        return run_phase8_validation(args)
 
     # Benchmark suite mode
     if args.benchmark:

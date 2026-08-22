@@ -78,31 +78,38 @@ def compute_classical_solution(net, env) -> Tuple[np.ndarray, np.ndarray]:
     return best_TDS, best_PSM
 
 
-def set_policy_to_solution(trainer, TDS: np.ndarray, PSM: np.ndarray):
+def make_warm_start_env(net, classical_TDS: np.ndarray, classical_PSM: np.ndarray, **env_kwargs):
     """
-    Warm-start policy parameters from classical solution.
-    Maps TDS/PSM to action space and sets policy output layer bias.
-    """
-    # Normalize to action space: TDS ∈ [0.1, 1.0] → [0, 1]
-    tds_norm = (TDS - 0.1) / 0.9
-    psm_norm = (PSM - 1.0) / 9.0
-    target_actions = np.column_stack([tds_norm, psm_norm])
+    Wrap a fresh DynamicDOCREnv so every reset() starts from the classical
+    DOCR solution instead of a random point.
 
-    # Set policy output layer to produce target actions as mean
-    if hasattr(trainer.actor, 'set_output_bias'):
-        trainer.actor.set_output_bias(target_actions.mean(axis=0))
-    elif hasattr(trainer.actor, 'mean_network') and hasattr(trainer.actor.mean_network, 'layers'):
-        # Try to set last layer bias
-        try:
-            last_layer = trainer.actor.mean_network.layers[-1]
-            if hasattr(last_layer, 'b'):
-                last_layer.b[:] = target_actions.mean(axis=0)
-                logger.info("Warm-start: set output bias to [%.3f, %.3f]",
-                            target_actions.mean(axis=0)[0], target_actions.mean(axis=0)[1])
-        except Exception as e:
-            logger.warning("Could not warm-start policy: %s", e)
-    else:
-        logger.warning("Warm-start not supported for this actor architecture")
+    `DynamicDOCREnv.ACT_DIM` is `[DeltaTMS, DeltaPS]` -- the policy outputs
+    per-step *increments* to TMS/PS (see marl/marl_env.py), not absolute
+    settings. `SharedGaussianActor` also has no `set_output_bias`/
+    `mean_network` attribute anywhere -- both hasattr checks previously
+    used here were always False, so warm-start silently fell through to a
+    no-op "not supported" warning and trained identically to cold-start
+    regardless of the classical solution computed above.
+
+    For a delta/increment-controlled policy, the correct way to warm-start
+    is to change *where the environment starts*, not to bias the policy's
+    output layer toward an absolute target it was never designed to
+    produce directly. `env.reset()` always randomizes TMS/PS via
+    `self.rng.uniform(...)` with no initial-state override, so `reset` is
+    monkey-patched here to call the env's own `set_state()` (the same
+    method `compute_classical_solution` above already uses) right after
+    each reset.
+    """
+    env = DynamicDOCREnv(net, **env_kwargs)
+    original_reset = env.reset
+
+    def warm_reset(*args, **kwargs):
+        original_reset(*args, **kwargs)
+        env.set_state(classical_TDS.copy(), classical_PSM.copy())
+        return env._get_obs()
+
+    env.reset = warm_reset
+    return env
 
 
 def train_with_logging(trainer, env, total_steps: int, eval_interval: int = 500,
@@ -176,9 +183,9 @@ def main(train_steps: int = 10000, n_seeds: int = 3, seed: int = 42,
 
         # ── Warm-start ──────────────────────────────────────────────────────
         logger.info("  Warm-start training...")
-        env_warm = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=5)
+        env_warm = make_warm_start_env(net, classical_TDS, classical_PSM,
+                                        use_pandapower=False, fault_type="3ph", curriculum_stage=5)
         trainer_warm = MAPPOMARLTrainer(env_warm, use_comm=False, seed=seed + s * 100 + 500)
-        set_policy_to_solution(trainer_warm, classical_TDS, classical_PSM)
         steps_w, of_w, cti_w = train_with_logging(trainer_warm, env_warm, train_steps,
                                                    eval_interval=500, seed=seed + s * 100 + 500)
         warm_results.append((steps_w, of_w, cti_w))

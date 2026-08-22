@@ -88,12 +88,55 @@ def run_with_params(lambda_ewc, alpha_lambda, hidden_dim, seed=42, system="8bus"
     trainer = MAPPOMARLTrainer(safe_env, use_comm=False,
                                 hidden_actor=hidden_dim, hidden_critic=hidden_dim,
                                 seed=seed)
-    
-    # EWC with specified lambda
-    if lambda_ewc > 0:
-        trainer = create_ewc_trainer(trainer, EWCConfig(lambda_ewc=lambda_ewc))
-    
+
     trainer.train(total_steps=TRAIN_STEPS, verbose=False)
+
+    # EWC with specified lambda. `create_ewc_trainer()` returns a
+    # `ContinualMAPPOTrainer` wrapper with no `.train()`/`.actor` of its
+    # own (those stay on `.base_trainer`) -- reassigning `trainer` to it,
+    # as this used to do, crashed on the very next `trainer.train()` call
+    # for every one of the 80 grid configs. Keep `trainer` as the real
+    # MAPPOMARLTrainer and register a single completed task on the
+    # wrapper for bookkeeping instead, mirroring the pattern used for
+    # Core A/D's non-curriculum branch and exp_fig15's MAPPO-Safe-EWC arm.
+    # NOTE: as everywhere else in this codebase, this registration is
+    # post-hoc bookkeeping only -- MAPPOMARLTrainer.train() is ES-based
+    # and never reads `lambda_ewc`/`apply_ewc_to_gradient` during training,
+    # so lambda_ewc does not causally affect mean_OF/mean_CTI here; it
+    # only affects the `ewc_penalty` diagnostic computed below.
+    ewc_penalty = 0.0
+    if lambda_ewc > 0:
+        ewc_trainer = create_ewc_trainer(trainer, EWCConfig(lambda_ewc=lambda_ewc))
+        cur = trainer.actor.get_all_params()
+        fisher_rng = np.random.default_rng(seed + 8000)
+        obs_f = safe_env.reset(seed=seed + 9000)
+        s_obs, s_act = [], []
+        done_f, sf = False, 0
+        while not done_f and sf < 30:
+            acts = np.zeros((safe_env.n_agents, safe_env.ACT_DIM))
+            for i in range(safe_env.n_agents):
+                a, _ = trainer.actor.sample(obs_f[i], fisher_rng)
+                acts[i] = a
+                s_obs.append(obs_f[i].copy())
+                s_act.append(a.copy())
+            obs_f, _, done_f, _ = safe_env.step(acts); sf += 1
+        n_p = len(cur)
+        fisher = np.zeros(n_p)
+        if s_obs:
+            idx = fisher_rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+            h = 1e-3
+            for p_idx in fisher_rng.choice(n_p, size=min(n_p, 50), replace=False):
+                bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                b2 = cur.copy(); b2[p_idx] += h
+                trainer.actor.set_all_params(b2)
+                ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                fisher[p_idx] = ((ul - bl) / h) ** 2
+            trainer.actor.set_all_params(cur)
+        task_name = f"lam{lambda_ewc:.0e}"
+        ewc_trainer.ewc_regularizer.register_task(task_name, cur)
+        ewc_trainer.ewc_regularizer.update_fisher(task_name, fisher)
+        ewc_trainer.ewc_regularizer.finalize()
+        ewc_penalty, _ = ewc_trainer.ewc_regularizer.compute_ewc_penalty(cur)
     
     # Evaluate
     rng = np.random.default_rng(seed + 999)
@@ -124,6 +167,7 @@ def run_with_params(lambda_ewc, alpha_lambda, hidden_dim, seed=42, system="8bus"
         "std_OF": float(np.std(of_values)),
         "mean_CTI": float(np.mean(cti_values)),
         "std_CTI": float(np.std(cti_values)),
+        "ewc_penalty": float(ewc_penalty),
     }
 
 

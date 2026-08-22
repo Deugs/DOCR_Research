@@ -115,24 +115,36 @@ def evaluate_pair_violations(env, trainer, pair, n_episodes: int = 50, seed: int
 
 def compute_criticality_score(lambda_val: float, violation_rate: float,
                                electrical_distance: float,
+                               max_distance: float = 1.0,
                                weights: Dict[str, float] = None) -> float:
     """
     Compute composite criticality score.
-    
+
     Higher score = more critical pair.
+
+    `max_distance` should be the maximum electrical_distance observed
+    across ALL pairs in the network being scored (computed once in
+    main() and passed through), not a fixed assumption. Distances from
+    compute_electrical_distance() are bus-index differences, which
+    routinely exceed 1.0 on any network with more than a couple of
+    buses -- normalizing by a hardcoded /1.0 saturated distance_norm at
+    1.0 for nearly every pair (verified: 97% of pairs on the 30-bus
+    system, 100% on 14-bus where bus_pri==bus_bkp always), collapsing
+    "distance" from a continuous differentiating factor into a
+    near-constant or binary one.
     """
     if weights is None:
         weights = {"lambda": 0.4, "violation": 0.4, "distance": 0.2}
-    
+
     # Normalize each component to [0, 1]
     lambda_norm = np.clip(lambda_val / 10.0, 0, 1)  # assume max λ ≈ 10
     violation_norm = violation_rate
-    distance_norm = np.clip(electrical_distance / 1.0, 0, 1)  # normalize by typical max
-    
+    distance_norm = np.clip(electrical_distance / max(max_distance, 1e-9), 0, 1)
+
     score = (weights["lambda"] * lambda_norm +
              weights["violation"] * violation_norm +
              weights["distance"] * (1 - distance_norm))  # closer = more critical
-    
+
     return score
 
 
@@ -196,8 +208,10 @@ def main(train_steps: int = 8000, n_eval_episodes: int = 50,
                                       for i in range(n_pairs)])
     
     # Compute criticality scores
+    max_electrical_distance = float(np.max(electrical_distances)) if n_pairs else 1.0
     criticality_scores = np.array([
-        compute_criticality_score(mean_lambdas[i], mean_violations[i], electrical_distances[i])
+        compute_criticality_score(mean_lambdas[i], mean_violations[i], electrical_distances[i],
+                                   max_distance=max_electrical_distance)
         for i in range(n_pairs)
     ])
     
@@ -338,7 +352,7 @@ def main(train_steps: int = 8000, n_eval_episodes: int = 50,
     
     lambda_norm = np.clip(mean_lambdas / 10.0, 0, 1)
     violation_norm = mean_violations
-    distance_inv = 1 - np.clip(electrical_distances / 1.0, 0, 1)
+    distance_inv = 1 - np.clip(electrical_distances / max(max_electrical_distance, 1e-9), 0, 1)
     
     ax6.bar(x, lambda_norm * 0.4, width, label="λ contribution (40%)", 
             color="#2563eb", alpha=0.8)

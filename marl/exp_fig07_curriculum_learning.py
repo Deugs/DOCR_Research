@@ -23,6 +23,7 @@ from network.network_data import load_network, get_network_metadata, NETWORKS
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
 from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+from marl.continual_trainer import create_ewc_trainer, EWCConfig, TaskSimilarityEstimator
 from network.relay_physics import check_constraints
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
@@ -87,10 +88,23 @@ def run_curriculum_training(
     trainer = MAPPOMARLTrainer(env, use_comm=False, hidden_actor=64,
                                hidden_critic=64, seed=seed)
 
-    # Enable EWC
-    if hasattr(trainer, 'use_ewc'):
-        trainer.use_ewc = True
-    
+    # `trainer.use_ewc` was a dead attribute set -- MAPPOMARLTrainer
+    # never defines it, so this "MAPPO-Safe-EWC" curriculum never applied
+    # any real EWC penalty, and the "EWC Loss"/"Fisher Norm" panels below
+    # were always exactly 0.0 (trainer.ewc_loss/fisher_diagonal never
+    # existed either). Real EWC needs an actual create_ewc_trainer
+    # wrapper plus per-task Fisher registration -- the curriculum pattern
+    # (lagged consolidation via register_task/update_fisher/finalize,
+    # plus adapt_lambda/TaskSimilarityEstimator) is the same one already
+    # fixed this session in run_core_training.py's Core B/D and
+    # marl/experiments/exp_fig16_ewc_effectiveness.py.
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
+    similarity_estimator = TaskSimilarityEstimator()
+    prev_task_name = None
+    prev_fisher = None
+    prev_conditions = None
+    prev_params = None
+
     # Storage
     log = {
         "episode": [], "task_id": [], "mean_reward": [],
@@ -122,40 +136,50 @@ def run_curriculum_training(
         if hasattr(trainer.actor, 'get_all_params'):
             task_start_params = trainer.actor.get_all_params().copy()
         
-        # Train on this task
+        # Train on this task. Previously this loop only sampled actions
+        # via trainer.actor.sample() and stepped the env -- it never
+        # called trainer.train(), so no gradient/ES update ever happened
+        # and every "learning curve" this produced was noise from a
+        # frozen, randomly-initialized policy (the same bug class already
+        # fixed in experiments/exp_fig12_convergence_curves.py). One real
+        # training step now precedes each episode's logging rollout, so
+        # the rollout measures the just-updated policy.
+        steps_per_episode_estimate = max(1, env.max_steps // 4)
         for ep in range(episodes_per_task):
+            trainer.train(total_steps=steps_per_episode_estimate, verbose=False)
+
             obs = env.reset(seed=seed + total_episodes)
             done = False
             ep_reward = 0
             ep_cti = 0
-            
+
             while not done:
                 # ── FIX: use enhanced observations if communication is enabled ──
                 current_obs = _get_current_obs(trainer, obs, rng)
-                
+
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
                 for i in range(env.n_agents):
                     a, _ = trainer.actor.sample(current_obs[i], rng)
                     actions[i] = a
                 obs, reward, done, info = env.step(actions)
                 ep_reward += reward
-            
+
             TMS, PS = env.get_state()
             c = check_constraints(net, TMS, PS)
             ep_cti = c["cti_violations"]
-            
-            # EWC loss
-            ewc_val = 0.0
-            if hasattr(trainer, 'ewc_loss') and trainer.ewc_loss is not None:
-                ewc_val = float(trainer.ewc_loss)
-            elif hasattr(trainer, 'ewc_regularizer'):
-                ewc_val = float(trainer.ewc_regularizer.loss()) if hasattr(trainer.ewc_regularizer, 'loss') else 0.0
-            
-            # Fisher norm
-            fisher_norm = 0.0
-            if hasattr(trainer, 'fisher_diagonal'):
-                fisher_norm = float(np.linalg.norm(trainer.fisher_diagonal))
-            
+
+            # EWC loss/Fisher norm: `trainer.ewc_loss`/`fisher_diagonal`
+            # never existed on MAPPOMARLTrainer, so these were always
+            # 0.0. Now computed from the real EWC apparatus: penalty
+            # against whatever tasks have been consolidated so far (0.0
+            # before the first task boundary, by design -- there's
+            # nothing to be penalized against yet), and the norm of the
+            # most recently registered task's real Fisher estimate.
+            ewc_penalty, _ = ewc_trainer.ewc_regularizer.compute_ewc_penalty(trainer.actor.get_all_params())
+            ewc_val = float(ewc_penalty)
+            fisher_norm = float(np.linalg.norm(ewc_trainer.ewc_regularizer.task_memory[-1][2])) \
+                if ewc_trainer.ewc_regularizer.task_memory else 0.0
+
             # Parameter drift from initial
             param_drift = 0.0
             if initial_params is not None and hasattr(trainer.actor, 'get_all_params'):
@@ -171,7 +195,63 @@ def run_curriculum_training(
             log["param_drift"].append(param_drift)
             
             total_episodes += 1
-        
+
+        # Curriculum EWC task-boundary registration: estimate this task's
+        # Fisher information via finite differences over sampled rollout
+        # observations/actions, then register it (lagged consolidation --
+        # register_task() consolidates the PREVIOUS task using whatever
+        # Fisher was passed to the PRIOR iteration's update_fisher() call;
+        # see EWCRegularizer.register_task's own docstring). Mirrors the
+        # pattern already fixed this session in run_core_training.py's
+        # Core B/D and exp_fig16_ewc_effectiveness.py.
+        task_name = f"task{task_idx}_pv{int(pv_level*100)}"
+        cur_params = trainer.actor.get_all_params()
+        obs_f = env.reset(seed=seed + 40000 + task_idx)
+        s_obs, s_act = [], []
+        done_f, sf = False, 0
+        while not done_f and sf < 30:
+            enhanced_f = _get_current_obs(trainer, obs_f, rng)
+            acts = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                a, _ = trainer.actor.sample(enhanced_f[i], rng)
+                acts[i] = a
+                s_obs.append(enhanced_f[i].copy())
+                s_act.append(a.copy())
+            obs_f, _, done_f, _ = env.step(acts); sf += 1
+        n_p = len(cur_params)
+        fisher = np.zeros(n_p)
+        if s_obs:
+            idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+            h = 1e-3
+            for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+                bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                b2 = cur_params.copy(); b2[p_idx] += h
+                trainer.actor.set_all_params(b2)
+                ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                fisher[p_idx] = ((ul - bl) / h) ** 2
+            trainer.actor.set_all_params(cur_params)
+
+        cur_conditions = {"pv_level": pv_level}
+        ewc_trainer.ewc_regularizer.register_task(task_name, cur_params)
+        if prev_conditions is not None:
+            similarity = similarity_estimator.estimate_similarity(
+                prev_conditions, prev_params, cur_conditions, cur_params
+            )
+            ewc_trainer.ewc_regularizer.adapt_lambda(similarity)
+        if prev_task_name is not None:
+            ewc_trainer.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+        prev_task_name = task_name
+        prev_fisher = fisher
+        prev_conditions = cur_conditions
+        prev_params = cur_params.copy()
+        if task_idx == len(TASKS) - 1:
+            # TASKS[-1] is never consolidated by the lagged pattern above
+            # (that only happens when the *next* task's register_task()
+            # fires) -- finalize() closes it out explicitly with this
+            # task's real just-computed Fisher.
+            ewc_trainer.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+            ewc_trainer.ewc_regularizer.finalize()
+
         # Record final performance on current task
         task_final_performance[task_idx] = evaluate_on_task(trainer, env, task_idx, n_eval=30, seed=seed + 10000)
         logger.info("  Task %d final performance: %.4f", task_idx, task_final_performance[task_idx])

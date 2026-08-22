@@ -495,7 +495,7 @@ class DistributionNetwork:
             if bus_voltages and bus_idx in bus_voltages:
                 v_pu = bus_voltages[bus_idx]
 
-            pv_i_contribution = plant.get_fault_current_contribution(v_pu)
+            pv_i_contribution = plant.get_fault_current_contribution(v_pu, fault_type)
 
             # Add to fault currents for pairs near this bus
             for i, pair in enumerate(self.net_data.pairs):

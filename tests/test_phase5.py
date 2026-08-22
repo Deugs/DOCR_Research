@@ -340,6 +340,53 @@ class TestTrainingPipeline(unittest.TestCase):
         with self.assertRaises(ValueError):
             pipeline._eval_byzantine(cfg_bad, net, result)
 
+    def test_run_single_config_wires_topology_changes_into_net(self):
+        """Regression: config.topology_changes was parsed onto TrainingConfig
+        and never read by _run_single_config/_dispatch_method -- baseline
+        (topology_changes={}) and "with N-1 outage" configs (as built by
+        mains/main5.py/main6.py::run_topology_robustness) trained on the
+        identical, unperturbed network. _run_single_config now applies
+        NetworkData.apply_n1_outage() before dispatch when
+        topology_changes["type"] == "n1_outage". Verify the net actually
+        handed to the method runner has real fault-current differences
+        on the affected pair, by intercepting _dispatch_method instead of
+        paying for a real GA-SQP run."""
+        from network.network_data import get_8bus
+
+        pipeline = TrainingPipeline(configs=[], n_workers=1)
+        captured_nets = {}
+
+        def fake_dispatch(config, net):
+            captured_nets[config.topology_changes.get("type") if config.topology_changes else "baseline"] = net
+            return TrainingResult(
+                config=config, run_id=0, best_of=1.0,
+                best_tms=np.full(net.n_relays, 0.5), best_ps=net.ps_bounds()[0],
+                cti_satisfied=True, cti_violations=0, cti_min=0.35,
+                elapsed_seconds=0.0, history=[],
+            )
+
+        pipeline._dispatch_method = fake_dispatch
+
+        cfg_baseline = TrainingConfig(method="GA-SQP", system="8bus", pv_level=0.0,
+                                       fault_type="3ph", topology_changes={})
+        cfg_outage = TrainingConfig(method="GA-SQP", system="8bus", pv_level=0.0,
+                                     fault_type="3ph",
+                                     topology_changes={"type": "n1_outage", "line_idx": 0})
+
+        pipeline._run_single_config(cfg_baseline)
+        pipeline._run_single_config(cfg_outage)
+
+        net_baseline = captured_nets["baseline"]
+        net_outage = captured_nets["n1_outage"]
+
+        base_currents = np.array([(p.If_pri, p.If_bkp) for p in net_baseline.pairs])
+        outage_currents = np.array([(p.If_pri, p.If_bkp) for p in net_outage.pairs])
+        self.assertFalse(
+            np.allclose(base_currents, outage_currents),
+            "topology_changes={'type': 'n1_outage'} produced an identical net to "
+            "topology_changes={} -- the wiring regressed"
+        )
+
 
 class TestConfigManager(unittest.TestCase):
     """Test configuration management."""
