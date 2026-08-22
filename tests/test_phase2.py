@@ -372,6 +372,34 @@ def test_mappo_critic():
     print(f"  MAPPO Critic: value={value:.4f}, params={critic.n_params()}")
 
 
+def test_fault_type_idx_maps_env_fault_type_not_hardcoded_zero():
+    """Regression: every real call site in MAPPOMARLTrainer used to pass
+    the literal `fault_type_idx=0` to the critic regardless of the env's
+    actual fault_type -- MAPPOCentralCritic's global state reserves 4
+    dims for a one-hot over FAULT_TYPES, but that conditioning was
+    functionally inert whenever training used a non-default fault type
+    (e.g. via a real --fault-type CLI flag). _fault_type_idx() must map
+    each real fault type string to its correct index, and a trainer
+    built on a non-"3ph" env must actually use that index.
+    """
+    from marl.marl_agents import _fault_type_idx, MAPPOMARLTrainer
+    from network.relay_physics import FAULT_TYPES
+    from network.network_data import get_8bus
+    from marl.marl_env import DynamicDOCREnv
+
+    for expected_idx, ft in enumerate(FAULT_TYPES):
+        assert _fault_type_idx(ft) == expected_idx
+    assert _fault_type_idx("not-a-real-fault-type") == 0
+
+    net = get_8bus()
+    env = DynamicDOCREnv(net, seed=1, use_pandapower=False, fault_type="LL", curriculum_stage=3)
+    trainer = MAPPOMARLTrainer(env, use_comm=False, seed=1)
+    assert trainer.env.fault_type == "LL"
+    assert _fault_type_idx(trainer.env.fault_type) == FAULT_TYPES.index("LL") != 0
+
+    print("  fault_type_idx: maps real env.fault_type, not hardcoded to 0")
+
+
 def test_mappo_buffer():
     """Test MAPPO rollout buffer with communication."""
     from marl.marl_agents import MAPPOBuffer
@@ -539,6 +567,7 @@ def run_all_tests():
         test_neighbor_observations,
         test_shared_gaussian_actor,
         test_mappo_critic,
+        test_fault_type_idx_maps_env_fault_type_not_hardcoded_zero,
         test_mappo_buffer,
         test_single_ppo,
         test_mappo_integration,

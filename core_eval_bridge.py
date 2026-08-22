@@ -107,7 +107,7 @@ class CoreEvalBridge:
     Bridges core training runs with training_pipeline evaluation methods.
     
     Flow:
-        1. Train or load base policy (MAPPO-Safe-EWC on 8-bus, 100% PV)
+        1. Train or load base policy (MAPPO-Safe-EWC on 8-bus, 60% PV default)
         2. For each requested figure:
            a. Create TrainingConfig with figure-specific flags
            b. Call training_pipeline._eval_* method
@@ -167,7 +167,7 @@ class CoreEvalBridge:
 
     def _train_base_policy(self) -> TrainingResult:
         """
-        Train MAPPO-Safe-EWC on 8-bus, 100% PV to get a real policy.
+        Train MAPPO-Safe-EWC on 8-bus, 60% PV (default pv_level) to get a real policy.
 
         Previous version looped over episodes calling only
         `trainer.actor.sample()` and recording the best (TMS, PS) ever

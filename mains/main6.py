@@ -1,22 +1,7 @@
 
 """
 main.py
-──────    # Phase 7: Robustness & Deployment
-    if args.phase7 or args.robustness:
-        if not args.methods:
-            args.methods = ["GA-SQP", "JAYA"]
-        return run_phase7_robustness(args)
-
-    if args.deployment:
-        if not args.methods:
-            args.methods = ["MAPPO-Comm", "MAPPO-Safe-EWC"]
-        return run_phase7_deployment(args)
-
-    # Phase 8: Statistical Validation & Thesis
-    if args.phase8 or args.validate:
-        return run_phase8_validation(args)
-
-─
+──────
 Phase 4 Entry Point for DOCR-MARL Thesis.
 
 Runs comprehensive experiments comparing:
@@ -1178,6 +1163,27 @@ def main():
         if not args.methods:
             args.methods = ["GA-SQP", "MAPPO-Safe"]
         return run_topology_robustness(args)
+
+    # Phase 7: Robustness & Deployment. This dispatch block was
+    # previously pasted into the module docstring at the top of this
+    # file instead of into main() -- a syntactically-valid but inert
+    # string literal, never executed. --phase7/--robustness/--deployment/
+    # --phase8/--validate were all dead flags that silently fell through
+    # to the default per-method Phase 4 loop below instead of dispatching
+    # to run_phase7_robustness/run_phase7_deployment/run_phase8_validation.
+    if args.phase7 or args.robustness:
+        if not args.methods:
+            args.methods = ["GA-SQP", "JAYA"]
+        return run_phase7_robustness(args)
+
+    if args.deployment:
+        if not args.methods:
+            args.methods = ["MAPPO-Comm", "MAPPO-Safe-EWC"]
+        return run_phase7_deployment(args)
+
+    # Phase 8: Statistical Validation & Thesis
+    if args.phase8 or args.validate:
+        return run_phase8_validation(args)
 
     # Benchmark suite mode
     if args.benchmark:
