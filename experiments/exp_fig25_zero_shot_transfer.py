@@ -58,7 +58,18 @@ logger = logging.getLogger(__name__)
 def _make_trainer(net, seed: int, hidden: int = 32) -> MAPPOMARLTrainer:
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
                           fault_type="3ph", curriculum_stage=5)   # 100% PV
-    return MAPPOMARLTrainer(env, use_comm=True,
+    # use_comm=False: this experiment's entire premise (per the module
+    # docstring) is that the actor is agent-count-invariant, so a policy
+    # trained on 8-bus (14 relays) can be evaluated zero-shot on 30-bus
+    # (42 relays) with no weight changes. That's only true of the raw
+    # SharedGaussianActor -- CommGraph's adjacency matrix is built for a
+    # fixed relay count/topology at construction time and cannot transfer
+    # to a differently-sized network. With use_comm=True (the previous
+    # setting), every _eval_policy call already fed raw obs to an actor
+    # built for comm-enhanced input regardless of network, crashing with
+    # a matmul dimension mismatch on EVERY evaluation, including on the
+    # source 8-bus network itself.
+    return MAPPOMARLTrainer(env, use_comm=False,
                              hidden_actor=hidden, hidden_critic=64, seed=seed)
 
 

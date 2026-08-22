@@ -206,10 +206,21 @@ def run_byzantine_experiment(n_eval_steps: int = 300,
                 msg = obs[i].copy()
             all_messages.append(msg)
 
-        # Get actions
+        # Get actions. trainer was built with use_comm=True, so the actor
+        # expects comm-graph-enhanced (obs_dim + msg_dim) input -- feeding
+        # it raw/corrupted per-agent observations directly crashes with a
+        # matmul dimension mismatch. Route the (possibly Byzantine-
+        # corrupted) observations through the real comm graph first, so
+        # a corrupted observation genuinely propagates into that agent's
+        # encoded message and its neighbors' aggregated input, matching
+        # this experiment's premise.
         actions = np.zeros((n_agents, env.ACT_DIM))
+        if trainer.comm_graph is not None:
+            enhanced, _, _ = trainer.comm_graph.forward(np.array(all_messages), rng)
+        else:
+            enhanced = np.array(all_messages)
         for i in range(n_agents):
-            act, _ = trainer.actor.sample(all_messages[i], rng)
+            act, _ = trainer.actor.sample(enhanced[i], rng)
             actions[i] = act
 
         obs_next, rewards, done, info = env.step(actions)
