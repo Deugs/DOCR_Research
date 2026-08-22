@@ -41,6 +41,7 @@ from scipy.stats import pearsonr
 from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.comm_graph import build_relay_adjacency
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 logger = logging.getLogger(__name__)
@@ -51,62 +52,86 @@ N_INFERENCE_EPISODES = 100
 
 
 def compute_electrical_distance(net):
-    """Compute shortest-path electrical distance using line impedances."""
-    G = nx.Graph()
-    for i, j, z in zip(net.fbus, net.tbus, net.Z):
-        G.add_edge(int(i), int(j), weight=abs(z))
-    
+    """Compute a relay-to-relay distance proxy from real topology data.
+
+    NetworkData has no `.fbus`/`.tbus`/`.Z`/`.bus` fields anywhere (no
+    per-line impedance table exists on NetworkData -- see
+    NetworkData.n_lines's own docstring), so this always crashed with an
+    AttributeError before computing a single distance. Uses graph-hop
+    distance over the real relay-to-relay adjacency (the same one
+    CommGraph's own attention mechanism operates on, built from
+    RelayPair primary/backup/same-bus relationships) as a real,
+    disclosed topological proxy in place of the unavailable impedance
+    computation -- not fabricated to look like a physical Ohm value.
+    """
+    adj = build_relay_adjacency(net)
+    G = nx.from_numpy_array(adj)
+
     n_relays = net.n_relays
     dist_matrix = np.zeros((n_relays, n_relays))
-    
+
     for i in range(n_relays):
         for j in range(n_relays):
             if i == j:
                 dist_matrix[i, j] = 0
             else:
                 try:
-                    path = nx.shortest_path(G, int(net.bus[i]), int(net.bus[j]), weight="weight")
-                    dist = sum(G[path[k]][path[k+1]]["weight"] for k in range(len(path)-1))
-                    dist_matrix[i, j] = dist
+                    dist_matrix[i, j] = nx.shortest_path_length(G, i, j)
                 except nx.NetworkXNoPath:
                     dist_matrix[i, j] = np.inf
-    
+
     return dist_matrix
 
 
 def extract_attention_at_checkpoint(trainer, env, net, n_episodes=100, seed=42):
-    """Extract average attention matrix over n_episodes."""
+    """Extract average attention matrix over n_episodes.
+
+    Previously fed raw obs directly to trainer.actor.sample() despite the
+    trainer being built with use_comm=True (matmul dimension mismatch --
+    crashed on the very first step), and looked for attention weights
+    under `info["comm_attention"]`, a key env.step() never sets anywhere
+    in this codebase (the real per-step attention only ever exists as
+    comm_graph.forward()'s own return value) -- so even past the crash,
+    `all_attn` would have stayed empty forever and this always returned
+    (None, None). Now calls comm_graph.forward() directly to get both
+    the enhanced observations for the actor AND the real attention
+    matrix in the same call.
+    """
     all_attn = []
     entropies = []
-    
+
     rng = np.random.default_rng(seed)
-    
+
     for ep in range(n_episodes):
         obs = env.reset(seed=seed + ep)
         done = False
         while not done:
             actions = np.zeros((env.n_agents, env.ACT_DIM))
+            if trainer.comm_graph is not None:
+                enhanced, _, comm_info = trainer.comm_graph.forward(obs, rng)
+            else:
+                enhanced, comm_info = obs, {}
             for i in range(env.n_agents):
-                a, _ = trainer.actor.sample(obs[i], rng)
+                a, _ = trainer.actor.sample(enhanced[i], rng)
                 actions[i] = a
             obs, _, done, info = env.step(actions)
-            
-            if "comm_attention" in info:
-                attn = info["comm_attention"]  # (n_agents, n_agents)
+
+            attn = comm_info.get("attention")
+            if attn is not None:
                 all_attn.append(attn)
-                
+
                 # Entropy per agent
                 p = attn + 1e-9
                 p /= p.sum(axis=1, keepdims=True)
                 ent = -np.sum(p * np.log(p), axis=1).mean()
                 entropies.append(ent)
-    
+
     if not all_attn:
         return None, None
-    
+
     avg_attn = np.mean(all_attn, axis=0)
     avg_entropy = float(np.mean(entropies))
-    
+
     return avg_attn, avg_entropy
 
 
@@ -170,32 +195,52 @@ def run_figure38(seed=42):
     
     snapshots = {}
     entropies_over_time = []
-    
+    steps_per_episode_estimate = max(1, env.max_steps // 4)
+
     for ep in range(max(SNAPSHOT_EPISODES) + 1):
-        # Train one episode
+        # One real training step per episode tick -- previously this
+        # loop never called trainer.train() at all, only
+        # trainer.actor.sample() against a frozen policy, and then tried
+        # to "train" via trainer.update() every 10 episodes, a method
+        # MAPPOMARLTrainer doesn't define (a permanent no-op). So no
+        # learning ever happened and every entropy/attention value this
+        # produced was noise from an untrained, randomly-initialized GNN.
+        trainer.train(total_steps=steps_per_episode_estimate, verbose=False)
+
+        # Evaluate the just-updated policy for this episode's entropy.
         obs = env.reset(seed=seed + ep)
         done = False
         ep_entropy = []
-        
+        rng_ep = np.random.default_rng(seed + ep)
+
         while not done:
             actions = np.zeros((env.n_agents, env.ACT_DIM))
+            # trainer was built with use_comm=True, so the actor expects
+            # comm-graph-enhanced input -- raw obs[i] crashes with a
+            # matmul dimension mismatch. Attention also only exists as
+            # comm_graph.forward()'s own return value, not under a
+            # (nonexistent) info["comm_attention"] key.
+            if trainer.comm_graph is not None:
+                enhanced, _, comm_info = trainer.comm_graph.forward(obs, rng_ep)
+            else:
+                enhanced, comm_info = obs, {}
             for i in range(env.n_agents):
-                a, _ = trainer.actor.sample(obs[i], np.random.default_rng(seed + ep))
+                a, _ = trainer.actor.sample(enhanced[i], rng_ep)
                 actions[i] = a
             obs, _, done, info = env.step(actions)
-            
-            if "comm_attention" in info:
-                attn = info["comm_attention"]
+
+            attn = comm_info.get("attention")
+            if attn is not None:
                 p = attn + 1e-9
                 p /= p.sum(axis=1, keepdims=True)
                 ent = -np.sum(p * np.log(p), axis=1).mean()
                 ep_entropy.append(ent)
-        
+
         if ep_entropy:
             entropies_over_time.append(float(np.mean(ep_entropy)))
         else:
             entropies_over_time.append(np.nan)
-        
+
         # Take snapshot at specified episodes
         if ep in SNAPSHOT_EPISODES:
             logger.info("  Snapshot at episode %d...", ep)
@@ -203,11 +248,7 @@ def run_figure38(seed=42):
                                                        n_episodes=10, seed=seed + 10000 + ep)
             if attn is not None:
                 snapshots[ep] = attn
-        
-        # Periodic training update
-        if ep % 10 == 0:
-            trainer.update()
-    
+
     return {
         "snapshots": snapshots,
         "entropies_over_time": np.array(entropies_over_time),
