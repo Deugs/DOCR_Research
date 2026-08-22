@@ -492,6 +492,18 @@ class TrainingPipeline:
         if config.seasonal_temperature is not None:
             net = self._apply_seasonal_temperature(net, config.seasonal_temperature)
 
+        # Apply topology changes (e.g. run_topology_robustness's N-1 outage
+        # configs) BEFORE training/dispatch, not just as the separate
+        # post-hoc Fig-14 evaluation below. config.topology_changes used to
+        # be parsed onto TrainingConfig and never read anywhere -- baseline
+        # (topology_changes={}) and "with outage" configs trained on the
+        # identical, unperturbed network, so ResultsAggregator.get_topology_robustness()
+        # always saw ~0% degradation regardless of the real N-1 impact.
+        # Reuses the same NetworkData.apply_n1_outage() physics as
+        # _eval_n1_contingency below.
+        if config.topology_changes and config.topology_changes.get("type") == "n1_outage":
+            net, _outage_factor = net.apply_n1_outage(config.topology_changes.get("line_idx", 0))
+
         # Run base method
         result = self._dispatch_method(config, net)
 
@@ -2892,81 +2904,17 @@ def aggregate_by_figure(results: List[TrainingResult], figure_field: str) -> Dic
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN (Example Usage)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-if __name__ == "__main__":
-    # Example 1: Quick test with base configurations
-    print("=" * 70)
-    print("EXAMPLE 1: Base experiment matrix (quick test)")
-    print("=" * 70)
-
-    base_configs = create_experiment_matrix(
-        systems=["8bus"],
-        methods=["GA-SQP", "JAYA"],
-        pv_levels=[0.0, 1.0],
-        n_runs=2,
-        fast=True,
-    )
-
-    pipeline = TrainingPipeline(base_configs, n_workers=1, verbose=True)
-    results = pipeline.run_all()
-    pipeline.save_results("outputs/results/base_quick_test.json")
-    print(f"\nCompleted {len(results)} base runs")
-
-    # Example 2: Full suite for specific figures
-    print("\n" + "=" * 70)
-    print("EXAMPLE 2: Full experiment suite")
-    print("=" * 70)
-
-    suite = create_full_experiment_suite(
-        systems=["8bus", "14bus", "39bus"],
-        methods=["MAPPO", "MAPPO-Comm", "MAPPO-Safe"],
-        pv_levels=[0.0, 0.5, 1.0],
-        fault_types=["3ph"],
-        n_runs=3,
-        fast=True,
-        figures=["base", "13", "14", "22", "24", "25", "58"],
-    )
-
-    all_configs = []
-    for fig_name, configs in suite.items():
-        all_configs.extend(configs)
-
-    print(f"\nRunning {len(all_configs)} total configurations...")
-
-    pipeline = TrainingPipeline(all_configs, n_workers=2, verbose=True)
-    all_results = pipeline.run_all()
-
-    pipeline.save_results("outputs/results/full_suite.json")
-    pipeline.save_results_by_figure()
-
-    print("\n" + "=" * 70)
-    print("AGGREGATION: By Method")
-    print("=" * 70)
-    method_agg = aggregate_by_method(all_results)
-    for method, stats in method_agg.items():
-        print(f"  {method}: mean OF={stats['of_mean']:.4f} +- {stats['of_std']:.4f}, "
-              f"CTI ok={stats['cti_ok_rate']*100:.1f}%")
-
-    print("\n" + "=" * 70)
-    print("AGGREGATION: By PV Level")
-    print("=" * 70)
-    pv_agg = aggregate_by_pv_level(all_results)
-    for pv, stats in sorted(pv_agg.items()):
-        print(f"  PV={pv}: mean OF={stats['of_mean']:.4f} +- {stats['of_std']:.4f}")
-
-    print("\n" + "=" * 70)
-    print("AGGREGATION: By Communication Stress (Fig 13)")
-    print("=" * 70)
-    stress_agg = aggregate_by_figure(all_results, "comm_stress_level")
-    for level, stats in sorted(stress_agg.items()):
-        print(f"  Stress={level}: figure OF mean={stats.get('figure_of_mean', 'N/A')}")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 #  PART 6: RESULT ANALYSIS & PLOTTING UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
+# (The original `if __name__ == "__main__":` block that used to live here --
+#  an unconditional "Example 1 + Example 2" run -- was removed: it predated
+#  and was fully superseded by the "UPDATED __main__ WITH ALL EXAMPLES"
+#  block below (example_1_basic_usage()/example_2_full_suite() reproduce
+#  both examples, selectable by CLI arg, alongside 3 more this block never
+#  had). Since Python has no early-return between two top-level
+#  `if __name__ == "__main__":` blocks, running this file directly used to
+#  execute both -- the old unconditional example run, THEN the real
+#  argv-driven dispatcher -- rather than either being disabled.
 
 class ResultAnalyzer:
     """

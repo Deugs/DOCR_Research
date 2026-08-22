@@ -46,6 +46,8 @@ import matplotlib.pyplot as plt
 from network.network_data import NETWORKS
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -89,25 +91,32 @@ def run_single_training(method: str, seed: int, n_episodes: int = 2000,
     returns trajectory this figure is supposed to show.
     """
     net = NETWORKS[system]()
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
-                          fault_type="3ph", curriculum_stage=3)  # 60% PV — max in current sweep
+    raw_env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
+                              fault_type="3ph", curriculum_stage=3)  # 60% PV — max in current sweep
 
     t0 = time.perf_counter()
 
     if method == "Traditional":
         # Traditional uses fixed settings - no training, just evaluate
-        returns = evaluate_traditional(env, net, n_episodes, seed)
+        returns = evaluate_traditional(raw_env, net, n_episodes, seed)
         wall_time = time.perf_counter() - t0
         return returns, wall_time
 
-    # Configure trainer based on method
+    # Configure trainer based on method. `trainer.use_safety`/`use_ewc`
+    # used to be set via hasattr guards that were always False --
+    # MAPPOMARLTrainer has neither attribute, so "MAPPO-Safe"/
+    # "MAPPO-Safe-EWC" trained identically to plain "MAPPO". Safe RL is a
+    # real env wrapper and must wrap the env BEFORE the trainer is built.
     use_comm = method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO"]
+    use_safety = method in ["MAPPO-Safe-EWC", "MAPPO-Safe"]
+    use_ewc = (method == "MAPPO-Safe-EWC")
+    env = create_safe_rl_env(raw_env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    )) if use_safety else raw_env
     trainer = MAPPOMARLTrainer(env, use_comm=use_comm, seed=seed)
-
-    if hasattr(trainer, 'use_safety'):
-        trainer.use_safety = method in ["MAPPO-Safe-EWC", "MAPPO-Safe"]
-    if hasattr(trainer, 'use_ewc'):
-        trainer.use_ewc = (method == "MAPPO-Safe-EWC")
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig()) if use_ewc else None
 
     rng = np.random.default_rng(seed)
 
@@ -144,7 +153,44 @@ def run_single_training(method: str, seed: int, n_episodes: int = 2000,
             ep_steps += 1
         
         returns.append(ep_return)
-    
+
+    if use_ewc:
+        # Register this (single) task with EWC. A lone task has nothing to
+        # protect against forgetting -- that's expected, not a bug -- but
+        # the apparatus should genuinely run rather than stay entirely
+        # inert (previously `trainer.use_ewc = True` was a dead attribute
+        # set, so "MAPPO-Safe-EWC" never actually applied any EWC penalty
+        # here). Same real Fisher-estimation procedure as
+        # run_core_training.py's Core A/single-task EWC registration.
+        cur_params = trainer.actor.get_all_params()
+        obs_f = env.reset(seed=seed + 9000)
+        s_obs, s_act = [], []
+        done_f, sf = False, 0
+        while not done_f and sf < 30:
+            acts = np.zeros((env.n_agents, env.ACT_DIM))
+            enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, rng) if trainer.comm_graph is not None else (obs_f, None, None)
+            for i in range(env.n_agents):
+                a, _ = trainer.actor.sample(enhanced_f[i], rng)
+                acts[i] = a
+                s_obs.append(enhanced_f[i].copy())
+                s_act.append(a.copy())
+            obs_f, _, done_f, _ = env.step(acts); sf += 1
+        n_p = len(cur_params)
+        fisher = np.zeros(n_p)
+        if s_obs:
+            idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+            h = 1e-3
+            for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+                bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                b2 = cur_params.copy(); b2[p_idx] += h
+                trainer.actor.set_all_params(b2)
+                ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                fisher[p_idx] = ((ul - bl) / h) ** 2
+            trainer.actor.set_all_params(cur_params)
+        ewc_trainer.ewc_regularizer.register_task(method, cur_params)
+        ewc_trainer.ewc_regularizer.update_fisher(method, fisher)
+        ewc_trainer.ewc_regularizer.finalize()
+
     wall_time = time.perf_counter() - t0
     return np.array(returns, dtype=np.float64), wall_time
 

@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
 from network.network_data import NETWORKS
-from network.relay_physics import check_constraints, FAULT_TYPES
+from network.relay_physics import check_constraints, FAULT_TYPES, compute_fault_currents_dynamic
 from baselines.ga_sqp import run_ga_sqp
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
@@ -127,8 +127,17 @@ def experiment_pv_sweep(args, sys_key, net):
     pv_levels = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
     results_by_pv = {}
 
-    for pv in pv_levels:
+    for stage_idx, pv in enumerate(pv_levels):
         print(f"\n  --- PV Level: {int(pv*100)}% ---")
+
+        # objective_function()/compute_operating_times() only see PV effects
+        # via an explicit topology_state["fault_currents"] override -- pv_level
+        # alone (passed to run_ga_sqp below) is genuinely logging-only (see
+        # ga_sqp.py's own docstring). Without this, GA-SQP got bit-identical
+        # fault currents at every PV level. Matches the same pattern already
+        # used correctly in baselines/experiments/unified_exp_fig05.py.
+        topology_state = {"fault_currents": compute_fault_currents_dynamic(
+            net, pv_penetration=pv, fault_type="3ph")}
 
         # GA-SQP with PV level
         res_ga = run_ga_sqp(
@@ -139,15 +148,21 @@ def experiment_pv_sweep(args, sys_key, net):
             verbose=args.verbose,
             fault_type="3ph",
             pv_level=pv,
+            topology_state=topology_state,
         )
 
-        # MARL with PV level (curriculum stage 0 for simplicity)
+        # MARL with PV level: DynamicDOCREnv has no direct pv_level float
+        # param -- PV is selected via curriculum_stage indexing into its own
+        # pv_levels list, which is exactly this loop's pv_levels. Previously
+        # curriculum_stage was never passed (defaulted to 0), so every
+        # iteration trained at 0% PV regardless of the loop variable.
         res_marl = run_marl(
             net,
             total_steps=args.marl_steps,
             seed=0,
             verbose=args.verbose,
             curriculum=False,
+            curriculum_stage=stage_idx,
             fault_type="3ph",
             use_pandapower=args.pandapower,
         )

@@ -986,7 +986,7 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
     from marl.safe_rl import create_safe_rl_env, SafeRLConfig
-    from marl.continual_trainer import create_ewc_trainer, EWCConfig
+    from marl.continual_trainer import create_ewc_trainer, EWCConfig, TaskSimilarityEstimator
 
     net = get_8bus()
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=0)
@@ -1002,6 +1002,13 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
     base_trainer = MAPPOMARLTrainer(safe_env, use_comm=True, seed=seed)
 
     ewc_wrapper = create_ewc_trainer(base_trainer, EWCConfig()) if use_ewc else None
+    # EWCConfig.adaptive_lambda defaults to True, but adapt_lambda() was
+    # never called anywhere in this loop -- lambda_ewc never actually
+    # adapted to how similar consecutive curriculum tasks are, despite the
+    # config defaulting to "on". TaskSimilarityEstimator is a standalone
+    # utility usable directly (no need for the separate, unused
+    # ContinualMAPPOTrainer wrapper class).
+    similarity_estimator = TaskSimilarityEstimator() if use_ewc else None
 
     rng = np.random.default_rng(seed)
     act_fn = _make_act_fn(base_trainer)
@@ -1012,6 +1019,8 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
     task_performances = []
     prev_task_name = None
     prev_fisher = None
+    prev_conditions = None
+    prev_params = None
 
     with ProgressTracker(total=len(TASKS), desc=f"[Core B] Tasks (EWC={use_ewc})", unit="task", enable=False) as pbar:
         for task_idx, pv in enumerate(TASKS):
@@ -1065,11 +1074,27 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
                     fisher[p_idx] = ((ul - bl) / h) ** 2
                 base_trainer.actor.set_all_params(cur)
 
+                cur_conditions = {"pv_level": pv}
+                # register_task() must run FIRST: it's what actually
+                # consolidates the previous task into task_memory (see
+                # register_task's own docstring). adapt_lambda() only
+                # updates entries already IN task_memory, so calling it
+                # before register_task would be a silent no-op on the very
+                # entry it's meant to adjust (task_memory is still empty at
+                # that point on every iteration, since the current task
+                # isn't consolidated until this register_task call runs).
                 ewc_wrapper.ewc_regularizer.register_task(task_name, cur)
+                if prev_conditions is not None:
+                    similarity = similarity_estimator.estimate_similarity(
+                        prev_conditions, prev_params, cur_conditions, cur
+                    )
+                    ewc_wrapper.ewc_regularizer.adapt_lambda(similarity)
                 if prev_task_name is not None:
                     ewc_wrapper.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
                 prev_task_name = task_name
                 prev_fisher = fisher
+                prev_conditions = cur_conditions
+                prev_params = cur.copy()
 
             # Evaluate across all tasks seen so far — via safe_env so the
             # safety projection applies during evaluation too.
@@ -1505,7 +1530,7 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
     from marl.safe_rl import create_safe_rl_env, SafeRLConfig
-    from marl.continual_trainer import create_ewc_trainer, EWCConfig
+    from marl.continual_trainer import create_ewc_trainer, EWCConfig, TaskSimilarityEstimator
     from network.relay_physics import check_constraints
 
     net = get_8bus()
@@ -1536,6 +1561,11 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
         steps_per_task = total_steps // 4
         TASKS = [0.0, 0.20, 0.40, 0.60]
         prev_task_name, prev_fisher = None, None
+        prev_conditions, prev_params = None, None
+        # EWCConfig.adaptive_lambda defaults to True but was never actually
+        # driven by real task similarity anywhere in this loop -- see the
+        # matching Core B fix for the full rationale.
+        similarity_estimator = TaskSimilarityEstimator() if use_ewc else None
         act_fn_curr = _make_act_fn(trainer)
         for task_idx, pv in enumerate(TASKS):
             env.curriculum_stage = int(pv * 5)
@@ -1574,10 +1604,22 @@ def _run_ablation_single(config_name: str, seed: int, n_episodes: int):
                         ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
                         fisher[p_idx] = ((ul - bl) / h) ** 2
                     trainer.actor.set_all_params(cur)
+
+                cur_conditions = {"pv_level": pv}
+                # Same ordering fix as Core B: register_task() must run
+                # first to actually consolidate the previous task into
+                # task_memory before adapt_lambda() (which only updates
+                # entries already there) can have any effect on it.
                 ewc_trainer.ewc_regularizer.register_task(task_name, cur)
+                if prev_conditions is not None:
+                    similarity = similarity_estimator.estimate_similarity(
+                        prev_conditions, prev_params, cur_conditions, cur
+                    )
+                    ewc_trainer.ewc_regularizer.adapt_lambda(similarity)
                 if prev_task_name is not None:
                     ewc_trainer.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
                 prev_task_name, prev_fisher = task_name, fisher
+                prev_conditions, prev_params = cur_conditions, cur.copy()
         if use_ewc:
             # The loop above only consolidates a task when the *next*
             # task's register_task() fires — TASKS[-1] (60% PV) has no

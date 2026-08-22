@@ -31,6 +31,7 @@ from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
 from network.relay_physics import check_constraints
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -62,23 +63,17 @@ def compute_electrical_distance(net, pair) -> float:
 
 
 def extract_lagrange_multipliers(trainer, env) -> np.ndarray:
-    """Robustly extract Lagrange multipliers from trainer."""
-    n_pairs = env.net.n_pairs
-    lambdas = np.zeros(n_pairs)
-    
-    # Try multiple possible attribute paths
-    if hasattr(trainer, 'lagrange_multipliers'):
-        lambdas = trainer.lagrange_multipliers.copy()
-    elif hasattr(trainer, 'safety_layer'):
-        sl = trainer.safety_layer
-        if hasattr(sl, 'lambdas'):
-            lambdas = sl.lambdas.copy()
-        elif hasattr(sl, 'multipliers'):
-            lambdas = sl.multipliers.copy()
-    elif hasattr(trainer, 'constraint_multipliers'):
-        lambdas = trainer.constraint_multipliers.copy()
-    
-    return lambdas
+    """Extract the real per-pair Lagrange multipliers.
+
+    `trainer.lagrange_multipliers`/`safety_layer`/`constraint_multipliers`
+    never existed on MAPPOMARLTrainer -- those hasattr checks always fell
+    through to the all-zeros placeholder. The real per-pair multipliers
+    live on the AugmentedLagrangian created by create_safe_rl_env(), which
+    now wraps `env` before training (see main()).
+    """
+    if hasattr(env, "lagrangian"):
+        return env.lagrangian.lambdas.copy()
+    return np.zeros(env.net.n_pairs)
 
 
 def evaluate_pair_violations(env, trainer, pair, n_episodes: int = 50, seed: int = 0) -> Tuple[float, float]:
@@ -149,17 +144,26 @@ def main(train_steps: int = 8000, n_eval_episodes: int = 50,
     out_path.mkdir(parents=True, exist_ok=True)
     
     net = get_8bus()
-    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=5)
+    raw_env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=5)
     n_pairs = net.n_pairs
-    
+
     logger.info("Figure 50 — Critical P/B Pair Identification (IMPROVED)")
     logger.info("  System: %s, Pairs: %d, Seeds: %d", net.name, n_pairs, n_seeds)
-    
-    # Train policy
+
+    # Train policy. `trainer.use_safety` used to be set via a hasattr guard
+    # that was always False -- MAPPOMARLTrainer has no such attribute, so
+    # this policy trained with no safety projection at all, and the
+    # AugmentedLagrangian's real per-pair multipliers this figure is
+    # supposed to rank never existed for extract_lagrange_multipliers() to
+    # find. Safe RL is a real env wrapper and must wrap the env BEFORE the
+    # trainer is built.
     logger.info("Training policy (%d steps)...", train_steps)
+    env = create_safe_rl_env(raw_env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
     trainer = MAPPOMARLTrainer(env, use_comm=False, seed=seed)
-    if hasattr(trainer, 'use_safety'):
-        trainer.use_safety = True
     trainer.train(total_steps=train_steps, verbose=False)
     
     # Collect multi-seed statistics
