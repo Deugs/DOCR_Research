@@ -233,6 +233,49 @@ def test_comm_graph_top_k_sparsify():
     print("  CommGraph top-k sparsification: restricting neighbors alters forward()")
 
 
+def test_comm_graph_top_k_sparsify_uses_real_degree_not_n_agents():
+    """Regression: the first implementation of top_k_sparsify_fraction
+    computed k = ceil(n_agents * fraction) -- a fraction of the TOTAL
+    agent count, not of each agent's actual number of real graph
+    neighbors (its degree). Real relay-adjacency graphs in this codebase
+    are sparse (e.g. avg degree ~5 out of 14 agents on the 8-bus system),
+    so that k was always >= every row's real degree, making the knob a
+    silent no-op on every real network -- exp_fig22_bandwidth_tradeoff.py's
+    "top50" compression arm would report identical performance to
+    uncompressed while claiming a 50% bandwidth cut. k must be computed
+    relative to each row's own degree instead.
+    """
+    from marl.comm_graph import CommGraph, CommConfig, build_relay_adjacency
+    from network.network_data import get_8bus
+
+    net = get_8bus()
+    adjacency = build_relay_adjacency(net)
+    # Confirm this graph is genuinely sparse relative to n_agents, so a
+    # fraction-of-n_agents k would trivially keep every real neighbor.
+    degrees = adjacency.sum(axis=1)
+    assert degrees.max() < net.n_relays, \
+        "test fixture is not sparse -- rewrite with a sparser adjacency"
+
+    config = CommConfig(message_dim=8, hidden_dim=16, use_attention=True)
+
+    def make_comm():
+        return CommGraph(n_agents=net.n_relays, obs_dim=10, enhanced_dim=18,
+                          adjacency=adjacency, config=config, seed=42)
+
+    observations = np.random.default_rng(0).standard_normal((net.n_relays, 10))
+
+    enhanced_base, _, _ = make_comm().forward(observations, rng=np.random.default_rng(1))
+
+    comm_sparse = make_comm()
+    comm_sparse.top_k_sparsify_fraction = 0.5
+    enhanced_sparse, _, _ = comm_sparse.forward(observations, rng=np.random.default_rng(1))
+
+    assert not np.allclose(enhanced_base, enhanced_sparse), \
+        "top_k_sparsify_fraction=0.5 had no effect on the real, sparse 8-bus relay graph"
+
+    print("  CommGraph top-k sparsification: real per-node degree, not n_agents, drives k")
+
+
 def test_relay_adjacency():
     """Test relay adjacency matrix for different systems."""
     from marl.comm_graph import build_relay_adjacency
@@ -491,6 +534,7 @@ def run_all_tests():
         test_comm_graph,
         test_comm_graph_stress_mechanics,
         test_comm_graph_top_k_sparsify,
+        test_comm_graph_top_k_sparsify_uses_real_degree_not_n_agents,
         test_relay_adjacency,
         test_neighbor_observations,
         test_shared_gaussian_actor,

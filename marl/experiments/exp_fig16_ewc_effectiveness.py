@@ -50,7 +50,8 @@ EPISODES_PER_TASK = 500
 N_EVAL = 30
 
 
-def run_curriculum(use_ewc: bool, seed: int = 42, system: str = "8bus"):
+def run_curriculum(use_ewc: bool, seed: int = 42, system: str = "8bus",
+                    episodes_per_task: int = EPISODES_PER_TASK, n_eval: int = N_EVAL):
     """Run curriculum training with or without EWC."""
     if system == "8bus":
         net = get_8bus()
@@ -111,7 +112,7 @@ def run_curriculum(use_ewc: bool, seed: int = 42, system: str = "8bus"):
     # network -- so every "task performance" it produced was noise from an
     # untrained policy, not genuine curriculum learning (the same bug
     # already fixed in experiments/exp_fig12_convergence_curves.py).
-    steps_per_task = EPISODES_PER_TASK * 300
+    steps_per_task = episodes_per_task * 300
 
     prev_task_name = None
     prev_fisher = None
@@ -184,7 +185,7 @@ def run_curriculum(use_ewc: bool, seed: int = 42, system: str = "8bus"):
             raw_env.curriculum_stage = int(eval_pv * 5)
 
             rewards = []
-            for ep in range(N_EVAL):
+            for ep in range(n_eval):
                 obs = safe_env.reset(seed=seed + 50000 + eval_task_idx * 1000 + ep)
                 done = False
                 ep_reward = 0
@@ -239,12 +240,21 @@ def _pool_worker_init():
 
 
 def _run_job(args):
-    kind, seed_idx, actual_seed, system = args
-    perf = run_curriculum(use_ewc=(kind == "ewc"), seed=actual_seed, system=system)
+    kind, seed_idx, actual_seed, system, episodes_per_task, n_eval = args
+    perf = run_curriculum(use_ewc=(kind == "ewc"), seed=actual_seed, system=system,
+                           episodes_per_task=episodes_per_task, n_eval=n_eval)
     return kind, seed_idx, perf
 
 
-def main(n_seeds: int = 10, output_dir: str = "outputs", system: str = "8bus", n_workers: int = 1):
+def main(n_seeds: int = 10, output_dir: str = "outputs", system: str = "8bus", n_workers: int = 1,
+         episodes_per_task: int = EPISODES_PER_TASK, n_eval: int = N_EVAL):
+    # A full run is 5 TASKS x episodes_per_task*300 steps x 2 conditions
+    # (EWC/no-EWC) x n_seeds -- at the defaults (500, 10) that's ~15M
+    # ES-based training steps, likely impractical to actually finish for
+    # a quick check. --episodes_per_task/--n_eval (CLI below) let a
+    # caller trade fidelity for a run that actually completes; the
+    # defaults are unchanged so existing full-run invocations still get
+    # the original episode budget.
     # Applied unconditionally — see baselines/experiments/unified_exp_fig05.py
     # for why: unpinned BLAS threads oversubscribe the machine under
     # multiprocessing and can make n_workers>1 slower than sequential, and
@@ -263,8 +273,8 @@ def main(n_seeds: int = 10, output_dir: str = "outputs", system: str = "8bus", n
     # same-seed twins, matching the original sequential behavior.
     jobs = []
     for seed_idx in range(n_seeds):
-        jobs.append(("ewc", seed_idx, seed_idx, system))
-        jobs.append(("noewc", seed_idx, seed_idx + 1000, system))
+        jobs.append(("ewc", seed_idx, seed_idx, system, episodes_per_task, n_eval))
+        jobs.append(("noewc", seed_idx, seed_idx + 1000, system, episodes_per_task, n_eval))
 
     ewc_perfs_all = [None] * n_seeds
     noewc_perfs_all = [None] * n_seeds
@@ -371,5 +381,12 @@ if __name__ == "__main__":
     p.add_argument("--system", type=str, default="8bus", help="Test system (8bus, 14bus, 30bus, 39bus)")
     p.add_argument("--n_workers", type=int, default=1,
                    help="Parallel worker processes (default: 1 = sequential)")
+    p.add_argument("--episodes_per_task", type=int, default=EPISODES_PER_TASK,
+                   help=f"Training episodes per curriculum task (default: {EPISODES_PER_TASK}, "
+                        f"a full run at that default is 5 tasks x {EPISODES_PER_TASK}*300 steps x "
+                        "2 conditions x n_seeds -- lower this for a run that actually completes)")
+    p.add_argument("--n_eval", type=int, default=N_EVAL,
+                   help=f"Evaluation episodes per task after each training phase (default: {N_EVAL})")
     args = p.parse_args()
-    main(args.n_seeds, args.output_dir, args.system, args.n_workers)
+    main(args.n_seeds, args.output_dir, args.system, args.n_workers,
+         args.episodes_per_task, args.n_eval)

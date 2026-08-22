@@ -172,10 +172,22 @@ def fine_tune_policy(trainer, net, line_idx: int, n_finetune_episodes: int = 50,
     Genuinely continues training the SAME actor weights against the
     outaged network via trainer.train() (wrapped in the same Safe RL env
     used for base training, so training dynamics stay consistent), then
-    restores the base policy's original weights before returning --
+    restores the base policy's original state before returning --
     main()'s per-line loop must start every line's fine-tuning from the
     same base policy, not accumulate one line's adaptation into the next
     line's "pre-trained" baseline.
+
+    trainer.train() mutates far more than just trainer.actor's params:
+    it also updates trainer.critic (via _update_critic_es) and, when
+    use_comm=True (as train_base_policy sets it), trainer.comm_graph's
+    encoder/attention/decoder weights (via trainer.gnn_trainer.update()).
+    An earlier version of this function only snapshotted/restored the
+    actor and trainer.env, silently leaking critic and comm_graph
+    adaptation from line N's fine-tuning into line N+1's "pre-trained, no
+    adaptation" baseline evaluation (both of which route through the same
+    trainer.comm_graph via evaluate_line_outage/_policy_obs). All mutable
+    state is now snapshotted/restored, in a try/finally so a raised
+    exception can't leave the trainer stuck mid-fine-tune.
     """
     rng = np.random.default_rng(seed)
 
@@ -192,17 +204,23 @@ def fine_tune_policy(trainer, net, line_idx: int, n_finetune_episodes: int = 50,
         use_pid=True, adaptive_rho=True,
     ))
 
-    base_params = trainer.actor.get_all_params()
+    base_actor_params = trainer.actor.get_all_params()
+    base_critic_params = trainer.critic.get_params()
+    base_comm_params = trainer.comm_graph.get_all_params() if trainer.comm_graph is not None else None
     original_env = trainer.env
-    trainer.env = finetune_env
-    steps_per_episode_estimate = max(1, raw_env.max_steps // 4)
-    trainer.train(total_steps=n_finetune_episodes * steps_per_episode_estimate, verbose=False)
+    try:
+        trainer.env = finetune_env
+        steps_per_episode_estimate = max(1, raw_env.max_steps // 4)
+        trainer.train(total_steps=n_finetune_episodes * steps_per_episode_estimate, verbose=False)
 
-    # Evaluate after fine-tuning
-    result = evaluate_line_outage(trainer, net, line_idx, n_eval=20, seed=seed + 1000)
-
-    trainer.actor.set_all_params(base_params)
-    trainer.env = original_env
+        # Evaluate after fine-tuning
+        result = evaluate_line_outage(trainer, net, line_idx, n_eval=20, seed=seed + 1000)
+    finally:
+        trainer.actor.set_all_params(base_actor_params)
+        trainer.critic.set_params(base_critic_params)
+        if base_comm_params is not None:
+            trainer.comm_graph.set_all_params(base_comm_params)
+        trainer.env = original_env
     return result
 
 
