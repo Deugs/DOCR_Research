@@ -39,27 +39,25 @@ logger = logging.getLogger(__name__)
 
 def compute_electrical_distance(net, pair) -> float:
     """
-    Compute electrical distance between primary and backup relays.
-    Uses sum of line impedances along shortest path.
+    Distance proxy between the primary and backup relay buses of a P/B pair.
+
+    NetworkData has no `.lines`/`.buses` tables or per-line impedance data
+    for any of this codebase's networks -- topology is implicit in
+    RelayPair.bus_pri/bus_bkp (see NetworkData.n_lines's own docstring:
+    "There is no separate `lines` table on NetworkData"). `net.relays`,
+    `net.lines`, and `net.buses[...].V_base` referenced here never
+    existed, so this always crashed with an AttributeError before even
+    reaching its own documented "fallback" branch -- every call to this
+    figure's main() failed immediately.
+
+    Uses the absolute difference between the pair's own bus_pri/bus_bkp
+    (real fields already captured on every RelayPair) as a real,
+    monotonic distance proxy in place of the unavailable impedance
+    computation. This is not a true electrical distance (no R/X data
+    exists to compute one for these networks) -- it is disclosed here as
+    a topological proxy, not fabricated to look like a physical quantity.
     """
-    prim_bus = net.relays[pair.primary].bus
-    back_bus = net.relays[pair.backup].bus
-    
-    # Simple pathfinding through network
-    # For 8-bus, we can use direct line lookup
-    min_distance = float('inf')
-    
-    for line in net.lines:
-        if (line.from_bus == prim_bus and line.to_bus == back_bus) or \
-           (line.from_bus == back_bus and line.to_bus == prim_bus):
-            distance = np.sqrt(line.R**2 + line.X**2)
-            min_distance = min(min_distance, distance)
-    
-    if min_distance == float('inf'):
-        # Fallback: use bus voltage magnitude difference as proxy
-        min_distance = abs(net.buses[prim_bus].V_base - net.buses[back_bus].V_base) + 0.1
-    
-    return min_distance
+    return float(abs(pair.bus_pri - pair.bus_bkp)) + 0.1
 
 
 def extract_lagrange_multipliers(trainer, env) -> np.ndarray:
@@ -212,7 +210,6 @@ def main(train_steps: int = 8000, n_eval_episodes: int = 50,
         pair_indices=np.arange(n_pairs),
         primary_relays=np.array([p.primary for p in net.pairs]),
         backup_relays=np.array([p.backup for p in net.pairs]),
-        line_indices=np.array([p.line_idx for p in net.pairs]),
         mean_lambdas=mean_lambdas,
         std_lambdas=std_lambdas,
         mean_violation_rates=mean_violations,
@@ -239,17 +236,20 @@ def main(train_steps: int = 8000, n_eval_episodes: int = 50,
     ax1 = fig.add_subplot(gs[0, :2])
     G = nx.Graph()
     
-    # Add buses as nodes
-    for i, bus in enumerate(net.buses):
+    # Add buses as nodes. NetworkData has no `.buses` table -- n_buses is
+    # the real bus count field.
+    for i in range(net.n_buses):
         G.add_node(i, pos=(i % 4, i // 4))
-    
-    # Add edges for lines with thickness based on criticality
+
+    # Add edges for lines with thickness based on criticality. NetworkData
+    # has no `.relays`/`.lines` tables or RelayPair.line_idx field --
+    # bus_pri/bus_bkp are the real, already-captured bus locations for
+    # this pair's primary/backup relay.
     for pair_idx in range(n_pairs):
         pair = net.pairs[pair_idx]
-        prim_bus = net.relays[pair.primary].bus
-        back_bus = net.relays[pair.backup].bus
-        line = net.lines[pair.line_idx]
-        
+        prim_bus = pair.bus_pri
+        back_bus = pair.bus_bkp
+
         # Edge thickness proportional to criticality
         thickness = 1 + criticality_scores[pair_idx] * 8
         color = plt.cm.Reds(criticality_scores[pair_idx])
@@ -364,13 +364,16 @@ def main(train_steps: int = 8000, n_eval_episodes: int = 50,
     print("\\n" + "=" * 90)
     print("CRITICAL P/B PAIR RANKING TABLE")
     print("=" * 90)
-    print(f"{'Rank':>5} {'Pair':>10} {'Line':>8} {'λ':>10} {'Viol%':>8} {'Margin':>10} {'ElecDist':>10} {'Score':>10} {'Priority':>10}")
+    # No "Line" column -- RelayPair has no line_idx field, and there is no
+    # separate lines table on NetworkData to look one up from (see
+    # compute_electrical_distance's docstring).
+    print(f"{'Rank':>5} {'Pair':>10} {'λ':>10} {'Viol%':>8} {'Margin':>10} {'ElecDist':>10} {'Score':>10} {'Priority':>10}")
     print("-" * 90)
-    
+
     for rank, idx in enumerate(ranked_indices):
         pair = net.pairs[idx]
         priority = "CRITICAL" if rank < 3 else "HIGH" if rank < 6 else "MEDIUM" if rank < 10 else "LOW"
-        print(f"{rank+1:>5} P{pair.primary:>2}-B{pair.backup:>2} L{pair.line_idx:>3} "
+        print(f"{rank+1:>5} P{pair.primary:>2}-B{pair.backup:>2} "
               f"{mean_lambdas[idx]:>10.4f} {mean_violations[idx]*100:>7.1f}% "
               f"{mean_margins[idx]:>10.4f} {electrical_distances[idx]:>10.4f} "
               f"{criticality_scores[idx]:>10.4f} {priority:>10}")

@@ -191,6 +191,48 @@ def test_comm_graph_stress_mechanics():
     print("  CommGraph stress mechanics: packet_loss/quantization/latency all alter forward()")
 
 
+def test_comm_graph_top_k_sparsify():
+    """Fig 22 (bandwidth vs. performance): exp_fig22_bandwidth_tradeoff.py
+    used to try mutating a nonexistent `actor.gnn_depth` attribute to
+    simulate compression -- a permanent no-op, and it crashed outright on
+    a matmul dimension mismatch before ever reaching that code. CommGraph
+    now has a real top_k_sparsify_fraction knob (this module's own
+    docstring has long described "top-k sparsification (keep top 50% of
+    alpha_ij)" as part of Fig 22's compression sweep). On a densely
+    connected graph (more real neighbors per agent than k), restricting
+    to the top-k highest-attention neighbors must change the aggregated
+    message relative to using all neighbors.
+    """
+    from marl.comm_graph import CommGraph, CommConfig
+
+    n_agents = 10
+    # Fully connected (including self-loops) so every agent has n_agents
+    # real neighbors -- k=5 (50%) is then a genuine restriction, unlike a
+    # sparse graph where every agent already has <= k neighbors.
+    adjacency = np.ones((n_agents, n_agents))
+    config = CommConfig(message_dim=8, hidden_dim=16, use_attention=True)
+
+    def make_comm():
+        return CommGraph(n_agents=n_agents, obs_dim=10, enhanced_dim=18,
+                          adjacency=adjacency, config=config, seed=42)
+
+    observations = np.random.default_rng(0).standard_normal((n_agents, 10))
+
+    comm = make_comm()
+    assert comm.top_k_sparsify_fraction == 1.0
+
+    enhanced_base, _, _ = make_comm().forward(observations, rng=np.random.default_rng(1))
+
+    comm_sparse = make_comm()
+    comm_sparse.top_k_sparsify_fraction = 0.5
+    enhanced_sparse, _, _ = comm_sparse.forward(observations, rng=np.random.default_rng(1))
+
+    assert not np.allclose(enhanced_base, enhanced_sparse), \
+        "top_k_sparsify_fraction=0.5 had no effect on forward() output on a dense graph"
+
+    print("  CommGraph top-k sparsification: restricting neighbors alters forward()")
+
+
 def test_relay_adjacency():
     """Test relay adjacency matrix for different systems."""
     from marl.comm_graph import build_relay_adjacency
@@ -448,6 +490,7 @@ def run_all_tests():
         test_gnn_decoder,
         test_comm_graph,
         test_comm_graph_stress_mechanics,
+        test_comm_graph_top_k_sparsify,
         test_relay_adjacency,
         test_neighbor_observations,
         test_shared_gaussian_actor,

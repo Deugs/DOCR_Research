@@ -160,7 +160,23 @@ def evaluate_line_outage(trainer, net, line_idx: int, n_eval: int = 20, seed: in
 
 
 def fine_tune_policy(trainer, net, line_idx: int, n_finetune_episodes: int = 50, seed: int = 0):
-    """Fine-tune policy after line outage."""
+    """Fine-tune policy after line outage.
+
+    Previously this loop only rolled out episodes via trainer.actor.sample()
+    -- it never called trainer.train(), so no gradient/ES update ever
+    happened. "Fine-tuned" was therefore identical to "pre-trained, no
+    adaptation": evaluate_line_outage() would return the same numbers for
+    both, silently defeating the entire point of this figure (measuring
+    recovery from online adaptation vs. none).
+
+    Genuinely continues training the SAME actor weights against the
+    outaged network via trainer.train() (wrapped in the same Safe RL env
+    used for base training, so training dynamics stay consistent), then
+    restores the base policy's original weights before returning --
+    main()'s per-line loop must start every line's fine-tuning from the
+    same base policy, not accumulate one line's adaptation into the next
+    line's "pre-trained" baseline.
+    """
     rng = np.random.default_rng(seed)
 
     # Fine-tune on the same outaged network the policy will be evaluated on.
@@ -168,23 +184,26 @@ def fine_tune_policy(trainer, net, line_idx: int, n_finetune_episodes: int = 50,
         outaged_net, _ = net.apply_n1_outage(line_idx)
     else:
         outaged_net = net
-    env = DynamicDOCREnv(outaged_net, seed=seed, use_pandapower=False,
-                          fault_type="3ph", curriculum_stage=5)
+    raw_env = DynamicDOCREnv(outaged_net, seed=seed, use_pandapower=False,
+                              fault_type="3ph", curriculum_stage=5)
+    finetune_env = create_safe_rl_env(raw_env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
 
-    # Fine-tune
-    for ep in range(n_finetune_episodes):
-        obs = env.reset(seed=seed + ep)
-        done = False
-        while not done:
-            policy_obs = _policy_obs(trainer, obs, rng)
-            actions = np.zeros((env.n_agents, env.ACT_DIM))
-            for i in range(env.n_agents):
-                a, _ = trainer.actor.sample(policy_obs[i], rng)
-                actions[i] = a
-            obs, _, done, info = env.step(actions)
+    base_params = trainer.actor.get_all_params()
+    original_env = trainer.env
+    trainer.env = finetune_env
+    steps_per_episode_estimate = max(1, raw_env.max_steps // 4)
+    trainer.train(total_steps=n_finetune_episodes * steps_per_episode_estimate, verbose=False)
 
     # Evaluate after fine-tuning
-    return evaluate_line_outage(trainer, net, line_idx, n_eval=20, seed=seed + 1000)
+    result = evaluate_line_outage(trainer, net, line_idx, n_eval=20, seed=seed + 1000)
+
+    trainer.actor.set_all_params(base_params)
+    trainer.env = original_env
+    return result
 
 
 def main(train_steps: int = 10000, n_eval: int = 20, n_finetune: int = 50,
