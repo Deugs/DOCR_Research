@@ -130,12 +130,12 @@ def distill_student(teacher_actor, obs_dim: int, act_dim: int,
         obs_batch = rng.standard_normal((batch, obs_dim)).astype(np.float64)
 
         # Teacher outputs with temperature scaling
-        teacher_out = np.array([teacher_actor.mean(o) for o in obs_batch])
+        teacher_out = np.array([teacher_actor.get_mean(o) for o in obs_batch])
         teacher_soft = np.exp(teacher_out / temperature)
         teacher_soft /= teacher_soft.sum(axis=1, keepdims=True) + 1e-9
 
         # Student outputs
-        student_out = np.array([student.mean(o) for o in obs_batch])
+        student_out = np.array([student.get_mean(o) for o in obs_batch])
 
         # Distillation loss: MSE on softened outputs
         loss = np.mean((student_out - teacher_out) ** 2)
@@ -186,10 +186,10 @@ def _latency_ms(actor, obs_dim: int, n_calls: int = 1000, seed: int = 0) -> floa
     rng = np.random.default_rng(seed)
     obs = rng.standard_normal(obs_dim).astype(np.float32)
     for _ in range(50):
-        actor.mean(obs)
+        actor.get_mean(obs)
     t0 = time.perf_counter()
     for _ in range(n_calls):
-        actor.mean(obs)
+        actor.get_mean(obs)
     return (time.perf_counter() - t0) / n_calls * 1000.0
 
 

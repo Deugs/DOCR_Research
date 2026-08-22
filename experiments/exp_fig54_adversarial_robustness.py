@@ -80,7 +80,7 @@ def _policy_loss(actor, obs: np.ndarray) -> float:
     Improved policy loss surrogate.
     Uses action magnitude weighted by action variance (exploration penalty).
     """
-    a_mean = actor.mean(obs)
+    a_mean = actor.get_mean(obs)
     a_std = np.ones_like(a_mean) * 0.5  # default std if not available
     
     # Higher loss for extreme actions (disruption)
@@ -160,7 +160,7 @@ def targeted_attack(actor, obs: np.ndarray, target_action: np.ndarray,
         for i in range(len(obs)):
             # Gradient of ||actor.mean(adv) - target||^2 w.r.t. adv
             g = spsa_gradient(
-                lambda o: -np.sum((actor.mean(o) - target_action[i]) ** 2),
+                lambda o: -np.sum((actor.get_mean(o) - target_action[i]) ** 2),
                 adv[i], seed=seed + _ * 1000 + i
             )
             adv[i] = adv[i] + step_size * np.sign(g)
@@ -193,7 +193,7 @@ def _eval_under_attack(actor, net, attack_fn, n_episodes: int = 30,
             # Clean actions for deviation comparison
             clean_actions = np.zeros((env.n_agents, env.ACT_DIM))
             for i in range(env.n_agents):
-                clean_actions[i] = actor.mean(obs[i])
+                clean_actions[i] = actor.get_mean(obs[i])
             
             # Apply attack
             adv_obs = attack_fn(obs)

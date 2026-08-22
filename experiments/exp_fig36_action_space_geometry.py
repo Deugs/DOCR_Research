@@ -195,7 +195,7 @@ def main(grid_size: int = 40, n_fault_locs: int = 15, train_steps: int = 8000,
 
     # Draw projection arrows for subset
     n_arrows = min(15, len(raw_actions))
-    idx = np.random.choice(len(raw_actions), n_arrows, replace=False)
+    idx = np.random.default_rng(seed).choice(len(raw_actions), n_arrows, replace=False)
     for i in idx:
         x1 = raw_actions[i, 0] * 0.9 + 0.1
         y1 = raw_actions[i, 1] * 9.0 + 1.0

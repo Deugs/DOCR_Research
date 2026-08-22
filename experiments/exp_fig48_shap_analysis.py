@@ -121,7 +121,7 @@ def compute_shap_values_proper(actor, obs_sample: np.ndarray,
                 perturbed[j] = background[bg_idx, j]
         
         # Policy output as value function
-        values[i] = float(np.sum(actor.mean(perturbed) ** 2))
+        values[i] = float(np.sum(actor.get_mean(perturbed) ** 2))
     
     # Weighted least squares: values = base + sum(mask_j * shap_j)
     X = np.column_stack([np.ones(n_coalitions), coalitions.astype(float)])
