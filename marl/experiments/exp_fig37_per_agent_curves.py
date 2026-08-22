@@ -35,39 +35,67 @@ from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
 from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
 
 
 def run_per_agent_logging(env, trainer, n_episodes: int = 1000, seed: int = 42):
-    """Run training and log per-agent rewards."""
+    """Run training and log per-agent rewards.
+
+    Previously never called trainer.train() -- only trainer.actor.sample()
+    against a frozen, randomly-initialized network across all n_episodes,
+    so every "per-agent learning curve" this produced was noise, not
+    genuine per-agent learning (the same bug class already fixed in
+    experiments/exp_fig12_convergence_curves.py). Also fed raw obs
+    directly to actor.sample() despite the trainer being built with
+    use_comm=True (see main()), crashing with a matmul dimension
+    mismatch -- now routes through trainer.comm_graph.forward() first.
+    """
     rng = np.random.default_rng(seed)
     n_agents = env.n_agents
-    
+
     log = {
         "episode": [],
         "per_agent_reward": [],  # (n_episodes, n_agents)
         "per_agent_value_loss": [],  # if available
     }
-    
+
+    steps_per_episode_estimate = max(1, env.max_steps // 4)
+
     for ep in range(n_episodes):
+        # One real training step per "episode" tick on the x-axis -- this
+        # is what makes the per-agent trajectories genuine learning curves.
+        trainer.train(total_steps=steps_per_episode_estimate, verbose=False)
+
         obs = env.reset(seed=seed + ep)
         done = False
         ep_rewards = np.zeros(n_agents)
-        
+
         while not done:
             actions = np.zeros((n_agents, env.ACT_DIM))
             action_qualities = np.zeros(n_agents)
-            
+
+            if trainer.comm_graph is not None:
+                enhanced, _, _ = trainer.comm_graph.forward(obs, rng)
+            else:
+                enhanced = obs
+
             for i in range(n_agents):
-                a, log_prob = trainer.actor.sample(obs[i], rng)
+                a, log_prob = trainer.actor.sample(enhanced[i], rng)
                 actions[i] = a
                 # Proxy for action quality: negative log probability (lower = more confident)
                 action_qualities[i] = -log_prob if log_prob is not None else 0.5
-            
-            obs, global_reward, done, info = env.step(actions)
-            
+
+            obs, reward, done, info = env.step(actions)
+            # env.step() returns a per-agent reward array, not a single
+            # global scalar -- sum it into a "global" pool before
+            # redistributing by action quality, matching this function's
+            # own stated intent ("Distribute global reward proportionally
+            # to action quality").
+            global_reward = float(np.sum(reward))
+
             # Distribute global reward proportionally to action quality
             total_quality = np.sum(action_qualities) + 1e-9
             for i in range(n_agents):
@@ -114,10 +142,45 @@ def main(n_episodes: int = 1000, seed: int = 42, output_dir: str = "outputs", sy
         use_pid=True, adaptive_rho=True,
     ))
     trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
-    if hasattr(trainer, 'use_ewc'):
-        trainer.use_ewc = True
-    
+    # `trainer.use_ewc` was a dead attribute set -- MAPPOMARLTrainer never
+    # defines it, so this "MAPPO-Safe-EWC" run never applied any EWC
+    # penalty at all. Real EWC needs an actual create_ewc_trainer wrapper
+    # plus real Fisher registration (the same single-task pattern already
+    # used in run_core_training.py's Core A and the sibling exp_fig12/13/
+    # 14/22/23 figure scripts).
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
+
     log = run_per_agent_logging(env, trainer, n_episodes, seed)
+
+    rng = np.random.default_rng(seed + 9000)
+    cur_params = trainer.actor.get_all_params()
+    obs_f = env.reset(seed=seed + 9000)
+    s_obs, s_act = [], []
+    done_f, sf = False, 0
+    while not done_f and sf < 30:
+        acts = np.zeros((env.n_agents, env.ACT_DIM))
+        enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, rng) if trainer.comm_graph is not None else (obs_f, None, None)
+        for i in range(env.n_agents):
+            a, _ = trainer.actor.sample(enhanced_f[i], rng)
+            acts[i] = a
+            s_obs.append(enhanced_f[i].copy())
+            s_act.append(a.copy())
+        obs_f, _, done_f, _ = env.step(acts); sf += 1
+    n_p = len(cur_params)
+    fisher = np.zeros(n_p)
+    if s_obs:
+        idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+        h = 1e-3
+        for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+            bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            b2 = cur_params.copy(); b2[p_idx] += h
+            trainer.actor.set_all_params(b2)
+            ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            fisher[p_idx] = ((ul - bl) / h) ** 2
+        trainer.actor.set_all_params(cur_params)
+    ewc_trainer.ewc_regularizer.register_task("fig37_base_policy", cur_params)
+    ewc_trainer.ewc_regularizer.update_fisher("fig37_base_policy", fisher)
+    ewc_trainer.ewc_regularizer.finalize()
     
     per_agent_rewards = np.array(log["per_agent_reward"])  # (n_episodes, n_agents)
     episodes = np.array(log["episode"])

@@ -22,6 +22,8 @@ import numpy as np
 from typing import Tuple, Dict, Optional
 from dataclasses import dataclass
 
+from network.relay_physics import FAULT_TYPE_WEIGHTS
+
 
 @dataclass
 class PVRideThroughCurve:
@@ -189,6 +191,13 @@ class PVInverter:
         injection for voltage support; this model applies that qualitatively
         without claiming exact standards compliance.
 
+        `fault_type` scales the contribution by FAULT_TYPE_WEIGHTS (the same
+        3ph/LL/1ph/2ph-g severity weighting relay_physics.py's own fault
+        current calculation uses) -- previously accepted but never applied,
+        so this returned the identical contribution regardless of fault
+        type. Unbalanced faults (1ph, 2ph-g) engage less of the inverter's
+        symmetrical-component current capacity than a balanced 3ph fault.
+
         Returns:
             Fault current contribution in kA
         """
@@ -201,6 +210,8 @@ class PVInverter:
         # Scale by voltage (deeper dip = more current)
         v_factor = max(0.0, 1.0 - v_terminal_pu) / 0.5  # 0 to 1
         i_contribution *= (0.5 + 0.5 * v_factor)
+
+        i_contribution *= FAULT_TYPE_WEIGHTS.get(fault_type, 1.0)
 
         return i_contribution
 
@@ -261,9 +272,9 @@ class PVPlant:
 
         return p_total, q_total, i_total
 
-    def get_fault_current_contribution(self, v_terminal_pu: float) -> float:
+    def get_fault_current_contribution(self, v_terminal_pu: float, fault_type: str = "3ph") -> float:
         """Total fault current from all inverters."""
         return sum(
-            inv.get_fault_current_contribution(v_terminal_pu)
+            inv.get_fault_current_contribution(v_terminal_pu, fault_type)
             for inv in self.inverters
         )

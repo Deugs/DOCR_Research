@@ -860,23 +860,30 @@ def run_phase7_robustness(args):
 
         tester = RobustnessTester(RobustnessConfig(seed=args.seed))
 
-        # Test GA-SQP
+        # Test GA-SQP. Previously called tester.test_method() with a
+        # runner accepting-and-discarding a `config=` kwarg -- test_method
+        # passed the UNPERTURBED net regardless of the requested stress
+        # condition, so every "robustness" result only reflected
+        # seed-to-seed noise, never a real stress condition.
+        # test_method_with_stress() genuinely perturbs the network's
+        # fault currents per condition via apply_stress_to_net() before
+        # calling the runner.
         if "GA-SQP" in args.methods:
             print(f"\n  Testing GA-SQP robustness...")
-            def ga_runner(net, seed=42, config=None):
-                return run_ga_sqp(net, ga_pop=30, ga_gen=50, seed=seed, verbose=False)
+            def ga_runner(stressed_net, seed=42):
+                return run_ga_sqp(stressed_net, ga_pop=30, ga_gen=50, seed=seed, verbose=False)
 
-            tester.test_method("GA-SQP", ga_runner, net, n_runs=args.n_runs, verbose=args.verbose)
+            tester.test_method_with_stress("GA-SQP", ga_runner, net, n_runs=args.n_runs, verbose=args.verbose)
             results[f"{sys_key}_GA-SQP"] = tester.compute_degradation_metrics("GA-SQP")
             print(tester.generate_report("GA-SQP"))
 
         # Test JAYA (fast metaheuristic)
         if "JAYA" in args.methods:
             print(f"\n  Testing JAYA robustness...")
-            def jaya_runner(net, seed=42, config=None):
-                return run_jaya(net, n_pop=20, max_iter=100, seed=seed, verbose=False, use_sqp=False)
+            def jaya_runner(stressed_net, seed=42):
+                return run_jaya(stressed_net, n_pop=20, max_iter=100, seed=seed, verbose=False, use_sqp=False)
 
-            tester.test_method("JAYA", jaya_runner, net, n_runs=args.n_runs, verbose=args.verbose)
+            tester.test_method_with_stress("JAYA", jaya_runner, net, n_runs=args.n_runs, verbose=args.verbose)
             results[f"{sys_key}_JAYA"] = tester.compute_degradation_metrics("JAYA")
             print(tester.generate_report("JAYA"))
 

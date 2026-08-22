@@ -338,12 +338,28 @@ class RobustnessTester:
     ) -> dict:
         """Test a method under all robustness conditions.
 
+        Delegates to test_method_with_stress(). This used to call
+        ``method_runner(net, seed=seed, config=cond_config)`` directly on
+        the UNPERTURBED net -- but no real baseline runner in this
+        codebase (run_ga_sqp, run_jaya, etc.) accepts a `config` kwarg,
+        so every call silently raised inside the try/except below and
+        self.results stayed empty regardless of the requested condition.
+        Even a caller that worked around the crash by accepting-and-
+        discarding `config` (as mains/main6.py's run_phase7_robustness
+        used to) would still measure only seed-to-seed noise on the
+        identical, unperturbed network -- never a real stress condition.
+        test_method_with_stress() applies each condition for real via
+        apply_stress_to_net() before calling
+        ``method_runner(stressed_net, seed=seed)``, which matches every
+        real baseline runner's actual signature.
+
         Parameters
         ----------
         method_name : str
             Name of the method under test.
         method_runner : Callable
-            Callable that runs the method and returns a result dict.
+            Callable accepting ``(stressed_net, seed)`` and returning a
+            result dict (same contract as test_method_with_stress).
         net : NetworkData
             Network data instance.
         n_runs : int
@@ -356,45 +372,9 @@ class RobustnessTester:
         dict
             {condition: [run_results, ...]}
         """
-        conditions = self._generate_conditions()
-
-        if verbose:
-            print(f"\n{'█'*60}")
-            print(f"  ROBUSTNESS TESTING: {method_name}")
-            print(f"  System: {net.name}  |  Runs: {n_runs}")
-            print(f"  Conditions: {len(conditions)}")
-            print(f"{'█'*60}")
-
-        for cond_name, cond_config in conditions.items():
-            if verbose:
-                print(f"\n  --- Condition: {cond_name} ---")
-
-            for run_idx in range(n_runs):
-                seed = (
-                    self.config.seed
-                    + run_idx * 100
-                    + (zlib.crc32(cond_name.encode()) & 0xFFF)
-                )
-
-                try:
-                    result = method_runner(net, seed=seed, config=cond_config)
-                    result["condition"] = cond_name
-                    result["run"] = run_idx
-                    self.results[method_name].append(result)
-
-                    if verbose and run_idx == 0:
-                        cti_ok = result.get("constraints", {}).get(
-                            "cti_satisfied", False
-                        )
-                        print(
-                            f"    Run {run_idx+1}: OF={result['OF']:.4f}, "
-                            f"CTI_ok={cti_ok}"
-                        )
-                except Exception as exc:
-                    if verbose:
-                        print(f"    ERROR: {exc}")
-
-        return dict(self.results)
+        return self.test_method_with_stress(
+            method_name, method_runner, net, n_runs=n_runs, verbose=verbose
+        )
 
     def _generate_conditions(self) -> dict[str, RobustnessConfig]:
         """Generate all test conditions."""
@@ -740,8 +720,13 @@ def quick_robustness_test(
     Usage::
 
         tester = quick_robustness_test(run_ga_sqp, net)
-        print(tester.generate_report("GA-SQP"))
+        print(tester.generate_report("method"))
+
+    method_runner must accept ``(stressed_net, seed=...)`` -- e.g.
+    ``lambda net, seed=42: run_ga_sqp(net, seed=seed)`` -- matching
+    test_method_with_stress()'s contract (the net it receives is already
+    perturbed for the current condition; no `config` kwarg is passed).
     """
     tester = RobustnessTester()
-    tester.test_method("method", method_runner, net, n_runs=n_runs, verbose=verbose)
+    tester.test_method_with_stress("method", method_runner, net, n_runs=n_runs, verbose=verbose)
     return tester

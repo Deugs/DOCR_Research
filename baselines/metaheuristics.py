@@ -550,11 +550,17 @@ def run_eeo(
     for t in range(max_iter):
         # Average equilibrium candidate
         C_eq_avg = np.mean(eq_pool, axis=0)
-        
+        # Faramarzi et al. 2020, Eq. 9: C_eq is drawn uniformly from a
+        # 5-member pool {C_eq1..C_eq4, C_eq_avg}. C_eq_avg was computed
+        # every iteration but never included in the draw below (eq_idx
+        # only ranged over 0-3, i.e. the top-4 pool) -- silently omitting
+        # the averaged candidate the algorithm's own formula requires.
+        eq_candidates = np.vstack([eq_pool, C_eq_avg[None, :]])
+
         for i in range(n_particles):
-            # Randomly select one equilibrium candidate
-            eq_idx = rng.integers(0, 4)
-            C_eq = eq_pool[eq_idx]
+            # Randomly select one equilibrium candidate (5-member pool)
+            eq_idx = rng.integers(0, 5)
+            C_eq = eq_candidates[eq_idx]
             
             # Generation rate (adaptive)
             a1 = 2.0 * np.exp(-(t / max_iter))

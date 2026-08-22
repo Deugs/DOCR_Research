@@ -22,12 +22,24 @@ import exp_fig37_per_agent_curves as fig37_module
 
 
 def _patch_sample_for_comm():
-    """Monkey-patch actor.sample() to handle use_comm=True dimension mismatch."""
+    """Monkey-patch run_per_agent_logging to fix the use_comm=True
+    dimension mismatch AND make it genuinely train.
+
+    This adapter's patch previously only changed how actor.sample()'s
+    return value was unpacked -- it still fed raw obs directly to an
+    actor built for comm-graph-enhanced input (crashing with a matmul
+    dimension mismatch whenever use_comm=True, which fig37_main() always
+    sets), and it never called trainer.train() at all, so "per-agent
+    learning curves" would have been pure noise from a frozen policy even
+    if the crash were fixed. Now routes obs through
+    trainer.comm_graph.forward() and calls trainer.train() once per
+    episode tick, mirroring the real fix applied directly to
+    marl/experiments/exp_fig37_per_agent_curves.py's own
+    run_per_agent_logging.
+    """
     if not hasattr(fig37_module, 'run_per_agent_logging'):
         print("[Adapter] WARNING: module has no run_per_agent_logging to patch")
         return
-
-    original_run = fig37_module.run_per_agent_logging
 
     def patched_run(env, trainer, n_episodes=1000, seed=42):
         rng = np.random.default_rng(seed)
@@ -39,7 +51,11 @@ def _patch_sample_for_comm():
             "per_agent_value_loss": [],
         }
 
+        steps_per_episode_estimate = max(1, env.max_steps // 4)
+
         for ep in range(n_episodes):
+            trainer.train(total_steps=steps_per_episode_estimate, verbose=False)
+
             obs = env.reset(seed=seed + ep)
             done = False
             ep_rewards = np.zeros(n_agents)
@@ -48,26 +64,21 @@ def _patch_sample_for_comm():
                 actions = np.zeros((n_agents, env.ACT_DIM))
                 action_qualities = np.zeros(n_agents)
 
+                if trainer.comm_graph is not None:
+                    enhanced, _, _ = trainer.comm_graph.forward(obs, rng)
+                else:
+                    enhanced = obs
+
                 for i in range(n_agents):
-                    sample_result = trainer.actor.sample(obs[i], rng)
-
-                    # === DIMENSION MISMATCH FIX ===
-                    if isinstance(sample_result, (tuple, list)):
-                        if len(sample_result) >= 2:
-                            a = sample_result[0]
-                            log_prob = sample_result[1]
-                        else:
-                            a = sample_result[0]
-                            log_prob = None
-                    else:
-                        a = sample_result
-                        log_prob = None
-                    # ================================
-
+                    a, log_prob = trainer.actor.sample(enhanced[i], rng)
                     actions[i] = a
                     action_qualities[i] = -log_prob if log_prob is not None else 0.5
 
-                obs, global_reward, done, info = env.step(actions)
+                obs, reward, done, info = env.step(actions)
+                # env.step() returns a per-agent reward array, not a
+                # single global scalar -- sum it into a "global" pool
+                # before redistributing by action quality.
+                global_reward = float(np.sum(reward))
 
                 total_quality = np.sum(action_qualities) + 1e-9
                 for i in range(n_agents):
@@ -85,7 +96,7 @@ def _patch_sample_for_comm():
         return log
 
     fig37_module.run_per_agent_logging = patched_run
-    print("[Adapter] Patched run_per_agent_logging for use_comm=True compatibility")
+    print("[Adapter] Patched run_per_agent_logging: real comm-graph routing + real training")
 
 
 def main():
