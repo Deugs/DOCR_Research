@@ -638,6 +638,13 @@ class TestLargeScaleEvaluation(unittest.TestCase):
         self.assertGreater(m.avg_bandwidth_kbps, 0)
         self.assertEqual(m.message_dim, 8)
 
+        # Regression: comm_benefit_percent used to be
+        # (with - without) / without, backwards for a lower-is-better OF
+        # metric -- MAPPO-Comm's OF (4.9) is genuinely BETTER (lower) than
+        # plain MAPPO's (5.1) in this fixture, so the benefit must be
+        # positive, not the ~-3.9% the old sign would have produced.
+        self.assertGreater(m.comm_benefit_percent, 0)
+
     def test_safety_metrics(self):
         """Test safety metrics."""
         evaluator = LargeScaleEvaluator(self.dummy_results)

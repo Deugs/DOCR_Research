@@ -31,6 +31,7 @@ from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
 from network.relay_physics import check_constraints
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -38,47 +39,39 @@ logger = logging.getLogger(__name__)
 
 def compute_electrical_distance(net, pair) -> float:
     """
-    Compute electrical distance between primary and backup relays.
-    Uses sum of line impedances along shortest path.
+    Distance proxy between the primary and backup relay buses of a P/B pair.
+
+    NetworkData has no `.lines`/`.buses` tables or per-line impedance data
+    for any of this codebase's networks -- topology is implicit in
+    RelayPair.bus_pri/bus_bkp (see NetworkData.n_lines's own docstring:
+    "There is no separate `lines` table on NetworkData"). `net.relays`,
+    `net.lines`, and `net.buses[...].V_base` referenced here never
+    existed, so this always crashed with an AttributeError before even
+    reaching its own documented "fallback" branch -- every call to this
+    figure's main() failed immediately.
+
+    Uses the absolute difference between the pair's own bus_pri/bus_bkp
+    (real fields already captured on every RelayPair) as a real,
+    monotonic distance proxy in place of the unavailable impedance
+    computation. This is not a true electrical distance (no R/X data
+    exists to compute one for these networks) -- it is disclosed here as
+    a topological proxy, not fabricated to look like a physical quantity.
     """
-    prim_bus = net.relays[pair.primary].bus
-    back_bus = net.relays[pair.backup].bus
-    
-    # Simple pathfinding through network
-    # For 8-bus, we can use direct line lookup
-    min_distance = float('inf')
-    
-    for line in net.lines:
-        if (line.from_bus == prim_bus and line.to_bus == back_bus) or \
-           (line.from_bus == back_bus and line.to_bus == prim_bus):
-            distance = np.sqrt(line.R**2 + line.X**2)
-            min_distance = min(min_distance, distance)
-    
-    if min_distance == float('inf'):
-        # Fallback: use bus voltage magnitude difference as proxy
-        min_distance = abs(net.buses[prim_bus].V_base - net.buses[back_bus].V_base) + 0.1
-    
-    return min_distance
+    return float(abs(pair.bus_pri - pair.bus_bkp)) + 0.1
 
 
 def extract_lagrange_multipliers(trainer, env) -> np.ndarray:
-    """Robustly extract Lagrange multipliers from trainer."""
-    n_pairs = env.net.n_pairs
-    lambdas = np.zeros(n_pairs)
-    
-    # Try multiple possible attribute paths
-    if hasattr(trainer, 'lagrange_multipliers'):
-        lambdas = trainer.lagrange_multipliers.copy()
-    elif hasattr(trainer, 'safety_layer'):
-        sl = trainer.safety_layer
-        if hasattr(sl, 'lambdas'):
-            lambdas = sl.lambdas.copy()
-        elif hasattr(sl, 'multipliers'):
-            lambdas = sl.multipliers.copy()
-    elif hasattr(trainer, 'constraint_multipliers'):
-        lambdas = trainer.constraint_multipliers.copy()
-    
-    return lambdas
+    """Extract the real per-pair Lagrange multipliers.
+
+    `trainer.lagrange_multipliers`/`safety_layer`/`constraint_multipliers`
+    never existed on MAPPOMARLTrainer -- those hasattr checks always fell
+    through to the all-zeros placeholder. The real per-pair multipliers
+    live on the AugmentedLagrangian created by create_safe_rl_env(), which
+    now wraps `env` before training (see main()).
+    """
+    if hasattr(env, "lagrangian"):
+        return env.lagrangian.lambdas.copy()
+    return np.zeros(env.net.n_pairs)
 
 
 def evaluate_pair_violations(env, trainer, pair, n_episodes: int = 50, seed: int = 0) -> Tuple[float, float]:
@@ -149,17 +142,26 @@ def main(train_steps: int = 8000, n_eval_episodes: int = 50,
     out_path.mkdir(parents=True, exist_ok=True)
     
     net = get_8bus()
-    env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=5)
+    raw_env = DynamicDOCREnv(net, use_pandapower=False, fault_type="3ph", curriculum_stage=5)
     n_pairs = net.n_pairs
-    
+
     logger.info("Figure 50 — Critical P/B Pair Identification (IMPROVED)")
     logger.info("  System: %s, Pairs: %d, Seeds: %d", net.name, n_pairs, n_seeds)
-    
-    # Train policy
+
+    # Train policy. `trainer.use_safety` used to be set via a hasattr guard
+    # that was always False -- MAPPOMARLTrainer has no such attribute, so
+    # this policy trained with no safety projection at all, and the
+    # AugmentedLagrangian's real per-pair multipliers this figure is
+    # supposed to rank never existed for extract_lagrange_multipliers() to
+    # find. Safe RL is a real env wrapper and must wrap the env BEFORE the
+    # trainer is built.
     logger.info("Training policy (%d steps)...", train_steps)
+    env = create_safe_rl_env(raw_env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
     trainer = MAPPOMARLTrainer(env, use_comm=False, seed=seed)
-    if hasattr(trainer, 'use_safety'):
-        trainer.use_safety = True
     trainer.train(total_steps=train_steps, verbose=False)
     
     # Collect multi-seed statistics
@@ -208,7 +210,6 @@ def main(train_steps: int = 8000, n_eval_episodes: int = 50,
         pair_indices=np.arange(n_pairs),
         primary_relays=np.array([p.primary for p in net.pairs]),
         backup_relays=np.array([p.backup for p in net.pairs]),
-        line_indices=np.array([p.line_idx for p in net.pairs]),
         mean_lambdas=mean_lambdas,
         std_lambdas=std_lambdas,
         mean_violation_rates=mean_violations,
@@ -235,17 +236,20 @@ def main(train_steps: int = 8000, n_eval_episodes: int = 50,
     ax1 = fig.add_subplot(gs[0, :2])
     G = nx.Graph()
     
-    # Add buses as nodes
-    for i, bus in enumerate(net.buses):
+    # Add buses as nodes. NetworkData has no `.buses` table -- n_buses is
+    # the real bus count field.
+    for i in range(net.n_buses):
         G.add_node(i, pos=(i % 4, i // 4))
-    
-    # Add edges for lines with thickness based on criticality
+
+    # Add edges for lines with thickness based on criticality. NetworkData
+    # has no `.relays`/`.lines` tables or RelayPair.line_idx field --
+    # bus_pri/bus_bkp are the real, already-captured bus locations for
+    # this pair's primary/backup relay.
     for pair_idx in range(n_pairs):
         pair = net.pairs[pair_idx]
-        prim_bus = net.relays[pair.primary].bus
-        back_bus = net.relays[pair.backup].bus
-        line = net.lines[pair.line_idx]
-        
+        prim_bus = pair.bus_pri
+        back_bus = pair.bus_bkp
+
         # Edge thickness proportional to criticality
         thickness = 1 + criticality_scores[pair_idx] * 8
         color = plt.cm.Reds(criticality_scores[pair_idx])
@@ -360,13 +364,16 @@ def main(train_steps: int = 8000, n_eval_episodes: int = 50,
     print("\\n" + "=" * 90)
     print("CRITICAL P/B PAIR RANKING TABLE")
     print("=" * 90)
-    print(f"{'Rank':>5} {'Pair':>10} {'Line':>8} {'λ':>10} {'Viol%':>8} {'Margin':>10} {'ElecDist':>10} {'Score':>10} {'Priority':>10}")
+    # No "Line" column -- RelayPair has no line_idx field, and there is no
+    # separate lines table on NetworkData to look one up from (see
+    # compute_electrical_distance's docstring).
+    print(f"{'Rank':>5} {'Pair':>10} {'λ':>10} {'Viol%':>8} {'Margin':>10} {'ElecDist':>10} {'Score':>10} {'Priority':>10}")
     print("-" * 90)
-    
+
     for rank, idx in enumerate(ranked_indices):
         pair = net.pairs[idx]
         priority = "CRITICAL" if rank < 3 else "HIGH" if rank < 6 else "MEDIUM" if rank < 10 else "LOW"
-        print(f"{rank+1:>5} P{pair.primary:>2}-B{pair.backup:>2} L{pair.line_idx:>3} "
+        print(f"{rank+1:>5} P{pair.primary:>2}-B{pair.backup:>2} "
               f"{mean_lambdas[idx]:>10.4f} {mean_violations[idx]*100:>7.1f}% "
               f"{mean_margins[idx]:>10.4f} {electrical_distances[idx]:>10.4f} "
               f"{criticality_scores[idx]:>10.4f} {priority:>10}")

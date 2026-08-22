@@ -86,15 +86,39 @@ def test_jaya():
 def test_eeo():
     """Test EEO on 3-bus system."""
     from baselines.metaheuristics import run_eeo
-    
+
     net = get_3bus()
     result = run_eeo(net, n_particles=10, max_iter=50, seed=42, verbose=False)
-    
+
     assert result["method"] == "EEO"
     assert len(result["TMS"]) == net.n_relays
     assert result["OF"] > 0
     assert "constraints" in result
     print("  ✓ test_eeo")
+
+
+def test_eeo_returns_true_best_not_final_iteration_particle():
+    """
+    Regression test: EEO used to return particles[sorted_idx[0]] (the best
+    of only the FINAL iteration's population) instead of memory[0] (the
+    true best-ever individual, tracked in an elitist archive merged/sorted
+    every iteration). With use_sqp=False this made the returned OF
+    inconsistent with the returned TMS/PS -- recomputing the objective
+    from the returned TMS/PS must match the returned OF exactly.
+    """
+    from baselines.metaheuristics import run_eeo, pack
+    from network.relay_physics import objective_function
+
+    net = get_3bus()
+    result = run_eeo(net, n_particles=15, max_iter=60, seed=41, use_sqp=False, verbose=False)
+
+    recomputed_of, _, _ = objective_function(net, result["TMS"], result["PS"])
+    assert abs(recomputed_of - result["OF"]) < 1e-9, (
+        f"returned OF ({result['OF']}) must match the objective recomputed "
+        f"from the returned TMS/PS ({recomputed_of}) -- got a mismatch of "
+        f"{abs(recomputed_of - result['OF'])}"
+    )
+    print("  ✓ test_eeo_returns_true_best_not_final_iteration_particle")
 
 
 # ── Test 5: Metaheuristic SQP refinement ─────────────────────────────────────
@@ -147,6 +171,26 @@ def test_friedman_test():
     # Algo1 should have lowest (best) mean rank
     assert details["mean_ranks"][0] < details["mean_ranks"][2]
     print("  ✓ test_friedman_test")
+
+
+def test_friedman_test_ties_not_significant():
+    """
+    Regression test: friedman_test() used to rank ties by array position
+    (np.argsort(np.argsort(...))) instead of averaging them (midranks) --
+    3 algorithms tied on every one of 10 datasets got ranked [1,2,3] on
+    every dataset (instead of [2,2,2]), fabricating a highly "significant"
+    result (p~4.5e-5) for data with zero real difference between methods.
+    """
+    from evaluation.stat_analysis import friedman_test
+
+    results = np.full((10, 3), 10.0)  # 3 algorithms, perfectly tied everywhere
+    stat, p_val, reject, details = friedman_test(results, alpha=0.05)
+
+    assert np.allclose(details["mean_ranks"], 2.0), (
+        f"tied values must all get the average rank (2.0), got {details['mean_ranks']}"
+    )
+    assert not reject, f"perfectly tied data must not reject H0, got p={p_val}"
+    print("  ✓ test_friedman_test_ties_not_significant")
 
 
 # ── Test 7: Nemenyi post-hoc ─────────────────────────────────────────────────
@@ -452,8 +496,10 @@ def run_all_tests():
         test_hho,
         test_jaya,
         test_eeo,
+        test_eeo_returns_true_best_not_final_iteration_particle,
         test_metaheuristic_sqp_refinement,
         test_friedman_test,
+        test_friedman_test_ties_not_significant,
         test_nemenyi_test,
         test_nemenyi_test_alpha_selects_correct_table,
         test_cliffs_delta,

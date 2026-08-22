@@ -109,13 +109,16 @@ class DistributionNetwork:
             self.pp_net = None
 
         # ── PV plants (one per DG bus) ────────────────────────────────────────
+        # Rebuilt per-reset() scaled by that call's pv_level (see
+        # _build_pv_plants) rather than built once here from the DG's full
+        # rated capacity -- pv_level varies per episode/scenario, and a
+        # PVPlant's fault-current contribution is fixed at construction, so
+        # building it once here made every episode's PV fault-current
+        # contribution identical regardless of the pv_level actually
+        # requested (including pv_level=0.0 still injecting full-capacity
+        # PV fault current).
         self.pv_plants = {}
-        for dg in net_data.dg_buses:
-            self.pv_plants[dg.bus_idx] = PVPlant(
-                bus_idx=dg.bus_idx,
-                total_power_mw=dg.p_mw,
-                rated_voltage_kv=net_data.base_voltage,
-            )
+        self._build_pv_plants(pv_level=0.0)
 
         # ── Topology manager ──────────────────────────────────────────────────
         # n_lines: for line-based systems (14, 30, 39, 57, 118), n_relays = 2 * n_lines
@@ -218,9 +221,16 @@ class DistributionNetwork:
             bus_voltages = {i: 1.0 for i in range(self.net_data.n_buses)}
             line_loadings = {}
 
-        # Compute fault currents
+        # Scale PV plants to this episode's pv_level before computing fault
+        # currents from them (see _build_pv_plants).
+        self._build_pv_plants(pv_level)
+
+        # Compute fault currents -- bus_voltages passed explicitly (the
+        # value just computed above), not read from self.current_state
+        # (which at this point still holds the PREVIOUS reset()'s state,
+        # since self.current_state isn't reassigned until below).
         fault_currents = self._compute_fault_currents(
-            pv_level, fault_type, self.topology.current_state
+            pv_level, fault_type, self.topology.current_state, bus_voltages
         )
 
         # Ensure relay settings are initialized
@@ -282,18 +292,21 @@ class DistributionNetwork:
             )
             self.current_state.topology_state = self.topology.current_state.copy()
 
-        # Recompute fault currents
-        self.current_state.fault_currents = self._compute_fault_currents(
-            self.current_state.pv_penetration,
-            self.current_state.fault_type,
-            self.current_state.topology_state,
-        )
-
-        # Update pandapower if available
+        # Update pandapower BEFORE recomputing fault currents, not after --
+        # otherwise the PV fault-current contribution below is gated on the
+        # previous step's/reset's bus voltages instead of this step's.
         if self.pp_available:
             self.pp_net.run_power_flow()
             self.current_state.bus_voltages = self.pp_net.get_bus_voltages()
             self.current_state.line_loadings = self.pp_net.get_line_loadings()
+
+        # Recompute fault currents using the just-refreshed bus voltages
+        self.current_state.fault_currents = self._compute_fault_currents(
+            self.current_state.pv_penetration,
+            self.current_state.fault_type,
+            self.current_state.topology_state,
+            self.current_state.bus_voltages,
+        )
 
         return self.current_state
 
@@ -430,11 +443,33 @@ class DistributionNetwork:
     #  Internal helpers
     # ═══════════════════════════════════════════════════════════════════════
 
+    def _build_pv_plants(self, pv_level: float) -> None:
+        """
+        (Re)build PV plant models scaled to the given PV penetration level.
+
+        PVPlant's rated capacity (and hence its fault-current contribution)
+        is fixed at construction. Building it once from the DG's full
+        rated `p_mw` -- as this used to do, in __init__ -- meant every
+        episode's PV fault-current contribution was identical regardless
+        of the pv_level actually requested, including pv_level=0.0 still
+        injecting the full-capacity contribution. Scaling p_mw by
+        pv_level here mirrors NetworkData.apply_pv_penetration()'s
+        existing convention for the same quantity.
+        """
+        self.pv_plants = {}
+        for dg in self.net_data.dg_buses:
+            self.pv_plants[dg.bus_idx] = PVPlant(
+                bus_idx=dg.bus_idx,
+                total_power_mw=dg.p_mw * pv_level,
+                rated_voltage_kv=self.net_data.base_voltage,
+            )
+
     def _compute_fault_currents(
         self,
         pv_level: float,
         fault_type: str,
         topology_state: TopologyState,
+        bus_voltages: Optional[Dict[int, float]] = None,
     ) -> Dict[str, float]:
         """Compute fault currents considering PV and topology."""
         # Get outage factor from topology
@@ -448,11 +483,17 @@ class DistributionNetwork:
             topology_changes={"outage_factor": outage_factor},
         )
 
-        # Add PV contribution
+        # Add PV contribution. bus_voltages is passed in explicitly by the
+        # caller (this call's own freshly-computed voltages) rather than
+        # read from self.current_state, which at both call sites (reset()
+        # and step()) still holds the PREVIOUS call's state at the point
+        # _compute_fault_currents runs -- reading it here silently gated
+        # the PV fault-current contribution on stale, one-step-lagged
+        # voltages.
         for bus_idx, plant in self.pv_plants.items():
             v_pu = 1.0  # Pre-fault voltage
-            if self.current_state and bus_idx in self.current_state.bus_voltages:
-                v_pu = self.current_state.bus_voltages[bus_idx]
+            if bus_voltages and bus_idx in bus_voltages:
+                v_pu = bus_voltages[bus_idx]
 
             pv_i_contribution = plant.get_fault_current_contribution(v_pu)
 

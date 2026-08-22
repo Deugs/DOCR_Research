@@ -37,151 +37,145 @@ from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
 from network.relay_physics import check_constraints
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
 
 
 def train_base_policy(seed: int = 42, steps: int = 8000):
-    """Train base MAPPO-Safe-EWC policy."""
+    """Train base MAPPO-Safe-EWC policy.
+
+    `trainer.use_safety`/`use_ewc` used to be set via hasattr guards that
+    were always False -- MAPPOMARLTrainer has neither attribute, so this
+    "MAPPO-Safe-EWC" policy trained with no safety projection and no EWC
+    penalty at all. Safe RL is a real env wrapper (must wrap before the
+    trainer is built); EWC registration follows the same real
+    finite-difference Fisher-estimation procedure used elsewhere in this
+    codebase for single-task EWC (e.g. run_core_training.py's Core A).
+    """
     net = get_8bus()
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
-                          fault_type="3ph", curriculum_stage=5)
+    raw_env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
+                              fault_type="3ph", curriculum_stage=5)
+    env = create_safe_rl_env(raw_env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
     trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
-    if hasattr(trainer, 'use_safety'):
-        trainer.use_safety = True
-    if hasattr(trainer, 'use_ewc'):
-        trainer.use_ewc = True
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
     trainer.train(total_steps=steps, verbose=False)
+
+    rng = np.random.default_rng(seed + 9000)
+    cur_params = trainer.actor.get_all_params()
+    obs_f = env.reset(seed=seed + 9000)
+    s_obs, s_act = [], []
+    done_f, sf = False, 0
+    while not done_f and sf < 30:
+        acts = np.zeros((env.n_agents, env.ACT_DIM))
+        enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, rng) if trainer.comm_graph is not None else (obs_f, None, None)
+        for i in range(env.n_agents):
+            a, _ = trainer.actor.sample(enhanced_f[i], rng)
+            acts[i] = a
+            s_obs.append(enhanced_f[i].copy())
+            s_act.append(a.copy())
+        obs_f, _, done_f, _ = env.step(acts); sf += 1
+    n_p = len(cur_params)
+    fisher = np.zeros(n_p)
+    if s_obs:
+        idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+        h = 1e-3
+        for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+            bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            b2 = cur_params.copy(); b2[p_idx] += h
+            trainer.actor.set_all_params(b2)
+            ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            fisher[p_idx] = ((ul - bl) / h) ** 2
+        trainer.actor.set_all_params(cur_params)
+    ewc_trainer.ewc_regularizer.register_task("base_policy", cur_params)
+    ewc_trainer.ewc_regularizer.update_fisher("base_policy", fisher)
+    ewc_trainer.ewc_regularizer.finalize()
+
     return trainer, net
-
-
-class CommunicationStressInjector:
-    """
-    Injectable communication stressors for GNN message passing.
-    Wraps the actor's communication layer with impairment functions.
-    """
-    
-    def __init__(self, actor, stress_type: str = "none", **kwargs):
-        self.actor = actor
-        self.stress_type = stress_type
-        self.kwargs = kwargs
-        self.msg_bytes_log = []
-        
-        # Store original forward if it exists
-        self._original_forward = getattr(actor, '_gnn_forward', None)
-    
-    def _stressed_gnn_forward(self, obs, rng=None):
-        """Apply stress to GNN messages."""
-        # Get clean messages
-        if self._original_forward is not None:
-            messages = self._original_forward(obs)
-        else:
-            # Fallback: identity
-            messages = obs
-        
-        if self.stress_type == "packet_loss":
-            return self._apply_packet_loss(messages, rng)
-        elif self.stress_type == "latency":
-            return self._apply_latency(messages, rng)
-        elif self.stress_type == "quantization":
-            return self._apply_quantization(messages)
-        else:
-            return messages
-    
-    def _apply_packet_loss(self, messages, rng):
-        """Randomly drop messages with given probability."""
-        loss_prob = self.kwargs.get('loss_prob', 0.0)
-        if rng is None:
-            rng = np.random.default_rng()
-        
-        mask = rng.random(messages.shape) > loss_prob
-        # Dropped messages replaced with zeros (no information)
-        return messages * mask
-    
-    def _apply_latency(self, messages, rng=None):
-        """Simulate message delay by using stale messages."""
-        max_delay_steps = self.kwargs.get('max_delay_steps', 0)
-        if max_delay_steps == 0:
-            return messages
-        if rng is None:
-            rng = np.random.default_rng()
-
-        # Simplified: add small noise proportional to delay
-        delay_noise = rng.normal(0, 0.1 * max_delay_steps, messages.shape)
-        return messages + delay_noise
-    
-    def _apply_quantization(self, messages):
-        """Quantize message values to lower precision."""
-        n_bits = self.kwargs.get('n_bits', 64)
-        if n_bits >= 64:
-            return messages
-        
-        levels = 2 ** n_bits
-        # Scale to [-1, 1], quantize, scale back
-        msg_max = np.max(np.abs(messages))
-        if msg_max < 1e-9:
-            return messages
-        
-        scaled = messages / msg_max
-        quantized = np.round(scaled * levels) / levels
-        return quantized * msg_max
-    
-    def inject(self):
-        """Inject stress into actor."""
-        if hasattr(self.actor, '_gnn_forward'):
-            self.actor._gnn_forward = lambda obs, rng=None: self._stressed_gnn_forward(obs, rng)
-    
-    def restore(self):
-        """Restore original actor behavior."""
-        if hasattr(self.actor, '_gnn_forward') and self._original_forward is not None:
-            self.actor._gnn_forward = self._original_forward
 
 
 def evaluate_with_stress(trainer, net, stress_type: str, stress_params: dict,
                          n_episodes: int = 50, seed: int = 0) -> Dict:
-    """Evaluate policy under communication stress."""
+    """Evaluate policy under communication stress.
+
+    The CommunicationStressInjector class this used to call monkey-patched
+    a `_gnn_forward` attribute that neither MAPPOMARLTrainer nor its actor
+    ever defined -- inject()/restore() were permanent no-ops, so every
+    stress condition (any packet-loss rate, any latency, any
+    quantization) silently drove the identical unperturbed rollout. It
+    also fed raw (unenhanced) observations straight to an actor built
+    for comm-graph-enhanced input, crashing with a matmul dimension
+    mismatch on every call.
+
+    CommGraph (marl/comm_graph.py) already has real packet_loss_rate /
+    latency_steps / quantization_bits stress knobs -- added for
+    experiments/training_pipeline.py's Fig-13 evaluator (`_eval_comm_stress`)
+    -- this now sets those directly on the trained policy's actual comm
+    graph and routes observations through its real forward() pass.
+    """
     rng = np.random.default_rng(seed)
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
                           fault_type="3ph", curriculum_stage=5)
-    
-    # Inject stress
-    injector = CommunicationStressInjector(trainer.actor, stress_type, **stress_params)
-    injector.inject()
-    
+
+    comm_graph = trainer.comm_graph
+    orig_loss = orig_latency = orig_bits = None
+    if comm_graph is not None:
+        orig_loss = comm_graph.packet_loss_rate
+        orig_latency = comm_graph.latency_steps
+        orig_bits = comm_graph.quantization_bits
+        if stress_type == "packet_loss":
+            comm_graph.packet_loss_rate = stress_params.get("loss_prob", 0.0)
+        elif stress_type == "latency":
+            comm_graph.latency_steps = stress_params.get("max_delay_steps", 0)
+        elif stress_type == "quantization":
+            comm_graph.quantization_bits = stress_params.get("n_bits", 32)
+
     of_list, cti_list = [], []
     total_msg_bytes = 0
     total_steps = 0
-    
+
     try:
         for ep in range(n_episodes):
             obs = env.reset(seed=seed + ep)
             done = False
             ep_of = []
-            
+
             while not done:
                 actions = np.zeros((env.n_agents, env.ACT_DIM))
+                if comm_graph is not None:
+                    enhanced, messages, _ = comm_graph.forward(obs, rng)
+                else:
+                    enhanced, messages = obs, None
                 for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
+                    a, _ = trainer.actor.sample(enhanced[i], rng)
                     actions[i] = a
-                
-                # Estimate message bytes (simplified)
+
+                # Estimate message bytes actually sent this step.
                 n_agents = env.n_agents
-                msg_dim = getattr(trainer.actor, 'gnn_hidden_dim', 64)
+                msg_dim = comm_graph.msg_dim if comm_graph is not None else 0
                 msg_bytes_per_step = n_agents * n_agents * msg_dim * 8  # float64
                 total_msg_bytes += msg_bytes_per_step
                 total_steps += 1
-                
+
                 obs, _, done, info = env.step(actions)
                 ep_of.append(info.get("OF", float("inf")))
-            
+
             of_list.append(float(np.min(ep_of)))
             TMS, PS = env.get_state()
             c = check_constraints(net, TMS, PS)
             cti_list.append(c["cti_violations"])
     finally:
-        injector.restore()
-    
+        if comm_graph is not None:
+            comm_graph.packet_loss_rate = orig_loss
+            comm_graph.latency_steps = orig_latency
+            comm_graph.quantization_bits = orig_bits
+
     bandwidth_kbps = (total_msg_bytes * 8 / 1024) / max(total_steps / 10, 1)  # per second, assuming 10 steps/sec
     
     return {

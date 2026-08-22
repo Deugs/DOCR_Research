@@ -38,22 +38,66 @@ from network.network_data import get_30bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
 from network.relay_physics import check_constraints
+from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
 
 
 def train_base_policy(seed: int = 42, steps: int = 10000):
-    """Train base MAPPO-Safe-EWC on 30-bus."""
+    """Train base MAPPO-Safe-EWC on 30-bus.
+
+    `trainer.use_safety`/`use_ewc` used to be set via hasattr guards that
+    were always False -- MAPPOMARLTrainer has neither attribute, so this
+    "MAPPO-Safe-EWC" policy trained with no safety projection and no EWC
+    penalty at all. Safe RL is a real env wrapper (must wrap before the
+    trainer is built); EWC registration follows the same real
+    finite-difference Fisher-estimation procedure used elsewhere in this
+    codebase for single-task EWC (e.g. run_core_training.py's Core A).
+    """
     net = get_30bus()
-    env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
-                          fault_type="3ph", curriculum_stage=5)
+    raw_env = DynamicDOCREnv(net, seed=seed, use_pandapower=False,
+                              fault_type="3ph", curriculum_stage=5)
+    env = create_safe_rl_env(raw_env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
     trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
-    if hasattr(trainer, 'use_safety'):
-        trainer.use_safety = True
-    if hasattr(trainer, 'use_ewc'):
-        trainer.use_ewc = True
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
     trainer.train(total_steps=steps, verbose=False)
+
+    rng = np.random.default_rng(seed + 9000)
+    cur_params = trainer.actor.get_all_params()
+    obs_f = env.reset(seed=seed + 9000)
+    s_obs, s_act = [], []
+    done_f, sf = False, 0
+    while not done_f and sf < 30:
+        acts = np.zeros((env.n_agents, env.ACT_DIM))
+        enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, rng) if trainer.comm_graph is not None else (obs_f, None, None)
+        for i in range(env.n_agents):
+            a, _ = trainer.actor.sample(enhanced_f[i], rng)
+            acts[i] = a
+            s_obs.append(enhanced_f[i].copy())
+            s_act.append(a.copy())
+        obs_f, _, done_f, _ = env.step(acts); sf += 1
+    n_p = len(cur_params)
+    fisher = np.zeros(n_p)
+    if s_obs:
+        idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+        h = 1e-3
+        for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+            bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            b2 = cur_params.copy(); b2[p_idx] += h
+            trainer.actor.set_all_params(b2)
+            ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+            fisher[p_idx] = ((ul - bl) / h) ** 2
+        trainer.actor.set_all_params(cur_params)
+    ewc_trainer.ewc_regularizer.register_task("base_policy", cur_params)
+    ewc_trainer.ewc_regularizer.update_fisher("base_policy", fisher)
+    ewc_trainer.ewc_regularizer.finalize()
+
     return trainer, net
 
 
@@ -116,7 +160,23 @@ def evaluate_line_outage(trainer, net, line_idx: int, n_eval: int = 20, seed: in
 
 
 def fine_tune_policy(trainer, net, line_idx: int, n_finetune_episodes: int = 50, seed: int = 0):
-    """Fine-tune policy after line outage."""
+    """Fine-tune policy after line outage.
+
+    Previously this loop only rolled out episodes via trainer.actor.sample()
+    -- it never called trainer.train(), so no gradient/ES update ever
+    happened. "Fine-tuned" was therefore identical to "pre-trained, no
+    adaptation": evaluate_line_outage() would return the same numbers for
+    both, silently defeating the entire point of this figure (measuring
+    recovery from online adaptation vs. none).
+
+    Genuinely continues training the SAME actor weights against the
+    outaged network via trainer.train() (wrapped in the same Safe RL env
+    used for base training, so training dynamics stay consistent), then
+    restores the base policy's original weights before returning --
+    main()'s per-line loop must start every line's fine-tuning from the
+    same base policy, not accumulate one line's adaptation into the next
+    line's "pre-trained" baseline.
+    """
     rng = np.random.default_rng(seed)
 
     # Fine-tune on the same outaged network the policy will be evaluated on.
@@ -124,23 +184,26 @@ def fine_tune_policy(trainer, net, line_idx: int, n_finetune_episodes: int = 50,
         outaged_net, _ = net.apply_n1_outage(line_idx)
     else:
         outaged_net = net
-    env = DynamicDOCREnv(outaged_net, seed=seed, use_pandapower=False,
-                          fault_type="3ph", curriculum_stage=5)
+    raw_env = DynamicDOCREnv(outaged_net, seed=seed, use_pandapower=False,
+                              fault_type="3ph", curriculum_stage=5)
+    finetune_env = create_safe_rl_env(raw_env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
 
-    # Fine-tune
-    for ep in range(n_finetune_episodes):
-        obs = env.reset(seed=seed + ep)
-        done = False
-        while not done:
-            policy_obs = _policy_obs(trainer, obs, rng)
-            actions = np.zeros((env.n_agents, env.ACT_DIM))
-            for i in range(env.n_agents):
-                a, _ = trainer.actor.sample(policy_obs[i], rng)
-                actions[i] = a
-            obs, _, done, info = env.step(actions)
+    base_params = trainer.actor.get_all_params()
+    original_env = trainer.env
+    trainer.env = finetune_env
+    steps_per_episode_estimate = max(1, raw_env.max_steps // 4)
+    trainer.train(total_steps=n_finetune_episodes * steps_per_episode_estimate, verbose=False)
 
     # Evaluate after fine-tuning
-    return evaluate_line_outage(trainer, net, line_idx, n_eval=20, seed=seed + 1000)
+    result = evaluate_line_outage(trainer, net, line_idx, n_eval=20, seed=seed + 1000)
+
+    trainer.actor.set_all_params(base_params)
+    trainer.env = original_env
+    return result
 
 
 def main(train_steps: int = 10000, n_eval: int = 20, n_finetune: int = 50,

@@ -79,6 +79,36 @@ def test_relay_bus_mapping():
         print(f"  {net.name}: all {net.n_relays} relays have a valid relay_bus mapping")
 
 
+def test_relay_bus_survives_apply_pv_penetration_and_copy():
+    """
+    Regression test: apply_pv_penetration() and copy() used to construct a
+    new NetworkData without passing relay_bus=self.relay_bus, silently
+    reverting it to None. Every real PV-penetration experiment calls
+    apply_pv_penetration() before building the environment, and
+    apply_n1_outage() calls copy() -- both would then reintroduce the
+    "wrong bus" bug get_relay_bus() exists to fix (falling back to the old
+    min(relay_idx, n_buses-1) placeholder) for any relay absent from every
+    RelayPair, on exactly the systems (14/39/57/118-bus) and conditions
+    (PV penetration > 0, post-N-1) this thesis actually studies.
+    """
+    for get_net in [get_14bus, get_39bus, get_57bus, get_118bus]:
+        net = get_net()
+
+        scaled = net.apply_pv_penetration(0.5)
+        assert scaled.relay_bus is not None, f"{net.name}: apply_pv_penetration() dropped relay_bus"
+        copied = net.copy()
+        assert copied.relay_bus is not None, f"{net.name}: copy() dropped relay_bus"
+
+        for relay_idx in range(net.n_relays):
+            expected = net.get_relay_bus(relay_idx)
+            assert scaled.get_relay_bus(relay_idx) == expected, \
+                f"{net.name}: relay {relay_idx} bus changed after apply_pv_penetration()"
+            assert copied.get_relay_bus(relay_idx) == expected, \
+                f"{net.name}: relay {relay_idx} bus changed after copy()"
+
+    print("  relay_bus survives apply_pv_penetration()/copy() on all line-based systems")
+
+
 def test_relay_bus_mapping_fallback_paths():
     """get_relay_bus()'s two fallback paths (no relay_bus array; relay
     absent from every pair) on a minimal hand-built NetworkData, since
@@ -325,6 +355,7 @@ def run_all_tests():
         test_network_data,
         test_get_14bus_full_topology,
         test_relay_bus_mapping,
+        test_relay_bus_survives_apply_pv_penetration_and_copy,
         test_relay_bus_mapping_fallback_paths,
         test_ensure_feasible_ps_bounds,
         test_idmt_relay,

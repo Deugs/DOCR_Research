@@ -255,10 +255,17 @@ def run_hho(
     history = [rabbit_fit]
     
     for t in range(max_iter):
-        E0 = 2 * rng.random() - 1  # Initial energy
-        E = 2 * E0 * (1 - t / max_iter)  # Escaping energy
-        
         for i in range(n_hawks):
+            # Escaping energy (Heidari et al. 2019, Algorithm 1): drawn
+            # fresh PER HAWK each iteration, not once per iteration and
+            # shared by the whole population -- sharing one E value
+            # synchronized which of the exploration/exploitation branches
+            # (and which of the four besiege strategies) every hawk took
+            # in a given iteration, removing the per-agent stochastic
+            # diversity the algorithm relies on.
+            E0 = 2 * rng.random() - 1  # Initial energy
+            E = 2 * E0 * (1 - t / max_iter)  # Escaping energy
+
             if abs(E) >= 1:
                 # Exploration: random hawk or random position
                 if rng.random() < 0.5:
@@ -553,8 +560,15 @@ def run_eeo(
             a1 = 2.0 * np.exp(-(t / max_iter))
             a2 = 2.0 * (1 - t / max_iter)
             
-            # Exponential term
-            t_vec = (1 - t / max_iter) ** (a1 * rng.random(dim))
+            # Exponential term (Faramarzi et al. 2020, Eq. 9):
+            # T = (1 - Iter/Max_iter)^(a2 * Iter/Max_iter) -- a deterministic
+            # function of iteration progress, giving the intended
+            # exploration->exploitation decay schedule. The previous
+            # `a1 * rng.random(dim)` substituted a fresh per-dimension
+            # random draw for the Iter/Max_iter term, making the exponent
+            # uncorrelated with iteration progress (resampled independently
+            # every particle/iteration instead of decaying over the run).
+            t_vec = (1 - t / max_iter) ** (a2 * (t / max_iter))
             
             # Unit vector
             r = rng.random(dim)
@@ -624,8 +638,18 @@ def run_eeo(
         if verbose and t % 50 == 0:
             print(f"  EEO iter {t:4d}  best_OF={best_fit:.4f}")
     
-    # SQP refinement
-    best_particle = particles[sorted_idx[0]].copy()
+    # SQP refinement -- warm-start from the true best-ever individual
+    # (memory, an elitist archive merged/sorted every iteration), not from
+    # sorted_idx[0] (the best of only the FINAL iteration's population).
+    # EEO's concentration update is applied unconditionally with no
+    # greedy/elitist selection at the per-particle level, so the final
+    # population's best can be (and empirically is, on some seeds) worse
+    # than best_fit / memory[0], which otherwise makes the returned OF
+    # inconsistent with the returned TMS/PS, and (with use_sqp=True)
+    # warm-starts SQP from an inferior point.
+    best_mem_idx = int(np.argmin(mem_fitness))
+    best_particle = memory[best_mem_idx].copy()
+    best_fit = float(mem_fitness[best_mem_idx])
     if use_sqp:
         if verbose:
             print(f"  EEO best = {best_fit:.4f}  |  SQP refinement ...")

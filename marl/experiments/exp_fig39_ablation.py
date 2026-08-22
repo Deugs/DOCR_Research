@@ -224,6 +224,18 @@ def run_config(name, use_comm, use_safe, use_ewc, use_curriculum, seed=42):
 
                 prev_task_name = task_name
                 prev_fisher = fisher
+
+        if use_ewc and ewc_wrapper is not None:
+            # The loop above only consolidates a task into task_memory when
+            # the *next* task's register_task() fires -- TASKS[-1] (60% PV,
+            # also this script's sole evaluation task, see below) has no
+            # next task, so it was never consolidated at all: it had zero
+            # EWC protection despite this being the whole point of the
+            # comparison. Stash its real, already-computed fisher
+            # (prev_task_name/prev_fisher after the final iteration) as
+            # pending, then finalize() to consolidate it for real.
+            ewc_wrapper.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+            ewc_wrapper.ewc_regularizer.finalize()
     else:
         # Single task at the highest configured PV level (60%) — no
         # curriculum, so EWC has nothing to protect against (only one

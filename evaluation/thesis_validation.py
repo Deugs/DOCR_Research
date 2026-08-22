@@ -416,7 +416,16 @@ class ThesisValidator:
             if ewc_results and baseline_results:
                 ewc_of = np.mean([r.get("best_of", 0) for r in ewc_results])
                 base_of = np.mean([r.get("best_of", 0) for r in baseline_results])
-                metrics["forgetting_measure"] = abs(ewc_of - base_of) / base_of if base_of > 0 else 0
+                # abs() previously scored EWC beating the baseline as
+                # equally "forgotten" as EWC losing to it (e.g. EWC at
+                # ~50% better than baseline OF failed the <10% threshold
+                # exactly like EWC at 50% worse would have). Only count
+                # degradation as forgetting; an improvement is zero
+                # forgetting, not negative. Mirrors backward_transfer's
+                # already-correctly-signed version of this same comparison.
+                metrics["forgetting_measure"] = (
+                    max(0.0, (ewc_of - base_of) / base_of) if base_of > 0 else 0
+                )
 
         # Backward transfer (continual-learning literature convention:
         # positive = old-task performance IMPROVED after learning new

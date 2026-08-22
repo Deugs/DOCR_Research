@@ -955,9 +955,13 @@ def run_phase7_deployment(args):
         print(f"\n  [3] Byzantine Resilience Test")
         agg = ByzantineResilientAggregator(n_agents=net.n_relays)
 
-        # Simulate normal operation
+        # Simulate normal operation. Uses an explicitly seeded Generator
+        # (not the legacy global np.random state, which every other
+        # stochastic path in this file already avoids per CLAUDE.md's
+        # seeding convention) so this demo block is reproducible run-to-run.
+        byz_rng = np.random.default_rng(args.seed)
         for i in range(net.n_relays):
-            neighbors = np.random.normal(1.0, 0.1, min(4, net.n_relays - 1))
+            neighbors = byz_rng.normal(1.0, 0.1, min(4, net.n_relays - 1))
             val, meta = agg.aggregate(i, 1.0 + i * 0.01, neighbors.tolist())
 
         # Inject Byzantine agent

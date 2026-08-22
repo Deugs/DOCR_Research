@@ -157,7 +157,6 @@ def _metaheuristic_job(args):
 
 
 def main(n_seeds: int = 10, train_steps: int = 5000, n_eval: int = 100,
-         meta_pop: int = 30, meta_iter: int = 60,
          output_dir: str = "outputs", system: str = "8bus", n_workers: int = 1,
          methods: Optional[List[str]] = None, pv_levels: Optional[List[float]] = None):
     # Applied unconditionally (not just inside worker processes) so results

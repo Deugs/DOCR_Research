@@ -40,6 +40,7 @@ from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
 from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+from marl.continual_trainer import create_ewc_trainer, EWCConfig, TaskSimilarityEstimator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -70,58 +71,145 @@ def run_curriculum(use_ewc: bool, seed: int = 42, system: str = "8bus"):
     # MAPPO-Safe-EWC, (b) MAPPO-Safe-NoEWC) — only EWC on/off differs, so
     # both get the real Safe RL wrapper. `trainer.use_safety = True` was a
     # dead attribute set (MAPPOMARLTrainer never defines `use_safety`).
-    env = create_safe_rl_env(raw_env, SafeRLConfig(
+    safe_env = create_safe_rl_env(raw_env, SafeRLConfig(
         project_actions=True, enforce_cti=True,
         lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
         use_pid=True, adaptive_rho=True,
     ))
-    trainer = MAPPOMARLTrainer(env, use_comm=True, seed=seed)
+    trainer = MAPPOMARLTrainer(safe_env, use_comm=True, seed=seed)
 
-    if hasattr(trainer, 'use_ewc'):
-        trainer.use_ewc = use_ewc
-    
+    # `trainer.use_ewc` was a dead attribute set -- MAPPOMARLTrainer never
+    # defines it, so "with EWC" vs "without EWC" trained identically and
+    # this figure (literally named "EWC effectiveness") never applied any
+    # EWC penalty at all. Real EWC needs an actual create_ewc_trainer
+    # wrapper plus per-task Fisher registration -- the curriculum pattern
+    # (lagged consolidation via register_task/update_fisher/finalize) is
+    # the same one already fixed this session in run_core_training.py's
+    # Core B/D and marl/experiments/exp_fig39_ablation.py.
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig()) if use_ewc else None
+    similarity_estimator = TaskSimilarityEstimator() if use_ewc else None
+
     rng = np.random.default_rng(seed)
-    
+
+    def _act(all_obs, agent_idx, rng):
+        """Route raw obs through the comm graph before sampling. The
+        actor was built expecting the enhanced (obs+message) dimension
+        whenever use_comm is on (see MAPPOMARLTrainer.train()'s own loop)
+        -- feeding it raw obs directly mismatches dimensions and crashes.
+        """
+        if trainer.comm_graph is not None:
+            enhanced, _, _ = trainer.comm_graph.forward(all_obs, rng)
+            return trainer.actor.sample(enhanced[agent_idx], rng)
+        return trainer.actor.sample(all_obs[agent_idx], rng)
+
     # Track performance on each task after each training phase
     task_performances = {task_idx: [] for task_idx in range(len(TASKS))}
-    
+
+    # Convert episode budget to a step budget for trainer.train(). The
+    # previous version of this loop never called trainer.train() at all --
+    # only trainer.actor.sample() against a frozen, randomly-initialized
+    # network -- so every "task performance" it produced was noise from an
+    # untrained policy, not genuine curriculum learning (the same bug
+    # already fixed in experiments/exp_fig12_convergence_curves.py).
+    steps_per_task = EPISODES_PER_TASK * 300
+
+    prev_task_name = None
+    prev_fisher = None
+    prev_conditions = None
+    prev_params = None
+
     for train_task_idx, pv_level in enumerate(TASKS):
         logger.info("  Training on Task %d (%.0f%% PV) EWC=%s...", train_task_idx, pv_level*100, use_ewc)
-        env.curriculum_stage = int(pv_level * 5)
-        
+        raw_env.curriculum_stage = int(pv_level * 5)
+
+        if use_ewc and ewc_trainer is not None and prev_task_name is not None:
+            # Apply the EWC gradient correction before training the new
+            # task starts (same one-shot correction used in Core B/D).
+            cur = trainer.actor.get_all_params()
+            ewc_grad = ewc_trainer.apply_ewc_to_gradient(cur, np.zeros_like(cur))
+            trainer.actor.set_all_params(cur - 0.01 * ewc_grad)
+
         # Train
-        for ep in range(EPISODES_PER_TASK):
-            obs = env.reset(seed=seed + train_task_idx * 10000 + ep)
-            done = False
-            while not done:
-                actions = np.zeros((env.n_agents, env.ACT_DIM))
-                for i in range(env.n_agents):
-                    a, _ = trainer.actor.sample(obs[i], rng)
-                    actions[i] = a
-                obs, _, done, _ = env.step(actions)
-        
+        trainer.train(total_steps=steps_per_task, verbose=False)
+        task_name = f"PV{int(pv_level*100):03d}"
+
+        if use_ewc and ewc_trainer is not None:
+            cur = trainer.actor.get_all_params()
+            obs_f = safe_env.reset(seed=seed + 9000 + train_task_idx)
+            s_obs, s_act = [], []
+            done_f, sf = False, 0
+            while not done_f and sf < 30:
+                acts = np.zeros((raw_env.n_agents, raw_env.ACT_DIM))
+                enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, rng) if trainer.comm_graph is not None else (obs_f, None, None)
+                for i in range(raw_env.n_agents):
+                    a, _ = trainer.actor.sample(enhanced_f[i], rng)
+                    acts[i] = a
+                    s_obs.append(enhanced_f[i].copy())
+                    s_act.append(a.copy())
+                obs_f, _, done_f, _ = safe_env.step(acts); sf += 1
+            n_p = len(cur)
+            fisher = np.zeros(n_p)
+            if s_obs:
+                idx = rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+                h = 1e-3
+                for p_idx in rng.choice(n_p, size=min(n_p, 50), replace=False):
+                    bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    b2 = cur.copy(); b2[p_idx] += h
+                    trainer.actor.set_all_params(b2)
+                    ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    fisher[p_idx] = ((ul - bl) / h) ** 2
+                trainer.actor.set_all_params(cur)
+
+            cur_conditions = {"pv_level": pv_level}
+            # register_task() must run FIRST -- it's what actually
+            # consolidates the previous task into task_memory. adapt_lambda()
+            # only updates entries already in task_memory, so calling it
+            # before register_task would be a silent no-op.
+            ewc_trainer.ewc_regularizer.register_task(task_name, cur)
+            if prev_conditions is not None:
+                similarity = similarity_estimator.estimate_similarity(
+                    prev_conditions, prev_params, cur_conditions, cur
+                )
+                ewc_trainer.ewc_regularizer.adapt_lambda(similarity)
+            if prev_task_name is not None:
+                ewc_trainer.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+            prev_task_name = task_name
+            prev_fisher = fisher
+            prev_conditions = cur_conditions
+            prev_params = cur.copy()
+
         # Evaluate on ALL tasks (including previous)
         for eval_task_idx in range(len(TASKS)):
             eval_pv = TASKS[eval_task_idx]
-            env.curriculum_stage = int(eval_pv * 5)
-            
+            raw_env.curriculum_stage = int(eval_pv * 5)
+
             rewards = []
             for ep in range(N_EVAL):
-                obs = env.reset(seed=seed + 50000 + eval_task_idx * 1000 + ep)
+                obs = safe_env.reset(seed=seed + 50000 + eval_task_idx * 1000 + ep)
                 done = False
                 ep_reward = 0
                 while not done:
-                    actions = np.zeros((env.n_agents, env.ACT_DIM))
-                    for i in range(env.n_agents):
-                        a, _ = trainer.actor.sample(obs[i], rng)
+                    actions = np.zeros((raw_env.n_agents, raw_env.ACT_DIM))
+                    for i in range(raw_env.n_agents):
+                        a, _ = _act(obs, i, rng)
                         actions[i] = a
-                    obs, r, done, _ = env.step(actions)
-                    ep_reward += r
+                    obs, r, done, _ = safe_env.step(actions)
+                    ep_reward += float(np.mean(r)) if isinstance(r, np.ndarray) else r
                 rewards.append(ep_reward)
-            
+
             task_performances[eval_task_idx].append(np.mean(rewards))
             logger.info("    After T%d: T%d perf = %.4f", train_task_idx, eval_task_idx, np.mean(rewards))
-    
+
+    if use_ewc and ewc_trainer is not None:
+        # TASKS[-1] is never consolidated by the loop above (that only
+        # happens lazily when the *next* task's register_task() fires) --
+        # finalize() closes it out explicitly, using the real just-computed
+        # Fisher (stashed via this update_fisher call) instead of the
+        # zero-information uniform placeholder finalize() would otherwise
+        # fall back to.
+        ewc_trainer.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+        ewc_trainer.ewc_regularizer.finalize()
+
     return task_performances
 
 

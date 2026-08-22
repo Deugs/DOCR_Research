@@ -298,6 +298,18 @@ class CommGraph:
         self.quantization_bits: int = 32
         self._message_history: List[np.ndarray] = []
 
+        # Real message-compression knob for evaluation (Fig 22: bandwidth
+        # vs. performance trade-off). This module's own docstring has long
+        # described "top-k sparsification (keep top 50% of alpha_ij)" as
+        # part of Fig 22's compression sweep, but no such mechanism existed
+        # anywhere in this class — experiments/exp_fig22_bandwidth_tradeoff.py
+        # instead tried to mutate a nonexistent `actor.gnn_depth` attribute
+        # (a permanent no-op) and never touched compression at all. Keeps
+        # only the top_k_sparsify_fraction highest-attention-weight
+        # neighbors per agent before aggregation, renormalizing so the
+        # kept weights still sum to 1 per agent (1.0 = no sparsification).
+        self.top_k_sparsify_fraction: float = 1.0
+
     def forward(self, observations: np.ndarray, rng: Optional[np.random.Generator] = None
                ) -> Tuple[np.ndarray, np.ndarray, Dict]:
         """
@@ -363,6 +375,20 @@ class CommGraph:
             # Uniform attention over neighbors
             row_sums = self.adjacency.sum(axis=1, keepdims=True)
             attention = self.adjacency / np.maximum(row_sums, 1e-8)
+
+        # 3b. Top-k attention sparsification (Fig 22 compression sweep):
+        # keep only each agent's top_k_sparsify_fraction highest-weight
+        # neighbors, zero the rest, and renormalize so kept weights still
+        # sum to 1 per agent.
+        if self.top_k_sparsify_fraction < 1.0:
+            k = max(1, int(np.ceil(self.n_agents * self.top_k_sparsify_fraction)))
+            if k < self.n_agents:
+                sparse_attention = np.zeros_like(attention)
+                for i in range(self.n_agents):
+                    top_idx = np.argpartition(attention[i], -k)[-k:]
+                    sparse_attention[i, top_idx] = attention[i, top_idx]
+                row_sums = sparse_attention.sum(axis=1, keepdims=True)
+                attention = sparse_attention / np.maximum(row_sums, 1e-8)
 
         # 4. Aggregate messages
         aggregated = attention @ messages_for_agg  # (n_agents, msg_dim)
