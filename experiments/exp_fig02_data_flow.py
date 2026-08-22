@@ -81,91 +81,111 @@ class DataFlowLogger:
         self._original_rollout = None
 
     def install_hooks(self):
-        """Monkey-patch the trainer to capture intermediate tensors."""
-        # Hook into rollout collection
-        if hasattr(self.trainer, '_collect_rollout'):
-            self._original_rollout = self.trainer._collect_rollout
-            self.trainer._collect_rollout = self._patched_rollout
-        # Hook into PPO update
-        if hasattr(self.trainer, '_update_policy'):
-            self._original_update = self.trainer._update_policy
-            self.trainer._update_policy = self._patched_update
+        """Monkey-patch the trainer to capture intermediate tensors.
+
+        MAPPOMARLTrainer has no `_update_policy` method -- it trains via
+        evolution strategies (see `_update_critic_es`/`_update_actor_es`),
+        not gradient-based PPO, so a `hasattr(trainer, '_update_policy')`
+        guard was always False and this logger silently fell back to
+        `_generate_synthetic_records()` on every real run. Hook the two
+        methods that actually exist and are unconditionally called every
+        training iteration.
+        """
+        self._original_rollout = self.trainer._collect_rollout
+        self.trainer._collect_rollout = self._patched_rollout
+        self._original_update = self.trainer._update_critic_es
+        self.trainer._update_critic_es = self._patched_update
         logger.info("Data-flow hooks installed.")
 
     def uninstall_hooks(self):
         if self._original_rollout:
             self.trainer._collect_rollout = self._original_rollout
         if self._original_update:
-            self.trainer._update_policy = self._original_update
+            self.trainer._update_critic_es = self._original_update
 
     def _patched_rollout(self, *args, **kwargs):
-        """Intercept rollout to log observation/action shapes."""
+        """Intercept rollout to log observation/action shapes.
+
+        `_collect_rollout` returns the bare next-observation array, not a
+        namedtuple with `.observations`/`.actions`/etc — the real
+        per-step data lives in `self.trainer.buffer` after the call.
+        """
         import time
         t0 = time.perf_counter()
         result = self._original_rollout(*args, **kwargs)
         dt = (time.perf_counter() - t0) * 1000
 
-        # Extract rollout metadata
-        obs = getattr(result, 'observations', None)
-        actions = getattr(result, 'actions', None)
-        rewards = getattr(result, 'rewards', None)
-        values = getattr(result, 'values', None)
-        log_probs = getattr(result, 'log_probs', None)
+        buf = self.trainer.buffer
+        T = buf.size
+        obs = buf.obs[:T]
+        actions = buf.actions[:T]
+        rewards = buf.rewards[:T]
+        values = buf.values[:T]
+        log_probs = buf.log_probs[:T]
 
         self._last_rollout = {
-            'obs_shape': obs.shape if obs is not None else None,
-            'action_shape': actions.shape if actions is not None else None,
-            'reward_mean': float(np.mean(rewards)) if rewards is not None else 0.0,
-            'value_mean': float(np.mean(values)) if values is not None else 0.0,
-            'log_prob_mean': float(np.mean(log_probs)) if log_probs is not None else 0.0,
+            'obs_shape': obs.shape if T > 0 else None,
+            'action_shape': actions.shape if T > 0 else None,
+            'reward_mean': float(np.mean(rewards)) if T > 0 else 0.0,
+            'value_mean': float(np.mean(values)) if T > 0 else 0.0,
+            'log_prob_mean': float(np.mean(log_probs)) if T > 0 else 0.0,
             'rollout_time_ms': dt,
         }
         return result
 
     def _patched_update(self, *args, **kwargs):
-        """Intercept PPO update to log gradient norms and losses."""
+        """Intercept the critic ES update to log per-step diagnostics.
+
+        This trainer optimizes via OpenAI-ES (finite-difference parameter
+        perturbations), not backprop -- there is no loss tensor, gradient,
+        KL divergence, or PPO clip fraction to read off anywhere. Rather
+        than fabricate those PPO-specific fields as 0.0 (which would read
+        as "computed and zero" instead of "not applicable"), they are
+        recorded as NaN. `grad_norm_actor`/`grad_norm_critic` are real,
+        computed as the L2 norm of the actual parameter update this ES
+        step applied.
+        """
         import time
+        critic_before = self.trainer.critic.get_params().copy()
+        actor_before = self.trainer.actor.get_all_params().copy()
+
         t0 = time.perf_counter()
         result = self._original_update(*args, **kwargs)
         dt = (time.perf_counter() - t0) * 1000
 
-        # Extract update metadata
-        actor_loss = getattr(result, 'actor_loss', 0.0)
-        critic_loss = getattr(result, 'critic_loss', 0.0)
-        entropy = getattr(result, 'entropy', 0.0)
-        approx_kl = getattr(result, 'approx_kl', 0.0)
-        clip_frac = getattr(result, 'clip_fraction', 0.0)
-        explained_var = getattr(result, 'explained_variance', 0.0)
+        grad_norm_critic = float(np.linalg.norm(self.trainer.critic.get_params() - critic_before))
+        grad_norm_actor = float(np.linalg.norm(self.trainer.actor.get_all_params() - actor_before))
 
-        grad_norms = getattr(result, 'grad_norms', {})
+        n_pairs = self.trainer.env.net.n_pairs
+        rb = self._last_rollout
 
         # Build record
         record = DataFlowStep(
-            step=getattr(self.trainer, 'total_steps', len(self.records)),
-            obs_shape=self._last_rollout.get('obs_shape', ()),
-            obs_dtype='float32',
-            gnn_in_shape=(self._last_rollout.get('obs_shape', [0, 0])[0], 64) if self._last_rollout.get('obs_shape') else (0, 0),
-            gnn_out_shape=(self._last_rollout.get('obs_shape', [0, 0])[0], 64) if self._last_rollout.get('obs_shape') else (0, 0),
-            gnn_n_messages=self._last_rollout.get('obs_shape', [0, 0])[0] * (self._last_rollout.get('obs_shape', [0, 0])[0] - 1) if self._last_rollout.get('obs_shape') else 0,
-            action_shape=self._last_rollout.get('action_shape', ()),
+            step=getattr(self.trainer, '_global_step', len(self.records)),
+            obs_shape=rb.get('obs_shape') or (),
+            obs_dtype='float64',
+            gnn_in_shape=(rb['obs_shape'][0], 64) if rb.get('obs_shape') else (0, 0),
+            gnn_out_shape=(rb['obs_shape'][0], 64) if rb.get('obs_shape') else (0, 0),
+            gnn_n_messages=rb['obs_shape'][0] * (rb['obs_shape'][0] - 1) if rb.get('obs_shape') else 0,
+            action_shape=rb.get('action_shape') or (),
             action_bounds=((0.1, 1.0), (1.0, 10.0)),
-            reward_scalar=self._last_rollout.get('reward_mean', 0.0),
+            reward_scalar=rb.get('reward_mean', 0.0),
             reward_components={'primary_speed': 0.0, 'backup_selectivity': 0.0, 'cti_margin': 0.0},
-            cti_vector_shape=(14,),  # 8-bus: ~14 P/B pairs
+            cti_vector_shape=(n_pairs,),
             cti_violations=0,
-            ewc_loss=getattr(result, 'ewc_loss', 0.0),
-            ewc_fisher_norm=getattr(result, 'ewc_fisher_norm', 0.0),
-            lambda_multipliers=np.zeros(14),
-            value_pred=self._last_rollout.get('value_mean', 0.0),
-            advantage=actor_loss,
-            log_prob=self._last_rollout.get('log_prob_mean', 0.0),
-            entropy=entropy,
-            clip_fraction=clip_frac,
-            approx_kl=approx_kl,
-            explained_variance=explained_var,
-            grad_norm_actor=grad_norms.get('actor', 0.0),
-            grad_norm_critic=grad_norms.get('critic', 0.0),
-            grad_norm_gnn=grad_norms.get('gnn', 0.0),
+            ewc_loss=float('nan'),
+            ewc_fisher_norm=float('nan'),
+            lambda_multipliers=np.full(n_pairs, np.nan),
+            value_pred=rb.get('value_mean', 0.0),
+            advantage=float('nan'),
+            log_prob=rb.get('log_prob_mean', 0.0),
+            entropy=float('nan'),
+            clip_fraction=float('nan'),
+            approx_kl=float('nan'),
+            explained_variance=float('nan'),
+            grad_norm_actor=grad_norm_actor,
+            grad_norm_critic=grad_norm_critic,
+            grad_norm_gnn=float('nan'),
             batch_time_ms=dt,
         )
         self.records.append(asdict(record))

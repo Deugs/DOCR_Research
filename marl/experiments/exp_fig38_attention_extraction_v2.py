@@ -1,5 +1,37 @@
 #!/usr/bin/env python3
 """
+*** DEAD CODE — NOT PART OF THE REAL PIPELINE, DO NOT USE ***
+
+Nothing imports or calls into this module. The real Figure 38 path that
+`run_thesis_experiments.py --phase3` actually invokes is the standalone CLI
+adapter `marl/experiments/attention_evolution.py`, which is an honestly
+labelled STUB (its own docstring and console output say so explicitly). The
+real Figure 8 is `experiments/exp_fig8_38_attention_extraction.py`, which
+was fixed this session to extract genuine attention via
+`trainer.comm_graph.forward()` from an actually-trained MAPPOMARLTrainer.
+
+`marl/experiments/CHANGELOG.md` (entry #7, "exp_fig38_attention_extraction_v2.py")
+claims this file's `Mock8BusNetwork` fallback was removed and a `system`
+parameter was added to `run_figure8()`/`run_figure38()`/`main()`. None of
+that is true of the code below: `Mock8BusNetwork` is still defined (unused),
+`run_figure8()`/`run_figure38()` still reference a bare `system` name that
+is not a parameter or global anywhere (NameError on any call),
+`get_network()`'s "8bus" branch calls an undefined `real_get_network()`
+instead of the `real_get_8bus` it imports, and `main()`'s signature still
+doesn't accept `system` despite the bottom-of-file argparse block trying to
+pass it positionally (TypeError). This is left unfixed and undeleted,
+exactly like the similarly-orphaned `marl/experiments/exp_fig12_convergence_curves.py`
+(see that file's own header) -- fixing a module nothing calls isn't
+worth the effort, but leaving stale documentation claiming it already
+works would be actively misleading.
+
+Beyond the crashes above, every attention matrix this file produces
+(`extract_attention_at_checkpoint`, `run_figure8`, `run_figure38`) is
+synthetic — built from `rng.dirichlet(...)`/hand-written distance-decay
+formulas, never a real trained GNN's attention weights — with no
+`mark_synthetic()` watermark anywhere, unlike the sibling fixed files in
+this codebase that do disclose synthetic data.
+
 exp_attention_extraction_v2.py -- Figures 8 & 38 (IMPROVED)
 =============================================================
 GNN Attention Analysis + Temporal Evolution.

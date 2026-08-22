@@ -482,6 +482,63 @@ def test_ewc_multiple_tasks():
           f"kept={remaining_names}, penalty={penalty:.4f}")
 
 
+def test_ewc_adapt_lambda_moves_lambda_from_similarity():
+    """Test EWCRegularizer.adapt_lambda() actually moves lambda_ewc.
+
+    EWCConfig.adaptive_lambda defaults to True, but nothing in this test
+    suite previously called adapt_lambda() directly -- it's wired into
+    Core B/D's curriculum loops in run_core_training.py, but a caller bug
+    there wouldn't be caught without a test of the method's own math.
+    """
+    from marl.continual_trainer import EWCRegularizer, EWCConfig
+
+    n_params = 6
+    params = np.random.randn(n_params)
+
+    # High similarity (> similarity_threshold) -> lambda should shrink
+    # below lambda_ewc, floored at lambda_min.
+    config = EWCConfig(lambda_ewc=100.0, lambda_min=10.0, similarity_threshold=0.5)
+    ewc = EWCRegularizer(config)
+    ewc.register_task("taskA", params)
+    ewc.finalize()
+    assert len(ewc.task_memory) == 1
+    assert ewc.task_memory[0][3] == 100.0, "lambda should start at config default"
+
+    ewc.adapt_lambda(0.9)
+    new_lambda_high_sim = ewc.task_memory[0][3]
+    assert new_lambda_high_sim < 100.0, \
+        f"High similarity should shrink lambda below 100.0, got {new_lambda_high_sim}"
+    assert new_lambda_high_sim >= 10.0, "lambda should never drop below lambda_min"
+    expected_high = max(10.0, 100.0 * (1 - 0.9))
+    assert np.isclose(new_lambda_high_sim, expected_high), \
+        f"lambda {new_lambda_high_sim} != expected {expected_high}"
+
+    # Low similarity (<= similarity_threshold) -> lambda should grow
+    # above lambda_ewc (protect old knowledge more).
+    config2 = EWCConfig(lambda_ewc=100.0, lambda_min=10.0, similarity_threshold=0.5)
+    ewc2 = EWCRegularizer(config2)
+    ewc2.register_task("taskB", params)
+    ewc2.finalize()
+    ewc2.adapt_lambda(0.1)
+    new_lambda_low_sim = ewc2.task_memory[0][3]
+    assert new_lambda_low_sim > 100.0, \
+        f"Low similarity should grow lambda above 100.0, got {new_lambda_low_sim}"
+    expected_low = 100.0 * (1 + (1 - 0.1))
+    assert np.isclose(new_lambda_low_sim, expected_low), \
+        f"lambda {new_lambda_low_sim} != expected {expected_low}"
+
+    # adaptive_lambda=False -> adapt_lambda() must be a genuine no-op.
+    config3 = EWCConfig(lambda_ewc=100.0, adaptive_lambda=False)
+    ewc3 = EWCRegularizer(config3)
+    ewc3.register_task("taskC", params)
+    ewc3.finalize()
+    ewc3.adapt_lambda(0.9)
+    assert ewc3.task_memory[0][3] == 100.0, "adaptive_lambda=False must not change lambda"
+
+    print(f"  EWC adapt_lambda: high_sim->{new_lambda_high_sim:.2f}, "
+          f"low_sim->{new_lambda_low_sim:.2f}")
+
+
 def test_task_similarity():
     """Test task similarity estimation."""
     from marl.continual_trainer import TaskSimilarityEstimator
@@ -708,6 +765,7 @@ def run_all_tests():
         test_ewc_fisher_estimation,
         test_ewc_penalty,
         test_ewc_multiple_tasks,
+        test_ewc_adapt_lambda_moves_lambda_from_similarity,
         test_task_similarity,
         test_continual_trainer_task_detection,
         test_safe_rl_mappo_integration,

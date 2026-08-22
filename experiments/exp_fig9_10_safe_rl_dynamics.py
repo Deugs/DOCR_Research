@@ -42,6 +42,7 @@ from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
 from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+from marl.comm_graph import build_relay_adjacency
 from network.relay_physics import check_constraints
 from evaluation.experiments._synthetic_label import mark_synthetic
 
@@ -54,27 +55,34 @@ N_SEEDS_DEFAULT = 5
 
 
 def compute_electrical_distance(net):
-    """Compute electrical distance between relay pairs."""
+    """
+    Compute a relay-to-relay hop-distance proxy for "electrical distance".
+
+    NetworkData has no per-line impedance data anywhere (no `net.fbus`/
+    `net.tbus`/`net.Z`/`net.bus` fields exist) -- this uses
+    `build_relay_adjacency(net)` (the real relay-to-relay adjacency built
+    from RelayPair primary/backup + same-bus relationships) and reports
+    unweighted shortest-path hop counts as a disclosed topological proxy,
+    matching the fix already applied to
+    `exp_fig8_38_attention_extraction.py::compute_electrical_distance`.
+    """
     import networkx as nx
-    G = nx.Graph()
-    for i, j, z in zip(net.fbus, net.tbus, net.Z):
-        G.add_edge(int(i), int(j), weight=abs(z))
-    
+    adj = build_relay_adjacency(net)
+    G = nx.from_numpy_array(adj)
+
     n_relays = net.n_relays
     dist_matrix = np.zeros((n_relays, n_relays))
-    
+
     for i in range(n_relays):
         for j in range(n_relays):
             if i == j:
                 dist_matrix[i, j] = 0
             else:
                 try:
-                    path = nx.shortest_path(G, int(net.bus[i]), int(net.bus[j]), weight="weight")
-                    dist = sum(G[path[k]][path[k+1]]["weight"] for k in range(len(path)-1))
-                    dist_matrix[i, j] = dist
+                    dist_matrix[i, j] = nx.shortest_path_length(G, i, j)
                 except nx.NetworkXNoPath:
                     dist_matrix[i, j] = np.inf
-    
+
     return dist_matrix
 
 
@@ -88,13 +96,20 @@ def run_safe_rl_tracking(use_safe, seed=42):
         env = create_safe_rl_env(env, SafeRLConfig(enforce_cti=True, use_pid=True))
     
     trainer = MAPPOMARLTrainer(env, use_comm=False, seed=seed)
-    
+
     # Per-episode tracking
     episode_stats = []
-    
+
     rng = np.random.default_rng(seed)
-    
+    steps_per_episode_estimate = max(1, env.max_steps // 4)
+
     for ep in range(EPISODES):
+        # Train before measuring this episode's dynamics -- without this,
+        # the actor never updates and every "CTI violation dynamics"/
+        # "Lagrange multiplier evolution" curve below is noise from a
+        # frozen, randomly-initialized policy.
+        trainer.train(total_steps=steps_per_episode_estimate, verbose=False)
+
         obs = env.reset(seed=seed + ep)
         done = False
         
@@ -124,11 +139,13 @@ def run_safe_rl_tracking(use_safe, seed=42):
                     if "lambda_values" in sr:
                         ep_lambda_values.extend(sr["lambda_values"])
             else:
-                # For unconstrained, compute violations manually
+                # For unconstrained, compute violations manually.
+                # check_constraints() has no "total_pairs" key -- net.n_pairs
+                # is the real total P/B pair count.
                 TMS, PS = env.get_state()
                 c = check_constraints(net, TMS, PS)
                 ep_violations += c["cti_violations"]
-                ep_total_pairs += c["total_pairs"]
+                ep_total_pairs += net.n_pairs
         
         # Compute episode statistics
         violation_rate = ep_violations / max(ep_total_pairs, 1) if ep_total_pairs > 0 else 0
@@ -144,9 +161,7 @@ def run_safe_rl_tracking(use_safe, seed=42):
             "cumulative_violations": ep_violations,
             "lambda_values": ep_lambda_values,
         })
-        
-        trainer.update()
-    
+
     return episode_stats
 
 

@@ -352,6 +352,38 @@ def test_benchmark_suite_pv_level_affects_result():
     print(f"  ✓ test_benchmark_suite_pv_level_affects_result (OF@0%={of_0:.4f}, OF@100%={of_1:.4f})")
 
 
+def test_pv_sweep_topology_state_varies_ga_sqp_result():
+    """Regression for mains/main1.py::experiment_pv_sweep.
+
+    run_ga_sqp()'s own docstring says `pv_level` is logging-only -- PV
+    effects only reach the optimizer through an explicit
+    `topology_state["fault_currents"]` override (built here via
+    compute_fault_currents_dynamic(), matching the exact pattern
+    experiment_pv_sweep() and baselines/experiments/unified_exp_fig05.py
+    both use). Without building that dict, every PV level in the sweep
+    got bit-identical fault currents and therefore identical GA-SQP
+    results regardless of the loop variable.
+    """
+    from network.network_data import get_8bus
+    from network.relay_physics import compute_fault_currents_dynamic
+    from baselines.ga_sqp import run_ga_sqp
+
+    net = get_8bus()
+
+    def run_of(pv):
+        topology_state = {"fault_currents": compute_fault_currents_dynamic(
+            net, pv_penetration=pv, fault_type="3ph")}
+        result = run_ga_sqp(net, ga_pop=15, ga_gen=15, seed=42, verbose=False,
+                             fault_type="3ph", pv_level=pv, topology_state=topology_state)
+        return result["OF"]
+
+    of_0 = run_of(0.0)
+    of_1 = run_of(1.0)
+    assert of_0 != of_1, \
+        "PV penetration had no effect on GA-SQP result -- topology_state wiring regressed"
+    print(f"  ✓ test_pv_sweep_topology_state_varies_ga_sqp_result (OF@0%={of_0:.4f}, OF@100%={of_1:.4f})")
+
+
 # ── Test 12: Statistical analysis integration ────────────────────────────────
 
 def test_statistical_analysis():
@@ -507,6 +539,7 @@ def run_all_tests():
         test_benchmark_suite_init,
         test_benchmark_suite_run,
         test_benchmark_suite_pv_level_affects_result,
+        test_pv_sweep_topology_state_varies_ga_sqp_result,
         test_statistical_analysis,
         test_backward_compatibility,
         test_convergence_history,
