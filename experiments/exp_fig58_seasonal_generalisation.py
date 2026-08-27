@@ -31,6 +31,7 @@ Outputs
 import numpy as np
 import os
 import sys
+import zlib
 import logging
 import argparse
 from pathlib import Path
@@ -153,8 +154,14 @@ def main(train_steps: int = 8000, n_eval: int = 30, seed: int = 42,
     for season, params in SEASONS.items():
         logger.info("Evaluating: %s  (pv_level ≈ %.2f)",
                     season, _season_pv_levels(_seasonal_irradiance(params, seed=seed)))
+        # zlib.crc32 instead of hash(): Python's hash() on strings is
+        # salted per-process by default (PYTHONHASHSEED randomization),
+        # so re-running this script with the identical --seed produced a
+        # different per-season eval seed (and thus different results)
+        # on every run, despite the repo's own stated convention that
+        # every experiment script be reproducible from an explicit seed.
         res = _eval_seasonal(actor, net, season, params, n_eval,
-                             seed=seed + hash(season) % 1000)
+                             seed=seed + zlib.crc32(season.encode()) % 1000)
         results[season] = res
         logger.info("    OF = %.4f ± %.4f  CTI = %.1f  curtailment = %.2f",
                     res["mean_OF"], res["std_OF"], res["cti_viols"], res["pv_curtailment"])

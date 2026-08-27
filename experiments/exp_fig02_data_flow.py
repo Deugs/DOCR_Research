@@ -131,6 +131,18 @@ class DataFlowLogger:
             'log_prob_mean': float(np.mean(log_probs)) if T > 0 else 0.0,
             'rollout_time_ms': dt,
         }
+
+        # _update_critic_es is called self.trainer.n_epochs times per
+        # rollout (inside train()'s `for _ in range(self.n_epochs):`
+        # loop), not once -- reset the per-iteration accumulators so
+        # _patched_update only emits one record per real training step,
+        # covering the FULL parameter movement across all epochs, instead
+        # of n_epochs near-duplicate records sharing this same rollout
+        # data and step index.
+        self._epoch_calls_this_iter = 0
+        self._critic_before_iter = self.trainer.critic.get_params().copy()
+        self._actor_before_iter = self.trainer.actor.get_all_params().copy()
+        self._update_time_ms_this_iter = 0.0
         return result
 
     def _patched_update(self, *args, **kwargs):
@@ -142,19 +154,21 @@ class DataFlowLogger:
         than fabricate those PPO-specific fields as 0.0 (which would read
         as "computed and zero" instead of "not applicable"), they are
         recorded as NaN. `grad_norm_actor`/`grad_norm_critic` are real,
-        computed as the L2 norm of the actual parameter update this ES
-        step applied.
+        computed as the L2 norm of the actual parameter update accumulated
+        across this training step's epochs.
         """
         import time
-        critic_before = self.trainer.critic.get_params().copy()
-        actor_before = self.trainer.actor.get_all_params().copy()
-
         t0 = time.perf_counter()
         result = self._original_update(*args, **kwargs)
         dt = (time.perf_counter() - t0) * 1000
+        self._update_time_ms_this_iter += dt
+        self._epoch_calls_this_iter += 1
 
-        grad_norm_critic = float(np.linalg.norm(self.trainer.critic.get_params() - critic_before))
-        grad_norm_actor = float(np.linalg.norm(self.trainer.actor.get_all_params() - actor_before))
+        if self._epoch_calls_this_iter < self.trainer.n_epochs:
+            return result
+
+        grad_norm_critic = float(np.linalg.norm(self.trainer.critic.get_params() - self._critic_before_iter))
+        grad_norm_actor = float(np.linalg.norm(self.trainer.actor.get_all_params() - self._actor_before_iter))
 
         n_pairs = self.trainer.env.net.n_pairs
         rb = self._last_rollout
@@ -186,7 +200,7 @@ class DataFlowLogger:
             grad_norm_actor=grad_norm_actor,
             grad_norm_critic=grad_norm_critic,
             grad_norm_gnn=float('nan'),
-            batch_time_ms=dt,
+            batch_time_ms=self._update_time_ms_this_iter,
         )
         self.records.append(asdict(record))
         return result

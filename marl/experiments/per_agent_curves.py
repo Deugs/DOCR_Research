@@ -1,5 +1,35 @@
 #!/usr/bin/env python3
 """
+*** DEAD CODE AND BROKEN — NOT PART OF THE REAL PIPELINE, DO NOT USE ***
+
+Nothing imports or calls into this module. The real Figure 37 CLI adapter
+that `run_thesis_experiments.py` actually invokes is
+`phase2_scripts/per_agent_curves.py`, which puts `marl/experiments/` on
+`sys.path` before importing the bare module name `exp_fig37_per_agent_curves`
+(resolving to `marl/experiments/exp_fig37_per_agent_curves.py`, the real,
+already-fixed implementation) -- and whose own "CRITICAL FIX" patch
+genuinely routes observations through `trainer.comm_graph.forward()` and
+calls `trainer.train()`, matching the fix applied directly to
+`exp_fig37_per_agent_curves.py` itself.
+
+This file is an incomplete, stale duplicate of that adapter: it puts the
+project ROOT (not `marl/experiments/`) on `sys.path`, so its own
+`from exp_fig37_per_agent_curves import main` below raises
+`ModuleNotFoundError` on the very first import -- no file named
+`exp_fig37_per_agent_curves.py` exists at the project root. Even setting
+that aside, its "CRITICAL FIX" patch (`_patch_sample_for_comm` below) only
+changes how `actor.sample()`'s return value is unpacked -- it still feeds
+RAW observations to a comm-graph-enhanced actor (reintroducing the matmul
+dimension-mismatch crash it claims to fix) and never calls
+`trainer.train()` at all, so "per-agent learning curves" would be pure
+noise from a frozen policy even if the import succeeded.
+
+Left in place undeleted and unrepaired, matching how the similarly-orphaned
+`marl/experiments/exp_fig12_convergence_curves.py` and
+`exp_fig38_attention_extraction_v2.py` were handled -- fixing a module
+nothing calls isn't worth the effort, but leaving it undisclosed would be
+actively misleading.
+
 CLI Adapter: per_agent_curves.py
 Explicit import from exp_fig37_per_agent_curves
 Place this file in marl/experiments/ (goes up 2 levels to find exp_fig in project root)

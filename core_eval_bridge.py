@@ -197,12 +197,28 @@ class CoreEvalBridge:
         from network.relay_physics import check_constraints, objective_function
 
         net = net_factory()
-        if self.pv_level > 0 and hasattr(net, 'apply_pv_penetration'):
-            net = net.apply_pv_penetration(self.pv_level)
+
+        # DynamicDOCREnv derives its live PV state purely from
+        # curriculum_stage (pv_levels = [0.0,0.2,0.4,0.6,0.8,1.0], see
+        # marl/marl_env.py) -- curriculum_stage=5 was hardcoded here
+        # regardless of self.pv_level (default 0.6), so every downstream
+        # Core G-K base policy actually trained/evaluated at 100% PV: the
+        # PV-adaptation reward bonus, the observation's pv_level feature,
+        # and compute_fault_currents_dynamic's pv_contribution_factor were
+        # all computed at 100% while every label/docstring says 60%. Do
+        # NOT also pre-scale net via apply_pv_penetration() -- that only
+        # rescales net.dg_buses, not net.pairs' fault currents (what
+        # actually drives training/reward), so combining both would
+        # double up inconsistently. Map self.pv_level to the matching
+        # curriculum_stage instead, letting the env's own PV machinery do
+        # the scaling once (same pattern already used correctly by every
+        # other Core in run_core_training.py).
+        _PV_LEVELS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        curriculum_stage = _PV_LEVELS.index(self.pv_level) if self.pv_level in _PV_LEVELS else 5
 
         env = DynamicDOCREnv(
             net, seed=self.seed, use_pandapower=False,
-            fault_type=self.fault_type, curriculum_stage=5
+            fault_type=self.fault_type, curriculum_stage=curriculum_stage
         )
 
         # total_steps here means environment steps consumed by
@@ -238,8 +254,45 @@ class CoreEvalBridge:
         # inert. A lone task has nothing to protect against forgetting —
         # expected, not a bug — but the machinery should reflect that it
         # actually ran (same rationale as run_core_training.py's Core A).
-        ewc_trainer.ewc_regularizer.register_task(
-            f"{self.system}_{int(self.pv_level*100)}pv", trainer.actor.get_all_params())
+        # register_task() alone only sets current_task_name/current_task_params
+        # -- it does NOT add the task to task_memory (that only happens on
+        # a *next* task's register_task(), or an explicit finalize()).
+        # Neither update_fisher() nor finalize() used to be called here, so
+        # task_memory stayed empty forever. Estimate a real (if cheap)
+        # Fisher via finite differences, same method used elsewhere in this
+        # codebase for single-task EWC registration (e.g. Core A/D).
+        task_name = f"{self.system}_{int(self.pv_level*100)}pv"
+        cur_params = trainer.actor.get_all_params()
+        fisher_rng = np.random.default_rng(self.seed + 8000)
+        obs_f = safe_env.reset(seed=self.seed + 9000)
+        s_obs, s_act = [], []
+        done_f, sf = False, 0
+        while not done_f and sf < 30:
+            acts = np.zeros((env.n_agents, env.ACT_DIM))
+            enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, fisher_rng) if trainer.comm_graph is not None else (obs_f, None, None)
+            for i in range(env.n_agents):
+                a, _ = trainer.actor.sample(enhanced_f[i], fisher_rng)
+                acts[i] = a
+                s_obs.append(enhanced_f[i].copy())
+                s_act.append(a.copy())
+            obs_f, _, done_f, _ = safe_env.step(acts); sf += 1
+        n_p = len(cur_params)
+        fisher = np.zeros(n_p)
+        if s_obs:
+            idx = fisher_rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+            h = 1e-3
+            for p_idx in fisher_rng.choice(n_p, size=min(n_p, 50), replace=False):
+                bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                b2 = cur_params.copy(); b2[p_idx] += h
+                trainer.actor.set_all_params(b2)
+                ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                fisher[p_idx] = ((ul - bl) / h) ** 2
+            trainer.actor.set_all_params(cur_params)
+        ewc_trainer.ewc_regularizer.register_task(task_name, cur_params)
+        ewc_trainer.ewc_regularizer.update_fisher(task_name, fisher)
+        # No "next" task will ever register here to trigger the lagged
+        # consolidation -- finalize() closes this one out explicitly.
+        ewc_trainer.ewc_regularizer.finalize()
 
         # Evaluate the TRAINED (post-update) policy to find its best
         # observed operating point — this is now a real evaluation of a

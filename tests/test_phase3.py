@@ -305,6 +305,7 @@ def test_adaptive_rho():
 
 def test_ewc_fisher_estimation():
     """Test Fisher Information estimation."""
+    rng = np.random.default_rng(42)
     from marl.continual_trainer import FisherInformationEstimator, EWCConfig
 
     config = EWCConfig(fisher_samples=100, fisher_damping=1e-4)
@@ -313,7 +314,7 @@ def test_ewc_fisher_estimation():
     n_params = 50
 
     def mock_gradient():
-        return np.random.randn(n_params) * 0.1
+        return rng.standard_normal(n_params) * 0.1
 
     fisher = estimator.estimate_fisher_diagonal(mock_gradient, n_params)
 
@@ -342,21 +343,22 @@ def test_ewc_penalty():
     math is correct, so the test must call finalize() before computing
     the penalty in order to genuinely exercise it.
     """
+    rng = np.random.default_rng(42)
     from marl.continual_trainer import EWCRegularizer, EWCConfig
 
     config = EWCConfig(lambda_ewc=100.0)
     ewc = EWCRegularizer(config)
 
     n_params = 20
-    old_params = np.random.randn(n_params)
-    current_params = old_params + np.random.randn(n_params) * 0.1
+    old_params = rng.standard_normal(n_params)
+    current_params = old_params + rng.standard_normal(n_params) * 0.1
 
     # Register task
     ewc.register_task("task1", old_params)
 
     # Update Fisher (mock) -- use a strictly positive Fisher so the
     # penalty is guaranteed nonzero for a nonzero delta.
-    fisher = np.random.rand(n_params) * 0.5 + 0.1
+    fisher = rng.random(n_params) * 0.5 + 0.1
     ewc.update_fisher("task1", fisher)
 
     # Close out "task1" so it actually lands in task_memory -- without
@@ -409,6 +411,7 @@ def test_ewc_multiple_tasks():
     task_memory actually receives all 5 pushes and eviction is forced to
     fire (twice).
     """
+    rng = np.random.default_rng(42)
     from marl.continual_trainer import EWCRegularizer, EWCConfig
 
     config = EWCConfig(lambda_ewc=50.0, max_tasks=3)
@@ -423,10 +426,10 @@ def test_ewc_multiple_tasks():
     # overwrite that placeholder with a real Fisher estimate via
     # update_fisher() on the task that just landed in task_memory.
     for i in range(n_tasks):
-        params = np.random.randn(n_params)
+        params = rng.standard_normal(n_params)
         task_params[f"task{i}"] = params
         ewc.register_task(f"task{i}", params)
-        fisher = np.random.rand(n_params) * 0.3 + 0.05  # keep strictly positive
+        fisher = rng.random(n_params) * 0.3 + 0.05  # keep strictly positive
         if ewc.task_memory:
             ewc.update_fisher(ewc.task_memory[-1][0], fisher)
 
@@ -435,7 +438,7 @@ def test_ewc_multiple_tasks():
     # force its consolidation -- without this it would be silently
     # dropped and never protected, and task_memory would never exceed
     # max_tasks (masking the eviction branch below).
-    last_fisher = np.random.rand(n_params) * 0.3 + 0.05
+    last_fisher = rng.random(n_params) * 0.3 + 0.05
     ewc.update_fisher(f"task{n_tasks - 1}", last_fisher)
     ewc.finalize()
 
@@ -460,7 +463,7 @@ def test_ewc_multiple_tasks():
 
     # Compute penalty and cross-check against the real weighted-Fisher
     # formula summed over the surviving tasks (not a degenerate 0.0).
-    current = np.random.randn(n_params)
+    current = rng.standard_normal(n_params)
     penalty, gradient = ewc.compute_ewc_penalty(current)
 
     expected_penalty = 0.0
@@ -490,10 +493,11 @@ def test_ewc_adapt_lambda_moves_lambda_from_similarity():
     Core B/D's curriculum loops in run_core_training.py, but a caller bug
     there wouldn't be caught without a test of the method's own math.
     """
+    rng = np.random.default_rng(42)
     from marl.continual_trainer import EWCRegularizer, EWCConfig
 
     n_params = 6
-    params = np.random.randn(n_params)
+    params = rng.standard_normal(n_params)
 
     # High similarity (> similarity_threshold) -> lambda should shrink
     # below lambda_ewc, floored at lambda_min.
@@ -541,18 +545,19 @@ def test_ewc_adapt_lambda_moves_lambda_from_similarity():
 
 def test_task_similarity():
     """Test task similarity estimation."""
+    rng = np.random.default_rng(42)
     from marl.continual_trainer import TaskSimilarityEstimator
 
     estimator = TaskSimilarityEstimator()
 
     cond1 = {"pv_level": 0.0, "topology_flag": 0.0, "fault_type": "3ph"}
-    params1 = np.random.randn(100)
+    params1 = rng.standard_normal(100)
 
     cond2 = {"pv_level": 0.2, "topology_flag": 0.0, "fault_type": "3ph"}
-    params2 = params1 + np.random.randn(100) * 0.1  # Similar params
+    params2 = params1 + rng.standard_normal(100) * 0.1  # Similar params
 
     cond3 = {"pv_level": 1.0, "topology_flag": 1.0, "fault_type": "LL"}
-    params3 = np.random.randn(100)  # Different params
+    params3 = rng.standard_normal(100)  # Different params
 
     sim_12 = estimator.estimate_similarity(cond1, params1, cond2, params2)
     sim_13 = estimator.estimate_similarity(cond1, params1, cond3, params3)
@@ -643,6 +648,7 @@ def test_ewc_mappo_integration():
     short-circuit to (0.0, zeros) regardless of whether the underlying
     penalty math is correct.
     """
+    rng = np.random.default_rng(42)
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
     from marl.continual_trainer import create_ewc_trainer, EWCConfig
@@ -666,20 +672,20 @@ def test_ewc_mappo_integration():
     # *left* (old_task_name = "none" here) with current_params as its
     # "optimal" params -- so the task that ends up in task_memory is
     # named "none", not name1.
-    mock_params = np.random.randn(100)
+    mock_params = rng.standard_normal(100)
     continual.on_task_transition("none", name1, mock_params)
 
     # Give the task a real (non-placeholder) Fisher estimate, then close
     # it out with finalize() -- this is the only task in the sequence,
     # so without finalize() it never actually reaches task_memory.
-    fisher = np.random.rand(100) * 0.4 + 0.05  # strictly positive
+    fisher = rng.random(100) * 0.4 + 0.05  # strictly positive
     continual.ewc_regularizer.update_fisher("none", fisher)
     continual.finalize()
     assert len(continual.ewc_regularizer.task_memory) == 1, \
         "finalize() should consolidate the only registered task"
 
     # Compute EWC penalty
-    current = mock_params + np.random.randn(100) * 0.05
+    current = mock_params + rng.standard_normal(100) * 0.05
     penalty, grad = continual.compute_ewc_penalty(current)
 
     assert penalty > 0, "Penalty should be strictly positive for non-empty, non-degenerate task_memory"

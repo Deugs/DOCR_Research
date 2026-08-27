@@ -353,7 +353,9 @@ def test_benchmark_suite_pv_level_affects_result():
 
 
 def test_pv_sweep_topology_state_varies_ga_sqp_result():
-    """Regression for mains/main1.py::experiment_pv_sweep.
+    """Regression for the topology_state wiring pattern used by
+    mains/main1.py::experiment_pv_sweep (exercised here directly against
+    run_ga_sqp(), not via experiment_pv_sweep() itself).
 
     run_ga_sqp()'s own docstring says `pv_level` is logging-only -- PV
     effects only reach the optimizer through an explicit

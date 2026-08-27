@@ -2,13 +2,20 @@
 """
 *** DEAD CODE — NOT PART OF THE REAL PIPELINE, DO NOT USE ***
 
-Nothing imports or calls into this module. The real Figure 38 path that
-`run_thesis_experiments.py --phase3` actually invokes is the standalone CLI
-adapter `marl/experiments/attention_evolution.py`, which is an honestly
-labelled STUB (its own docstring and console output say so explicitly). The
-real Figure 8 is `experiments/exp_fig8_38_attention_extraction.py`, which
-was fixed this session to extract genuine attention via
-`trainer.comm_graph.forward()` from an actually-trained MAPPOMARLTrainer.
+Nothing imports or calls into this module. The real, live Figure 38 path
+that `run_thesis_experiments.py --phase3` actually invokes is
+`run_post_processing.py::fig_38_attention_evolution()` (called in-process
+via `generate_figures_batch()`/`FIGURE_FUNCTIONS`, not subprocessed to any
+standalone script) — it loads real attention snapshots from the
+`core_A_mappo_safe_ewc_8bus_60pv` cache when present, with a clearly-logged
+synthetic fallback only if that cache is missing. The standalone CLI
+adapter `marl/experiments/attention_evolution.py` (and its
+`phase2_scripts/` copy) is an honestly-labelled STUB that is ALSO not
+invoked by the live pipeline anymore — its own docstring previously made
+the same now-corrected claim this file did. The real Figure 8 is
+`experiments/exp_fig8_38_attention_extraction.py`, which was fixed this
+session to extract genuine attention via `trainer.comm_graph.forward()`
+from an actually-trained MAPPOMARLTrainer.
 
 `marl/experiments/CHANGELOG.md` (entry #7, "exp_fig38_attention_extraction_v2.py")
 claims this file's `Mock8BusNetwork` fallback was removed and a `system`

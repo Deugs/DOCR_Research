@@ -242,7 +242,14 @@ class NetworkData:
             edges = sorted({(p.primary, p.bus_pri) for p in self.pairs} |
                             {(p.backup, p.bus_bkp) for p in self.pairs})
 
-        line_idx = int(line_idx) % max(len(edges), 1)
+        if not edges:
+            # No shipped get_*bus() network has empty pairs, so this is
+            # unreached today -- but max(len(edges), 1) above only guarded
+            # the modulo, not the edges[0] index below, which would raise
+            # an opaque IndexError on an empty list instead of a clear
+            # error naming the actual problem.
+            raise ValueError(f"apply_n1_outage: network '{self.name}' has no relay pairs to outage")
+        line_idx = int(line_idx) % len(edges)
         outaged_edge = edges[line_idx]
 
         tm = TopologyManager(n_buses=self.n_buses, n_lines=len(edges))

@@ -130,10 +130,19 @@ class PandapowerNetwork:
         # call site in this repo passes the raw, unscaled NetworkData and
         # scales via update_pv_penetration()/reset(pv_level=...) instead.
         for dg in self.net_data.dg_buses:
-            if dg.bus_idx < self.net_data.n_buses:
+            # dg.bus_idx is 1-indexed (same convention as RelayPair.bus_pri/
+            # bus_bkp), but bus_map is keyed 0-indexed (built via
+            # `for i in range(n_buses)` above, same as the load-placement
+            # loop's own `bus_idx = get_relay_bus(i)` two loops up). Indexing
+            # bus_map directly with dg.bus_idx placed every sgen one bus
+            # downstream of the real DG, and silently dropped a DG at the
+            # network's highest-numbered (1-indexed) bus entirely, since
+            # `dg.bus_idx < n_buses` is False exactly when dg.bus_idx==n_buses.
+            dg_bus0 = dg.bus_idx - 1
+            if 0 <= dg_bus0 < self.net_data.n_buses:
                 pp.create_sgen(
                     net,
-                    bus=bus_map[dg.bus_idx],
+                    bus=bus_map[dg_bus0],
                     p_mw=dg.p_mw * dg.pv_penetration,
                     q_mvar=dg.q_mvar * dg.pv_penetration,
                     name=f"PV_Bus{dg.bus_idx}",

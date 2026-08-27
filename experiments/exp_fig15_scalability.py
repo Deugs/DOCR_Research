@@ -98,7 +98,11 @@ def measure_training(net, n_episodes: int = 500, seed: int = 42):
     msg_size_bytes = n_agents * 64 * 8  # 64-dim messages, 8 bytes per float64
     
     return {
-        "n_buses": len(net.buses) if hasattr(net, 'buses') else n_agents,
+        # NetworkData has no `.buses` field anywhere -- only `n_buses`.
+        # hasattr(net, 'buses') was always False, so this silently
+        # mislabeled the x-axis of Fig 15's scaling-exponent fit with
+        # n_relays wherever bus count and relay count differ.
+        "n_buses": net.n_buses,
         "n_relays": n_agents,
         "wall_time_s": wall_time,
         "peak_memory_mb": peak_memory_mb,

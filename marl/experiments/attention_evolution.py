@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
 """
-CLI Adapter: attention_evolution.py
-Maps: run_thesis_experiments.py --phase3 Fig 38 call
+Standalone CLI script for Figure 38 (Attention Weight Evolution) — NOT
+currently invoked by the live pipeline.
 
-run_thesis_experiments.py calls:
-  python marl/experiments/attention_evolution.py --system 8bus --pv 1.0 \
-      --snapshots 0 100 500 1000 5000 --seed 42 --output "...fig_38_attention_evolution.pdf"
+This file's own docstring previously claimed `run_thesis_experiments.py
+--phase3` calls this script via subprocess. That is no longer true (if it
+ever was): `run_thesis_experiments.py`'s figure generation
+(`generate_figures_batch()` / `load_post_processing_module()`) calls
+`run_post_processing.py`'s in-process `FIGURE_FUNCTIONS` dict directly
+(subprocessing to `run_post_processing.py --fig 38` only as an explicit
+`--use-subprocess` fallback) — never this file. The real, live Fig 38 path
+is `run_post_processing.py::fig_38_attention_evolution()`, which loads
+real attention snapshots from the `core_A_mappo_safe_ewc_8bus_60pv` cache
+when present, falling back to hardcoded/synthetic data (clearly logged as
+such) only if that cache is missing.
 
-This is a STUB — the actual codebase does not have attention evolution tracking.
-We generate a synthetic visualization as a placeholder.
+This script is still an honestly-labelled STUB in its own right — it has
+no real attention-tracking mechanism and always generates a synthetic
+visualization — but it is orphaned from the pipeline that actually
+produces the thesis figures. Left in place undeleted (a working, self-
+contained script may still be useful for manual/ad-hoc use), matching how
+other orphaned-but-functional scripts in this codebase are handled.
 """
 import argparse
 import sys

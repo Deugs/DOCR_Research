@@ -607,10 +607,21 @@ class TrainingPipeline:
 
     def _run_ga_sqp(self, config: TrainingConfig, net) -> TrainingResult:
         from baselines.ga_sqp import run_ga_sqp
+        from network.relay_physics import compute_fault_currents_dynamic
+        # run_ga_sqp()'s own docstring: pv_level is for logging only -- PV
+        # effects only reach the optimizer through an explicit
+        # topology_state["fault_currents"] override (same pattern already
+        # used correctly in mains/main1.py::experiment_pv_sweep and
+        # baselines/experiments/unified_exp_fig05.py). Without building
+        # this dict, every PV level in the Phase-5 sweep got bit-identical
+        # fault currents and therefore identical GA-SQP results.
+        topology_state = {"fault_currents": compute_fault_currents_dynamic(
+            net, pv_penetration=config.pv_level, fault_type=config.fault_type)}
         res = run_ga_sqp(
             net, ga_pop=config.ga_pop, ga_gen=config.ga_gen,
             seed=config.seed_offset, verbose=False,
             fault_type=config.fault_type, pv_level=config.pv_level,
+            topology_state=topology_state,
         )
         constraints = check_constraints(net, res["TMS"], res["PS"], fault_type=config.fault_type)
         return TrainingResult(
@@ -625,10 +636,17 @@ class TrainingPipeline:
 
     def _run_metaheuristic(self, config: TrainingConfig, net) -> TrainingResult:
         from baselines.metaheuristics import run_hwoa, run_hho, run_jaya, run_eeo
+        from network.relay_physics import compute_fault_currents_dynamic
         runners = {"HWOA": run_hwoa, "HHO": run_hho, "JAYA": run_jaya, "EEO": run_eeo}
         runner = runners[config.method]
+        # Same fix as _run_ga_sqp: pv_level alone is logging-only for
+        # every metaheuristic runner -- PV effects only reach the
+        # optimizer via an explicit topology_state["fault_currents"].
+        topology_state = {"fault_currents": compute_fault_currents_dynamic(
+            net, pv_penetration=config.pv_level, fault_type=config.fault_type)}
         kw = {"seed": config.seed_offset, "verbose": False,
-              "fault_type": config.fault_type, "pv_level": config.pv_level, "use_sqp": True}
+              "fault_type": config.fault_type, "pv_level": config.pv_level, "use_sqp": True,
+              "topology_state": topology_state}
         if config.method == "HWOA":
             kw.update({"n_whales": config.meta_pop, "max_iter": config.meta_iter})
         elif config.method == "HHO":
@@ -655,10 +673,25 @@ class TrainingPipeline:
         from marl.safe_rl import create_safe_rl_env, SafeRLConfig
         from marl.continual_trainer import create_ewc_trainer, EWCConfig
 
+        # DynamicDOCREnv derives its live PV state purely from
+        # curriculum_stage (pv_levels = [0.0,0.2,0.4,0.6,0.8,1.0], see
+        # marl/marl_env.py) -- this env was constructed with no
+        # curriculum_stage at all (defaults to 0 -> 0% PV), and
+        # set_curriculum_stage(config.curriculum_stage) only ran when
+        # config.use_curriculum was set, which create_experiment_matrix()
+        # and run_pv_sweep_analysis never set. So env.current_pv_level
+        # stayed pinned at 0% PV for the entire MARL leg of the Phase-5
+        # pipeline regardless of config.pv_level. Map pv_level to its
+        # nearest curriculum_stage as the base state; a genuine curriculum
+        # run can still override via config.use_curriculum below.
+        _PV_LEVELS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        pv_curriculum_stage = min(range(len(_PV_LEVELS)), key=lambda i: abs(_PV_LEVELS[i] - config.pv_level))
+
         env = DynamicDOCREnv(
             net, action_scale=0.05, max_steps=300,
             seed=config.seed_offset, use_pandapower=False,
             fault_type=config.fault_type,
+            curriculum_stage=pv_curriculum_stage,
         )
         if config.use_curriculum:
             env.set_curriculum_stage(config.curriculum_stage)
@@ -690,14 +723,61 @@ class TrainingPipeline:
             seed=config.seed_offset, curriculum=config.use_curriculum,
         )
 
-        if config.use_ewc or "EWC" in config.method:
+        # create_ewc_trainer() returns a ContinualMAPPOTrainer wrapper with
+        # no .train() of its own (that stays on .base_trainer) --
+        # reassigning `trainer` to it, as this used to do, crashed with
+        # AttributeError on the very next `trainer.train()` call for every
+        # config with "EWC" in its method name (e.g. "MAPPO-Safe-EWC",
+        # dispatched here from _dispatch_method). Keep `trainer` as the
+        # real MAPPOMARLTrainer. Each call to this function builds a
+        # standalone trainer for one (system, pv_level, fault_type) combo
+        # with no cross-call state, so a single self-registered EWC task
+        # has nothing to protect against forgetting by construction (same
+        # rationale as run_core_training.py's Core C) -- register it
+        # anyway so the bookkeeping genuinely reflects that EWC ran,
+        # rather than silently downgrading "MAPPO-Safe-EWC" to train
+        # identically to "MAPPO-Safe".
+        use_ewc = config.use_ewc or "EWC" in config.method
+        if use_ewc:
             ewc_cfg = EWCConfig(
                 lambda_ewc=100.0, fisher_samples=100,
                 use_curriculum_warmstart=True, max_tasks=6,
             )
-            trainer = create_ewc_trainer(trainer, ewc_cfg)
+            ewc_trainer = create_ewc_trainer(trainer, ewc_cfg)
 
         result = trainer.train(total_steps=config.marl_steps, verbose=False)
+
+        if use_ewc:
+            cur_params = trainer.actor.get_all_params()
+            fisher_rng = np.random.default_rng(config.seed_offset + 8000)
+            obs_f = env.reset(seed=config.seed_offset + 9000)
+            s_obs, s_act = [], []
+            done_f, sf = False, 0
+            while not done_f and sf < 30:
+                acts = np.zeros((env.n_agents, env.ACT_DIM))
+                enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, fisher_rng) if trainer.comm_graph is not None else (obs_f, None, None)
+                for i in range(env.n_agents):
+                    a, _ = trainer.actor.sample(enhanced_f[i], fisher_rng)
+                    acts[i] = a
+                    s_obs.append(enhanced_f[i].copy())
+                    s_act.append(a.copy())
+                obs_f, _, done_f, _ = env.step(acts); sf += 1
+            n_p = len(cur_params)
+            fisher = np.zeros(n_p)
+            if s_obs:
+                idx = fisher_rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+                h = 1e-3
+                for p_idx in fisher_rng.choice(n_p, size=min(n_p, 50), replace=False):
+                    bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    b2 = cur_params.copy(); b2[p_idx] += h
+                    trainer.actor.set_all_params(b2)
+                    ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                    fisher[p_idx] = ((ul - bl) / h) ** 2
+                trainer.actor.set_all_params(cur_params)
+            task_name = f"{config.system}_{int(config.pv_level*100)}pv"
+            ewc_trainer.ewc_regularizer.register_task(task_name, cur_params)
+            ewc_trainer.ewc_regularizer.update_fisher(task_name, fisher)
+            ewc_trainer.ewc_regularizer.finalize()
         constraints = check_constraints(net, result["TMS"], result["PS"], fault_type=config.fault_type)
 
         return TrainingResult(

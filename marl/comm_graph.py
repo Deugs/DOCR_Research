@@ -334,7 +334,11 @@ class CommGraph:
 
         # 2b. Quantize messages before "transmission" (Fig 13 stress knob).
         if self.quantization_bits < 32:
-            qmax = 2 ** (self.quantization_bits - 1) - 1
+            # max(..., 1): quantization_bits=1 would otherwise give
+            # qmax=0 and divide by zero below. Every current caller only
+            # uses 32/16/8/4/2, so this is unreached today, but guards
+            # against the stress-sweep range ever being widened to 1 bit.
+            qmax = max(2 ** (self.quantization_bits - 1) - 1, 1)
             max_abs = np.max(np.abs(messages)) if messages.size else 0.0
             if max_abs > 1e-9:
                 scale = max_abs / qmax

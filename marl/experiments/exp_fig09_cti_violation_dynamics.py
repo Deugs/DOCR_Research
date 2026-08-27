@@ -58,8 +58,16 @@ def run_training_with_logging(env, trainer, n_episodes: int = 2000, seed: int = 
 
     cum_viol = 0
     total_pairs = env.net.n_pairs
+    steps_per_episode_estimate = max(1, env.max_steps // 4)
 
     for ep in range(n_episodes):
+        # Train before measuring this episode's dynamics -- without this,
+        # the actor never updates and every "CTI violation dynamics"/
+        # "Lagrange multiplier evolution" curve below is noise from a
+        # frozen, randomly-initialized policy (the dual-ascent Lagrangian
+        # for the Safe arm is the only thing that genuinely evolved).
+        trainer.train(total_steps=steps_per_episode_estimate, verbose=False)
+
         obs = env.reset(seed=seed + ep)
         done = False
         ep_reward = 0.0

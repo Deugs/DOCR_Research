@@ -5,7 +5,8 @@ exp_fig45_daily_response_v2.py — Figure 45 (IMPROVED)
 Daily PV Generation Profile & Adaptive Relay Response.
 
 IMPROVEMENTS over original:
-  • Fault current from actual OpenDSS fault study (not synthetic)
+  • Fault current from the real dynamic fault-current model (PV inverter
+    contribution scaled by instantaneous output), not a fabricated formula
   • Realistic cloud cover with Markov transition model
   • Temperature effects on PV output (derating)
   • Multiple daily profiles (clear, partly cloudy, overcast)
@@ -35,7 +36,7 @@ import matplotlib.pyplot as plt
 from network.network_data import get_8bus
 from marl.marl_env import DynamicDOCREnv
 from marl.marl_agents import MAPPOMARLTrainer
-from network.relay_physics import check_constraints
+from network.relay_physics import check_constraints, compute_fault_currents_dynamic
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -91,14 +92,34 @@ def compute_temperature_factor(hours: np.ndarray, t_ambient: np.ndarray,
     return np.clip(derating, 0.7, 1.0)
 
 
-def estimate_fault_current(pv_output_fraction: float, base_fault_current: float = 5000.0) -> float:
+def estimate_fault_current(net, pv_output_fraction: float, fault_type: str = "3ph") -> float:
     """
-    Estimate fault current based on PV output.
-    Utility contribution + PV inverter contribution.
+    Real fault current (A) for the current PV output level, averaged
+    across every relay pair's primary-role fault current from
+    network.relay_physics.compute_fault_currents_dynamic -- the same
+    real per-pair computation DynamicDOCREnv itself uses internally
+    (base network fault current scaled by the PV inverter's fault-current
+    contribution factor, itself proportional to how much the PV fleet is
+    outputting right now).
+
+    Despite this module's docstring previously claiming "Fault current
+    from actual OpenDSS fault study (not synthetic)", the actual
+    implementation was a hardcoded arithmetic formula
+    (utility_contribution + base*0.25*pv_output_fraction) with no
+    connection whatsoever to any fault study, OpenDSS, pandapower, or
+    this network's own real fault-current data -- an active false claim
+    of realism, not merely an undisclosed synthetic fallback. Fixed to
+    use the real computation, matching the sibling
+    exp_fig46_relay_curves.py::_real_fault_current_for_relay. Note:
+    compute_fault_currents_dynamic's `pv_penetration` parameter is used
+    here as "instantaneous PV output fraction" rather than "installed
+    capacity fraction" -- appropriate for this experiment, which measures
+    how fault current varies through the day as irradiance-driven PV
+    output varies, not a fixed per-scenario penetration level.
     """
-    utility_contribution = base_fault_current * 0.75
-    pv_contribution = base_fault_current * 0.25 * pv_output_fraction
-    return utility_contribution + pv_contribution
+    fc = compute_fault_currents_dynamic(net, pv_penetration=pv_output_fraction, fault_type=fault_type)
+    pri_values = [v for k, v in fc.items() if k.endswith("_pri")]
+    return float(np.mean(pri_values)) if pri_values else 0.0
 
 
 def main(train_steps: int = 8000, seed: int = 42, output_dir: str = "outputs"):
@@ -136,7 +157,7 @@ def main(train_steps: int = 8000, seed: int = 42, output_dir: str = "outputs"):
         irradiance = generate_irradiance_profile(hours, profile_type, seed=seed)
         temp_factor = compute_temperature_factor(hours, t_ambient)
         pv_output = np.clip(irradiance / 1000.0 * temp_factor, 0, 1)
-        fault_currents = np.array([estimate_fault_current(pv) for pv in pv_output])
+        fault_currents = np.array([estimate_fault_current(net, pv) for pv in pv_output])
 
         n_relays = env.n_agents
         tds_trace = np.zeros((n_intervals, n_relays))

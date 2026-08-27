@@ -229,38 +229,47 @@ def experiment_topology_robustness(args, sys_key, net):
     print(f"  Testing: Base, N-1 line outage, N-1 switch open")
     print(f"{'═'*55}")
 
-    from environment.topology_manager import TopologyManager
-
-    n_lines = max(1, net.n_buses - 1)
-    top_mgr = TopologyManager(n_buses=net.n_buses, n_lines=n_lines)
+    # NetworkData.apply_n1_outage() applies a genuine single-line outage
+    # to a COPY of the network (real fault-current rescaling on relay
+    # pairs adjacent to the removed line). The previous
+    # {"line_outages": [...]} dicts had no "fault_currents" key --
+    # compute_operating_times() only perturbs fault currents when
+    # topology_state contains that key -- so every condition silently
+    # fell through to the static (unperturbed) branch and, with a fixed
+    # seed, all four topology conditions produced identical GA-SQP
+    # results. The MARL leg used to skip topology entirely (acknowledged
+    # in-line as "simplified"); it now trains on the same mutated network
+    # as its GA-SQP counterpart so the comparison is real on both legs.
+    net_line0, _ = net.apply_n1_outage(0)
+    net_line1, _ = net.apply_n1_outage(1)
+    net_lines01, _ = net_line0.apply_n1_outage(1)
 
     topologies = {
-        "Base": None,
-        "N-1_Line0": {"line_outages": [0]},
-        "N-1_Line1": {"line_outages": [1]},
-        "N-2_Lines01": {"line_outages": [0, 1]},
+        "Base": net,
+        "N-1_Line0": net_line0,
+        "N-1_Line1": net_line1,
+        "N-2_Lines01": net_lines01,
     }
 
     results_by_topology = {}
 
-    for top_name, top_changes in topologies.items():
+    for top_name, top_net in topologies.items():
         print(f"\n  --- Topology: {top_name} ---")
 
-        # GA-SQP with topology
+        # GA-SQP on the (possibly outaged) network directly
         res_ga = run_ga_sqp(
-            net,
+            top_net,
             ga_pop=args.ga_pop,
             ga_gen=args.ga_gen,
             seed=42,
             verbose=args.verbose,
             fault_type="3ph",
-            topology_state=top_changes,
             pv_level=0.0,
         )
 
-        # MARL with topology (simplified: no topology changes during training)
+        # MARL on the same (possibly outaged) network
         res_marl = run_marl(
-            net,
+            top_net,
             total_steps=args.marl_steps,
             seed=0,
             verbose=args.verbose,
