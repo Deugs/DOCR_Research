@@ -29,8 +29,11 @@ def main():
     original_size = 100
     sizes = {"int8": 25, "pruning": 40, "distillation": 35}
     size_vals = [sizes.get(m, 50) for m in methods]
-    colors = ["#2563eb", "#39d353", "#f59e0b"]
-    bars = ax.bar(["Original"] + methods, [original_size] + size_vals, 
+    # Keyed by method name (like `sizes`/`perf` above) so an arbitrary-length
+    # --methods list never mismatches a fixed-length color list.
+    color_by_method = {"int8": "#2563eb", "pruning": "#39d353", "distillation": "#f59e0b"}
+    colors = [color_by_method.get(m, "#8b949e") for m in methods]
+    bars = ax.bar(["Original"] + methods, [original_size] + size_vals,
                   color=["#64748b"] + colors, edgecolor="white", width=0.6)
     ax.set_ylabel("Model Size (% of original)", fontsize=11)
     ax.set_title("Size Reduction", fontsize=12)

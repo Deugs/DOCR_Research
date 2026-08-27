@@ -42,6 +42,16 @@ from baselines.ga_sqp import run_ga_sqp
 
 os.makedirs("outputs", exist_ok=True)
 
+# --methods' argparse default (the general Phase 4 baseline set). Several
+# sub-modes below (--pv-sweep, --topology-robustness, --phase7/--robustness,
+# --deployment, ...) want their own default method list when the user
+# hasn't customized --methods -- but `--methods` uses `nargs="+"` with
+# this non-empty default, so `args.methods` is never falsy/empty even
+# when unset, and an `if not args.methods:` check to detect "user didn't
+# override it" was always False (dead code). Compare against this
+# constant by value instead.
+_DEFAULT_METHODS = ["GA-SQP", "HWOA", "HHO", "JAYA", "EEO"]
+
 
 # ── Phase 1-3: Existing MARL runners (preserved) ────────────────────────────
 
@@ -261,7 +271,7 @@ def run_statistical_analysis(results_dict, alpha=0.05):
     """Run Friedman, Nemenyi, Cliff's delta, and Wilcoxon tests."""
     from evaluation.stat_analysis import run_benchmark_analysis
     
-    print(f"\\n{'='*70}")
+    print(f"\n{'='*70}")
     print(f"  PHASE 4: STATISTICAL ANALYSIS")
     print(f"{'='*70}")
     
@@ -305,7 +315,7 @@ def run_benchmark_suite(systems, methods, n_runs=10, fast=False, verbose=True):
 def print_comparison_table(results_dict):
     """Print formatted comparison table across all methods (Phase 4 extended)."""
     LINE = "─" * 140
-    print(f"\\n{LINE}")
+    print(f"\n{LINE}")
     print(f"  {'Network':<12} {'Method':<18} {'OF (s)':>9} "
           f"{'CTI viol':>9} {'CTI min':>10} {'Time (s)':>10} "
           f"{'Comm BW':>10} {'Safe λ':>8} {'EWC Tasks':>10} {'Improvement':>12}")
@@ -465,7 +475,7 @@ def plot_phase3_comparison(results_dict, out_path):
 def print_phase4_comparison_table(results_dict):
     """Print Phase 4 specific comparison with metaheuristics."""
     LINE = "─" * 130
-    print(f"\\n{LINE}")
+    print(f"\n{LINE}")
     print(f"  PHASE 4: BENCHMARK COMPARISON (Metaheuristics + MARL + GA-SQP)")
     print(LINE)
     print(f"  {'Network':<10} {'Method':<15} {'OF (s)':>10} {'OF_std':>10} "
@@ -815,7 +825,13 @@ def run_topology_robustness(args):
                     system=system,
                     pv_level=0.5,
                     fault_type="3ph",
-                    topology_changes={"type": "n1_outage", "line_idx": run % 5, "outage_factor": 0.7},
+                    # NetworkData.apply_n1_outage() (invoked by
+                    # experiments/training_pipeline.py::_run_single_config)
+                    # computes its own real outage factor internally via
+                    # TopologyManager.get_outage_factor() and takes no
+                    # external override -- this key was never read anywhere,
+                    # dead/misleading config left over from an earlier design.
+                    topology_changes={"type": "n1_outage", "line_idx": run % 5},
                     n_runs=args.n_runs,
                     seed_offset=run * 1000 + 500,
                 ))
@@ -1071,7 +1087,7 @@ def main():
     parser.add_argument("--stats", action="store_true",
                         help="Run statistical tests on existing results")
     parser.add_argument("--methods", nargs="+",
-                        default=["GA-SQP", "HWOA", "HHO", "JAYA", "EEO"],
+                        default=list(_DEFAULT_METHODS),
                         choices=["GA-SQP", "Single-PPO", "IPPO", "MAPPO", "MAPPO-Comm",
                                  "MAPPO-Safe", "MAPPO-Safe-EWC",
                                  "HWOA", "HHO", "JAYA", "EEO"],
@@ -1158,7 +1174,7 @@ def main():
         return run_phase5_experiments(args)
 
     if args.pv_sweep:
-        if not args.methods:
+        if args.methods == _DEFAULT_METHODS:
             args.methods = ["GA-SQP", "MAPPO", "MAPPO-Safe"]
         return run_pv_sweep_analysis(args)
 
@@ -1167,7 +1183,7 @@ def main():
         return run_curriculum_evaluation(args)
 
     if args.topology_robustness:
-        if not args.methods:
+        if args.methods == _DEFAULT_METHODS:
             args.methods = ["GA-SQP", "MAPPO-Safe"]
         return run_topology_robustness(args)
 
@@ -1179,12 +1195,12 @@ def main():
     # to the default per-method Phase 4 loop below instead of dispatching
     # to run_phase7_robustness/run_phase7_deployment/run_phase8_validation.
     if args.phase7 or args.robustness:
-        if not args.methods:
+        if args.methods == _DEFAULT_METHODS:
             args.methods = ["GA-SQP", "JAYA"]
         return run_phase7_robustness(args)
 
     if args.deployment:
-        if not args.methods:
+        if args.methods == _DEFAULT_METHODS:
             args.methods = ["MAPPO-Comm", "MAPPO-Safe-EWC"]
         return run_phase7_deployment(args)
 
@@ -1194,7 +1210,7 @@ def main():
 
     # Benchmark suite mode
     if args.benchmark:
-        print(f"\\n{'█'*60}")
+        print(f"\n{'█'*60}")
         print(f"  PHASE 4: BENCHMARK SUITE")
         print(f"  Systems: {', '.join(args.systems)}")
         print(f"  Methods: {', '.join(args.methods)}")
@@ -1214,7 +1230,7 @@ def main():
 
     for sys_key in args.systems:
         net = NETWORKS[sys_key]()
-        print(f"\\n{'█' * 55}")
+        print(f"\n{'█' * 55}")
         print(f"  SYSTEM: {net.name}")
         print(f"  Relays: {net.n_relays}  |  Pairs: {net.n_pairs}  |  Buses: {net.n_buses}")
         print(f"  Methods: {', '.join(args.methods)}")
@@ -1228,7 +1244,7 @@ def main():
 
         # GA-SQP (always run as baseline)
         if "GA-SQP" in args.methods:
-            print(f"\\n  [GA-SQP] Running...")
+            print(f"\n  [GA-SQP] Running...")
             sys_results["GA-SQP"] = run_ga_sqp(
                 net, ga_pop=GA_POP, ga_gen=GA_GEN, seed=42,
                 verbose=args.verbose, fault_type="3ph", pv_level=0.0
@@ -1237,7 +1253,7 @@ def main():
         # Metaheuristics
         for meta in ["HWOA", "HHO", "JAYA", "EEO"]:
             if meta in args.methods:
-                print(f"\\n  [{meta}] Running...")
+                print(f"\n  [{meta}] Running...")
                 runner = globals()[f"run_{meta.lower()}"]
                 sys_results[meta] = runner(
                     net, pop_size=META_POP, max_iter=META_ITER, seed=42,
@@ -1247,7 +1263,7 @@ def main():
 
         # Single-PPO (centralized)
         if "Single-PPO" in args.methods:
-            print(f"\\n  [Single-PPO] Running centralized PPO...")
+            print(f"\n  [Single-PPO] Running centralized PPO...")
             sys_results["Single-PPO"] = run_single_ppo(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -1255,7 +1271,7 @@ def main():
 
         # IPPO (decentralized, no comm)
         if "IPPO" in args.methods:
-            print(f"\\n  [IPPO] Running decentralized IPPO...")
+            print(f"\n  [IPPO] Running decentralized IPPO...")
             sys_results["IPPO"] = run_ippo(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -1263,7 +1279,7 @@ def main():
 
         # MAPPO (centralized critic, no comm)
         if "MAPPO" in args.methods:
-            print(f"\\n  [MAPPO] Running MAPPO...")
+            print(f"\n  [MAPPO] Running MAPPO...")
             sys_results["MAPPO"] = run_mappo(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -1271,7 +1287,7 @@ def main():
 
         # MAPPO-Comm (with GNN)
         if "MAPPO-Comm" in args.methods or args.comm:
-            print(f"\\n  [MAPPO-Comm] Running MAPPO with GNN communication...")
+            print(f"\n  [MAPPO-Comm] Running MAPPO with GNN communication...")
             sys_results["MAPPO-Comm"] = run_mappo_comm(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -1279,7 +1295,7 @@ def main():
 
         # MAPPO-Safe (with Safe RL)
         if "MAPPO-Safe" in args.methods or args.safe:
-            print(f"\\n  [MAPPO-Safe] Running MAPPO with Safe RL...")
+            print(f"\n  [MAPPO-Safe] Running MAPPO with Safe RL...")
             sys_results["MAPPO-Safe"] = run_mappo_safe(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -1287,7 +1303,7 @@ def main():
 
         # MAPPO-Safe-EWC (with Safe RL + EWC)
         if "MAPPO-Safe-EWC" in args.methods or args.ewc:
-            print(f"\\n  [MAPPO-Safe-EWC] Running MAPPO with Safe RL + EWC...")
+            print(f"\n  [MAPPO-Safe-EWC] Running MAPPO with Safe RL + EWC...")
             sys_results["MAPPO-Safe-EWC"] = run_mappo_safe_ewc(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -1319,8 +1335,8 @@ def main():
         if len(results_matrix) >= 2:
             run_statistical_analysis(results_matrix)
 
-    print("\\n  All outputs written to ./outputs/")
-    print("\\n  Phase 4 experiments complete!")
+    print("\n  All outputs written to ./outputs/")
+    print("\n  Phase 4 experiments complete!")
     print("  Next steps (Phase 5):")
     print("    1. Large-scale training with 10,000+ scenarios")
     print("    2. PV penetration sweep analysis (0-100%)")

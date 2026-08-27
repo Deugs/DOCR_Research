@@ -612,7 +612,16 @@ class RobustnessTester:
                 bus_bkp=p.bus_bkp,
             )
 
-        # Build a new NetworkData with the perturbed pairs
+        # Build a new NetworkData with the perturbed pairs. relay_bus is
+        # NetworkData's authoritative 0-indexed relay->bus mapping
+        # (captured directly from each line's from/to bus at construction
+        # for the 14/39/57/118-bus networks) -- omitting it here (as this
+        # used to) silently reset it to None, forcing every
+        # get_relay_bus() lookup on the stressed network onto the
+        # RelayPair.bus_pri/bus_bkp fallback, which is "correct only for
+        # relays that appear in at least one pair" per that method's own
+        # docstring. Verified empirically on 14bus: 4 of 40 relays
+        # resolved to a different bus after stress without this fix.
         stressed_net = type(net)(
             name=f"{net.name}_stressed",
             n_relays=net.n_relays,
@@ -626,6 +635,7 @@ class RobustnessTester:
             dg_buses=net.dg_buses,
             line_data=net.line_data,
             trafo_data=net.trafo_data,
+            relay_bus=net.relay_bus.copy() if net.relay_bus is not None else None,
         )
         return stressed_net
 

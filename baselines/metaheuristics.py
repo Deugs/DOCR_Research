@@ -591,8 +591,13 @@ def run_eeo(
             # with iteration count (only with fresh randoms each step), so
             # EEO never actually transitioned from exploration to
             # exploitation like the real Equilibrium Optimizer does.
+            #
+            # Eq. 9 defines F = a1 * sign(r-0.5) * (exp(-lambda*t) - 1) --
+            # a1 (not a2; a2 is only used above in t_vec, per Eq. 8). F
+            # previously reused a2 a second time here, leaving a1 computed
+            # every iteration but never referenced anywhere in the function.
             sign_vec = np.sign(rng.random(dim) - 0.5)
-            F = a2 * sign_vec * (np.exp(-lambda_vec * t_vec) - 1.0)
+            F = a1 * sign_vec * (np.exp(-lambda_vec * t_vec) - 1.0)
 
             # Generation-rate control parameter (Faramarzi et al. 2020, Eq. 12):
             # GCP = 0.5 * r1 * 1(r2 >= GP). The previous code fixed the scale at

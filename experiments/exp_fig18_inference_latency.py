@@ -7,7 +7,8 @@ Inference Latency Distribution (Intel NUC i5, 1000 runs).
 IMPROVEMENTS over original:
   • Realistic per-phase timing with actual pipeline stages
   • ONNX export simulation for deployment-accurate timing
-  • Phase breakdown with actual function calls (not synthetic)
+  • Phase breakdown with actual function calls for 4 of 5 phases (see
+    Phase 2 disclosure in benchmark_phases_realistic() below)
   • P99.9 percentile computation
   • Requirement check: <100ms with margin analysis
   • Statistical outlier detection
@@ -66,7 +67,23 @@ def benchmark_phases_realistic(actor, obs: np.ndarray, net, env, rng) -> np.ndar
     _, dt = _time_phase_ms(lambda: np.clip(obs, -5.0, 5.0))
     phases[0] = dt
 
-    # Phase 2: GNN message passing (actual forward if comm enabled)
+    # Phase 2: GNN message passing.
+    #
+    # DISCLOSURE: this phase is a synthetic placeholder, not a real GNN
+    # forward pass -- despite this module's docstring previously claiming
+    # ALL phases used "actual function calls (not synthetic)". SharedGaussianActor
+    # has no `.gnn`/`._gnn_forward` attribute anywhere in this codebase (the
+    # `hasattr` checks below were always False); real GNN comm lives on
+    # `trainer.comm_graph`, a separate object from the actor, and
+    # `CommGraph.forward()` operates on ALL agents' observations at once
+    # (shape (n_agents, obs_dim), for cross-relay attention/message-passing) --
+    # not the single flat per-relay `obs` vector this function times, which
+    # models one relay's own onboard inference call. Wiring in a real
+    # comm_graph.forward() call here would require restructuring this
+    # benchmark around a full multi-agent observation batch instead of a
+    # single relay's latency, and this file's own trainer is built with
+    # use_comm=False (see main()) -- i.e. the specific policy actually
+    # benchmarked here never uses the GNN path at inference time regardless.
     def gnn_forward():
         if hasattr(actor, 'gnn') and actor.gnn is not None:
             return actor.gnn(obs)

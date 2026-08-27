@@ -39,9 +39,11 @@ from network.relay_physics import check_constraints
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
 
-# Traditional fixed settings (typical conservative values)
-TRADITIONAL_TDS = np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
-TRADITIONAL_PSM = np.array([2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0])
+# Traditional fixed settings (typical conservative values). Sized to
+# net.n_relays inside main() -- get_8bus() has 14 relays, not the 7 this
+# used to be hardcoded to, which crashed with IndexError on every run.
+TRADITIONAL_TDS_VALUE = 0.5
+TRADITIONAL_PSM_VALUE = 2.0
 
 
 def compute_trip_decision(net, TDS: np.ndarray, PSM: np.ndarray,
@@ -82,6 +84,9 @@ def identify_sympathetic_cases(net, env, trainer, n_scenarios: int = 50,
     """
     rng = np.random.default_rng(seed)
     cases = []
+
+    TRADITIONAL_TDS = np.full(net.n_relays, TRADITIONAL_TDS_VALUE)
+    TRADITIONAL_PSM = np.full(net.n_relays, TRADITIONAL_PSM_VALUE)
 
     for scenario in range(n_scenarios):
         obs = env.reset(seed=seed + scenario)

@@ -199,8 +199,14 @@ class DistributionNetwork:
         # Reset sensors
         self.sensors.reset_all()
 
-        # Generate daily profile
-        profile = self.scenario_gen.cloud_model.generate_daily_profile()
+        # Generate daily profile. Cached on self so step() can re-sample
+        # it at each new time_of_day too (see step()) -- previously only
+        # reset() ever read from a profile, and it was a local variable
+        # never retained, so step()'s irradiance/temperature/load_pu
+        # stayed frozen at whatever reset() set for the entire episode
+        # even as time_of_day advanced by time_delta on every call.
+        self._daily_profile = self.scenario_gen.cloud_model.generate_daily_profile()
+        profile = self._daily_profile
 
         if time_of_day is None:
             time_of_day = self.rng.uniform(0, 24)
@@ -283,6 +289,18 @@ class DistributionNetwork:
         # Update time
         self.time += time_delta
         self.current_state.time_of_day = (self.current_state.time_of_day + time_delta) % 24
+
+        # Re-sample irradiance/temperature/load_pu at the new time_of_day
+        # from the same daily profile reset() drew -- these previously
+        # stayed frozen at whatever reset() set for the entire episode
+        # (up to 300 steps = 75 simulated hours), leaving DynamicState
+        # internally inconsistent (time_of_day cycling through day/night
+        # while irradiance/load_pu never moved) and directly affecting
+        # get_sensor_measurements()'s load_current term on every step.
+        idx = int(self.current_state.time_of_day * 4) % len(self._daily_profile.hours)
+        self.current_state.irradiance = self._daily_profile.irradiance[idx]
+        self.current_state.temperature = self._daily_profile.temperature[idx]
+        self.current_state.load_pu = self._daily_profile.load_pu[idx]
 
         # Update topology if changes provided
         if topology_changes:
@@ -382,11 +400,19 @@ class DistributionNetwork:
             bus_idx = self.net_data.get_relay_bus(i)
             true_voltages[i] = self.current_state.bus_voltages.get(bus_idx, 1.0)
 
-            # Approximate current from load and PV
+            # Approximate current from load and PV. get_relay_bus() returns
+            # a 0-indexed bus, but DGConfig.bus_idx is 1-indexed (same
+            # convention as RelayPair.bus_pri/bus_bkp -- see every
+            # get_*bus() constructor, e.g. get_39bus's generators at
+            # bus_idx 30-39 matching the IEEE 39-bus standard case's
+            # 1-indexed bus numbering). Comparing them directly was an
+            # off-by-one: PV current landed on the relay one bus downstream
+            # of the real DG, and a DG at the network's highest-numbered
+            # bus never matched any relay at all.
             load_current = self.net_data.Iload_max[i] * self.current_state.load_pu
             pv_current = 0.0
             for dg in self.net_data.dg_buses:
-                if dg.bus_idx == bus_idx:
+                if dg.bus_idx - 1 == bus_idx:
                     pv_current = dg.p_mw * self.current_state.pv_penetration * 1e6 / (
                         np.sqrt(3) * self.net_data.base_voltage * 1e3
                     )
@@ -491,9 +517,17 @@ class DistributionNetwork:
         # the PV fault-current contribution on stale, one-step-lagged
         # voltages.
         for bus_idx, plant in self.pv_plants.items():
+            # self.pv_plants is keyed by dg.bus_idx (1-indexed, see
+            # _build_pv_plants), but `bus_voltages` (from
+            # PandapowerNetwork.get_bus_voltages() or the 0-indexed
+            # placeholder built at both call sites) is keyed 0-indexed.
+            # Comparing them directly fed the wrong bus's voltage into the
+            # LVRT trip-decision gate below, and a DG at the network's
+            # highest-numbered (1-indexed) bus always missed and silently
+            # defaulted to v_pu=1.0.
             v_pu = 1.0  # Pre-fault voltage
-            if bus_voltages and bus_idx in bus_voltages:
-                v_pu = bus_voltages[bus_idx]
+            if bus_voltages and (bus_idx - 1) in bus_voltages:
+                v_pu = bus_voltages[bus_idx - 1]
 
             pv_i_contribution = plant.get_fault_current_contribution(v_pu, fault_type)
 

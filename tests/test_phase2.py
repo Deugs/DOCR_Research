@@ -29,19 +29,20 @@ from network.relay_physics import CTI, TMS_MIN, TMS_MAX
 
 def test_gnn_encoder():
     """Test GNN message encoder."""
+    rng = np.random.default_rng(42)
     from marl.comm_graph import GNNMessageEncoder, CommConfig
 
     config = CommConfig(message_dim=8, hidden_dim=32)
     encoder = GNNMessageEncoder(obs_dim=10, config=config, seed=42)
 
     # Single observation
-    obs = np.random.randn(10)
+    obs = rng.standard_normal(10)
     msg = encoder.encode(obs)
     assert msg.shape == (8,), f"Expected (8,), got {msg.shape}"
     assert np.all(np.abs(msg) <= 1.0), "Messages should be in [-1, 1] (tanh)"
 
     # Batch observations
-    obs_batch = np.random.randn(5, 10)
+    obs_batch = rng.standard_normal((5, 10))
     msgs = encoder.encode(obs_batch)
     assert msgs.shape == (5, 8), f"Expected (5, 8), got {msgs.shape}"
 
@@ -57,12 +58,13 @@ def test_gnn_encoder():
 
 def test_gnn_attention():
     """Test GNN attention mechanism."""
+    rng = np.random.default_rng(42)
     from marl.comm_graph import GNNAttention
 
     attention = GNNAttention(msg_dim=8, hidden_dim=16, seed=42)
 
     n = 5
-    messages = np.random.randn(n, 8)
+    messages = rng.standard_normal((n, 8))
     adjacency = np.eye(n)
     adjacency[0, 1] = adjacency[1, 0] = 1.0
     adjacency[1, 2] = adjacency[2, 1] = 1.0
@@ -82,20 +84,21 @@ def test_gnn_attention():
 
 def test_gnn_decoder():
     """Test GNN message decoder."""
+    rng = np.random.default_rng(42)
     from marl.comm_graph import GNNMessageDecoder, CommConfig
 
     config = CommConfig(hidden_dim=32)
     decoder = GNNMessageDecoder(obs_dim=10, msg_dim=8, enhanced_dim=18, config=config, seed=42)
 
-    obs = np.random.randn(10)
-    aggregated_msg = np.random.randn(8)
+    obs = rng.standard_normal(10)
+    aggregated_msg = rng.standard_normal(8)
     enhanced = decoder.decode(obs, aggregated_msg)
     assert enhanced.shape == (18,), f"Expected (18,), got {enhanced.shape}"
     assert np.all(np.abs(enhanced) <= 1.0), "Enhanced obs should be in [-1, 1]"
 
     # Batch
-    obs_batch = np.random.randn(5, 10)
-    msg_batch = np.random.randn(5, 8)
+    obs_batch = rng.standard_normal((5, 10))
+    msg_batch = rng.standard_normal((5, 8))
     enhanced_batch = decoder.decode(obs_batch, msg_batch)
     assert enhanced_batch.shape == (5, 18)
 
@@ -104,6 +107,7 @@ def test_gnn_decoder():
 
 def test_comm_graph():
     """Test complete CommGraph end-to-end."""
+    rng = np.random.default_rng(42)
     from marl.comm_graph import CommGraph, CommConfig, build_relay_adjacency
 
     net = get_8bus()
@@ -123,7 +127,7 @@ def test_comm_graph():
         seed=42,
     )
 
-    observations = np.random.randn(net.n_relays, 10)
+    observations = rng.standard_normal((net.n_relays, 10))
     enhanced_obs, messages, comm_info = comm.forward(observations)
 
     assert enhanced_obs.shape == (net.n_relays, 18)
@@ -320,19 +324,20 @@ def test_neighbor_observations():
 
 def test_shared_gaussian_actor():
     """Test shared Gaussian actor with parameter sharing."""
+    rng = np.random.default_rng(42)
     from marl.marl_agents import SharedGaussianActor
 
     actor = SharedGaussianActor(obs_dim=10, act_dim=2, hidden=32, seed=42)
 
     # Single observation
-    obs = np.random.randn(10)
+    obs = rng.standard_normal(10)
     action, log_prob = actor.sample(obs, np.random.default_rng(42))
     assert action.shape == (2,)
     assert np.all(np.abs(action) <= 1.0)
     assert log_prob < 0  # Log prob of continuous distribution
 
     # Batch observation
-    obs_batch = np.random.randn(5, 10)
+    obs_batch = rng.standard_normal((5, 10))
     means = actor.get_mean(obs_batch)
     assert means.shape == (5, 2)
 
@@ -402,6 +407,7 @@ def test_fault_type_idx_maps_env_fault_type_not_hardcoded_zero():
 
 def test_mappo_buffer():
     """Test MAPPO rollout buffer with communication."""
+    rng = np.random.default_rng(42)
     from marl.marl_agents import MAPPOBuffer
 
     n_agents, obs_dim, act_dim = 8, 10, 2
@@ -409,10 +415,10 @@ def test_mappo_buffer():
 
     # Without communication
     buffer = MAPPOBuffer(n_agents, obs_dim, act_dim, capacity, use_comm=False)
-    obs = np.random.randn(n_agents, obs_dim)
-    actions = np.random.randn(n_agents, act_dim)
-    rewards = np.random.randn(n_agents)
-    log_probs = np.random.randn(n_agents)
+    obs = rng.standard_normal((n_agents, obs_dim))
+    actions = rng.standard_normal((n_agents, act_dim))
+    rewards = rng.standard_normal(n_agents)
+    log_probs = rng.standard_normal(n_agents)
     value = 0.5
     done = False
 
@@ -421,8 +427,8 @@ def test_mappo_buffer():
 
     # With communication
     buffer_comm = MAPPOBuffer(n_agents, obs_dim, act_dim, capacity, use_comm=True, msg_dim=8)
-    messages = np.random.randn(n_agents, 8)
-    attention = np.random.rand(n_agents, n_agents)
+    messages = rng.standard_normal((n_agents, 8))
+    attention = rng.random((n_agents, n_agents))
     buffer_comm.add(obs, actions, rewards, log_probs, value, done,
                     messages=messages, attention=attention)
     assert buffer_comm.size == 1
@@ -496,6 +502,7 @@ def test_mappo_integration():
 
 def test_bandwidth_tracking():
     """Test communication bandwidth tracking."""
+    rng = np.random.default_rng(42)
     from marl.comm_graph import CommGraph, CommConfig, build_relay_adjacency
 
     net = get_8bus()
@@ -513,7 +520,7 @@ def test_bandwidth_tracking():
 
     # Simulate multiple steps
     for _ in range(10):
-        obs = np.random.randn(net.n_relays, 10)
+        obs = rng.standard_normal((net.n_relays, 10))
         comm.forward(obs)
 
     bw = comm.get_bandwidth_usage(steps_per_second=1.0)

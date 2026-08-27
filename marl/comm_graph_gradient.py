@@ -87,6 +87,23 @@ __all__ = [
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
+from network.relay_physics import FAULT_TYPES
+
+
+def _fault_type_idx(fault_type: str) -> int:
+    """Map a fault-type string to its one-hot index in FAULT_TYPES.
+
+    Same helper as marl/marl_agents.py's _fault_type_idx() -- this module
+    is not used by any production trainer (marl_agents.py imports its
+    real CommGraph from marl/comm_graph.py, not here; the only callers of
+    this module's classes are its own tests), but the critic's
+    fault-type-conditioning call sites below never ported this fix, so
+    they always used index 0 ("3ph") regardless of the real fault type.
+    """
+    try:
+        return FAULT_TYPES.index(fault_type)
+    except ValueError:
+        return 0
 
 
 @dataclass
@@ -512,11 +529,19 @@ def build_neighbor_observations(
             else:
                 neighbors.add(pair.primary)
 
-        for pair in net.pairs:
-            if pair.primary == i:
-                for other_pair in net.pairs:
-                    if other_pair.bus_pri == pair.bus_pri and other_pair.primary != i:
-                        neighbors.add(other_pair.primary)
+        # Same-bus (same protection zone) neighbors. Use net.get_relay_bus(),
+        # which resolves the authoritative relay_bus array (falling back to
+        # checking both primary AND backup roles in pairs) -- the previous
+        # `other_pair.bus_pri == pair.bus_pri` / `pair.primary == i` scan
+        # only ever matched relay i when it appeared as a PRIMARY, and only
+        # matched other relays via THEIR primary role too, silently missing
+        # same-bus neighbors where either side only ever appears as backup.
+        # Same fix already applied to marl/comm_graph.py::build_relay_adjacency.
+        bus_i = net.get_relay_bus(i)
+        if bus_i is not None:
+            for j in range(n):
+                if j != i and net.get_relay_bus(j) == bus_i:
+                    neighbors.add(j)
 
         neighbors = sorted(list(neighbors))[:max_neighbors]
         for j, neighbor_idx in enumerate(neighbors):
@@ -1527,7 +1552,8 @@ class GradientBasedMAPPOMARLTrainer:
             eps = self.rng.normal(0, 0.02, len(theta))
             for sign in (+1, -1):
                 self.critic.set_params(theta + sign * eps)
-                pred = self.critic.value_batch(tms_batch, ps_batch, pv_batch, ns_batch)
+                pred = self.critic.value_batch(tms_batch, ps_batch, pv_batch, ns_batch,
+                                                ft=_fault_type_idx(self.env.fault_type))
                 loss = -float(np.mean((ret_batch - pred[:, None]) ** 2))
                 noises.append(sign * eps)
                 losses.append(loss)
@@ -1557,7 +1583,7 @@ class GradientBasedMAPPOMARLTrainer:
             TMS, PS = self.env.get_state()
             pv = getattr(self.env, 'current_pv_level', 0.0)
             ns = self._get_neighbor_stats(current_obs)
-            val = self.critic.value(TMS, PS, pv=pv, ns=ns)
+            val = self.critic.value(TMS, PS, pv=pv, ns=ns, ft=_fault_type_idx(self.env.fault_type))
 
             next_obs, rewards, done, info_step = self.env.step(actions)
 
@@ -1613,7 +1639,8 @@ class GradientBasedMAPPOMARLTrainer:
 
             TMS, PS = self.env.get_state()
             pv = getattr(self.env, 'current_pv_level', 0.0)
-            last_val = self.critic.value(TMS, PS, pv=pv, ns=self._get_neighbor_stats(obs))
+            last_val = self.critic.value(TMS, PS, pv=pv, ns=self._get_neighbor_stats(obs),
+                                          ft=_fault_type_idx(self.env.fault_type))
             advs, rets = self.buffer.compute_gae(self.gamma, self.lam, last_val)
 
             # TRUE GRADIENT UPDATE

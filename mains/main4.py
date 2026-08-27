@@ -261,7 +261,7 @@ def run_statistical_analysis(results_dict, alpha=0.05):
     """Run Friedman, Nemenyi, Cliff's delta, and Wilcoxon tests."""
     from evaluation.stat_analysis import run_benchmark_analysis
     
-    print(f"\\n{'='*70}")
+    print(f"\n{'='*70}")
     print(f"  PHASE 4: STATISTICAL ANALYSIS")
     print(f"{'='*70}")
     
@@ -305,7 +305,7 @@ def run_benchmark_suite(systems, methods, n_runs=10, fast=False, verbose=True):
 def print_comparison_table(results_dict):
     """Print formatted comparison table across all methods (Phase 4 extended)."""
     LINE = "─" * 140
-    print(f"\\n{LINE}")
+    print(f"\n{LINE}")
     print(f"  {'Network':<12} {'Method':<18} {'OF (s)':>9} "
           f"{'CTI viol':>9} {'CTI min':>10} {'Time (s)':>10} "
           f"{'Comm BW':>10} {'Safe λ':>8} {'EWC Tasks':>10} {'Improvement':>12}")
@@ -465,7 +465,7 @@ def plot_phase3_comparison(results_dict, out_path):
 def print_phase4_comparison_table(results_dict):
     """Print Phase 4 specific comparison with metaheuristics."""
     LINE = "─" * 130
-    print(f"\\n{LINE}")
+    print(f"\n{LINE}")
     print(f"  PHASE 4: BENCHMARK COMPARISON (Metaheuristics + MARL + GA-SQP)")
     print(LINE)
     print(f"  {'Network':<10} {'Method':<15} {'OF (s)':>10} {'OF_std':>10} "
@@ -690,7 +690,7 @@ def main():
 
     # Benchmark suite mode
     if args.benchmark:
-        print(f"\\n{'█'*60}")
+        print(f"\n{'█'*60}")
         print(f"  PHASE 4: BENCHMARK SUITE")
         print(f"  Systems: {', '.join(args.systems)}")
         print(f"  Methods: {', '.join(args.methods)}")
@@ -710,7 +710,7 @@ def main():
 
     for sys_key in args.systems:
         net = NETWORKS[sys_key]()
-        print(f"\\n{'█' * 55}")
+        print(f"\n{'█' * 55}")
         print(f"  SYSTEM: {net.name}")
         print(f"  Relays: {net.n_relays}  |  Pairs: {net.n_pairs}  |  Buses: {net.n_buses}")
         print(f"  Methods: {', '.join(args.methods)}")
@@ -724,7 +724,7 @@ def main():
 
         # GA-SQP (always run as baseline)
         if "GA-SQP" in args.methods:
-            print(f"\\n  [GA-SQP] Running...")
+            print(f"\n  [GA-SQP] Running...")
             sys_results["GA-SQP"] = run_ga_sqp(
                 net, ga_pop=GA_POP, ga_gen=GA_GEN, seed=42,
                 verbose=args.verbose, fault_type="3ph", pv_level=0.0
@@ -733,7 +733,7 @@ def main():
         # Metaheuristics
         for meta in ["HWOA", "HHO", "JAYA", "EEO"]:
             if meta in args.methods:
-                print(f"\\n  [{meta}] Running...")
+                print(f"\n  [{meta}] Running...")
                 runner = globals()[f"run_{meta.lower()}"]
                 sys_results[meta] = runner(
                     net, pop_size=META_POP, max_iter=META_ITER, seed=42,
@@ -743,7 +743,7 @@ def main():
 
         # Single-PPO (centralized)
         if "Single-PPO" in args.methods:
-            print(f"\\n  [Single-PPO] Running centralized PPO...")
+            print(f"\n  [Single-PPO] Running centralized PPO...")
             sys_results["Single-PPO"] = run_single_ppo(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -751,7 +751,7 @@ def main():
 
         # IPPO (decentralized, no comm)
         if "IPPO" in args.methods:
-            print(f"\\n  [IPPO] Running decentralized IPPO...")
+            print(f"\n  [IPPO] Running decentralized IPPO...")
             sys_results["IPPO"] = run_ippo(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -759,7 +759,7 @@ def main():
 
         # MAPPO (centralized critic, no comm)
         if "MAPPO" in args.methods:
-            print(f"\\n  [MAPPO] Running MAPPO...")
+            print(f"\n  [MAPPO] Running MAPPO...")
             sys_results["MAPPO"] = run_mappo(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -767,7 +767,7 @@ def main():
 
         # MAPPO-Comm (with GNN)
         if "MAPPO-Comm" in args.methods or args.comm:
-            print(f"\\n  [MAPPO-Comm] Running MAPPO with GNN communication...")
+            print(f"\n  [MAPPO-Comm] Running MAPPO with GNN communication...")
             sys_results["MAPPO-Comm"] = run_mappo_comm(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -775,7 +775,7 @@ def main():
 
         # MAPPO-Safe (with Safe RL)
         if "MAPPO-Safe" in args.methods or args.safe:
-            print(f"\\n  [MAPPO-Safe] Running MAPPO with Safe RL...")
+            print(f"\n  [MAPPO-Safe] Running MAPPO with Safe RL...")
             sys_results["MAPPO-Safe"] = run_mappo_safe(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -783,7 +783,7 @@ def main():
 
         # MAPPO-Safe-EWC (with Safe RL + EWC)
         if "MAPPO-Safe-EWC" in args.methods or args.ewc:
-            print(f"\\n  [MAPPO-Safe-EWC] Running MAPPO with Safe RL + EWC...")
+            print(f"\n  [MAPPO-Safe-EWC] Running MAPPO with Safe RL + EWC...")
             sys_results["MAPPO-Safe-EWC"] = run_mappo_safe_ewc(
                 net, total_steps=MARL_STEPS, seed=0,
                 verbose=args.verbose, use_pandapower=args.pandapower
@@ -815,8 +815,8 @@ def main():
         if len(results_matrix) >= 2:
             run_statistical_analysis(results_matrix)
 
-    print("\\n  All outputs written to ./outputs/")
-    print("\\n  Phase 4 experiments complete!")
+    print("\n  All outputs written to ./outputs/")
+    print("\n  Phase 4 experiments complete!")
     print("  Next steps (Phase 5):")
     print("    1. Large-scale training with 10,000+ scenarios")
     print("    2. PV penetration sweep analysis (0-100%)")

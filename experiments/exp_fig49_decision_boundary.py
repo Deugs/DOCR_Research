@@ -118,8 +118,14 @@ def main(train_steps: int = 8000, n_episodes: int = 200,
     logger.info("Running %s projection...", method.upper())
     if method.lower() == "tsne":
         from sklearn.manifold import TSNE
+        # n_iter was deprecated in scikit-learn 1.5 and removed in 1.7;
+        # requirements.txt pins only scikit-learn>=1.3 with no upper
+        # bound, so a fresh install could break here with a TypeError.
+        # experiments/training_pipeline.py's own TSNE call already omits
+        # this parameter (relying on the library's default iteration
+        # count) -- match that established, version-safe pattern.
         reducer = TSNE(n_components=2, perplexity=min(30, len(obs_all) - 1),
-                       random_state=seed, n_iter=1000, learning_rate="auto",
+                       random_state=seed, learning_rate="auto",
                        init="pca")
     elif method.lower() == "umap":
         try:

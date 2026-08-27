@@ -15,14 +15,15 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-# Monkey-patch MAPPOMARLTrainer to force use_comm=False
-# This fixes dimension mismatch when exp code calls actor.sample() with raw obs
-import marl.marl_agents as _ma
-_orig_init = _ma.MAPPOMARLTrainer.__init__
-def _patched_init(self, *args, **kwargs):
-    kwargs["use_comm"] = False
-    _orig_init(self, *args, **kwargs)
-_ma.MAPPOMARLTrainer.__init__ = _patched_init
+# NOTE: this wrapper used to monkey-patch MAPPOMARLTrainer.__init__ to
+# force use_comm=False unconditionally on every trainer it created,
+# claiming to fix a dimension mismatch from calling actor.sample() with
+# raw obs. marl/experiments/exp_fig40_hparam_grid.py's run_with_params()
+# already hardcodes use_comm=False itself, so the monkeypatch here was
+# always a no-op for this particular figure -- removed for consistency
+# with the same (here, actually harmful) pattern in the sibling
+# ablation_study.py/batch_runs.py wrappers, and so a future change to
+# exp_fig40's use_comm default doesn't silently get overridden again.
 
 # Import the actual experiment implementation
 from marl.experiments.exp_fig40_hparam_grid import main as fig40_main

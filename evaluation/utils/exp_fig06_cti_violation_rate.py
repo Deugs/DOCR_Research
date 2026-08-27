@@ -65,16 +65,30 @@ def evaluate_cti_severity(net, env, trainer, n_episodes: int = 100, seed: int = 
     """Evaluate and categorize CTI violations by severity."""
     rng = np.random.default_rng(seed)
     total_pairs = net.n_pairs
-    
+
     mild_count = 0      # 0.2 <= CTI < 0.3
     moderate_count = 0  # 0.1 <= CTI < 0.2
     severe_count = 0    # CTI < 0.1
     total_violations = 0
-    
+
+    # Literature-standard fixed traditional settings (trainer is None for
+    # the "Traditional" method). Matches
+    # baselines/experiments/exp_fig05_pv_sweep_evaluation.py::evaluate_traditional().
+    fixed_TDS = np.full(env.n_agents, 0.5)
+    fixed_PSM = np.full(env.n_agents, 2.0)
+
     for ep in range(n_episodes):
         obs = env.reset(seed=seed + ep)
         done = False
-        
+
+        if trainer is None:
+            # Previously left every action at zero with whatever TMS/PS
+            # env.reset() randomly drew (DynamicDOCREnv.reset() samples
+            # both via self.rng.uniform(...)) -- "Traditional" measured
+            # CTI violations under random, untuned relay settings, not a
+            # real traditional-coordination baseline.
+            env.set_state(fixed_TDS, fixed_PSM)
+
         # Run one episode to get final settings
         while not done:
             actions = np.zeros((env.n_agents, env.ACT_DIM))

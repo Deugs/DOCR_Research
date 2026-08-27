@@ -15,14 +15,17 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-# Monkey-patch MAPPOMARLTrainer to force use_comm=False
-# This fixes dimension mismatch when exp code calls actor.sample() with raw obs
-import marl.marl_agents as _ma
-_orig_init = _ma.MAPPOMARLTrainer.__init__
-def _patched_init(self, *args, **kwargs):
-    kwargs["use_comm"] = False
-    _orig_init(self, *args, **kwargs)
-_ma.MAPPOMARLTrainer.__init__ = _patched_init
+# NOTE: this wrapper used to monkey-patch MAPPOMARLTrainer.__init__ to
+# force use_comm=False unconditionally on every trainer it created,
+# claiming to fix a dimension mismatch from calling actor.sample() with
+# raw obs. exp_fig39_ablation.py's own run_config()/act_fn already
+# correctly route obs through base_trainer.comm_graph.forward() before
+# actor.sample() whenever use_comm=True (see its own comments) -- the
+# monkeypatch was unnecessary and actively harmful: 4 of the 5 ablation
+# CONFIGS use use_comm=True by design ("MAPPO+GNN" and its
+# safety/EWC/curriculum variants), so this silently collapsed every
+# "with GNN" arm to "without GNN", making every run through this wrapper
+# report zero GNN contribution regardless of the real effect.
 
 # Import the actual experiment implementation
 from marl.experiments.exp_fig39_ablation import main as fig39_main
