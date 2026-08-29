@@ -1,12 +1,12 @@
 {
   "fig_num": 47,
   "data": {
-    "sympathetic": 0,
+    "sympathetic": 145,
     "traditional": 0
   },
   "metadata": {
     "method": "_eval_sympathetic_tripping",
-    "duration": 2.88850474357605,
+    "duration": 2.1195406913757324,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -42,6 +42,7 @@
       "unseen_fault_type": null,
       "sensor_noise_std": 0.0,
       "missing_sensor_rate": 0.0,
+      "sensor_bias": 0.0,
       "train_system": null,
       "eval_system": null,
       "freeze_transfer_weights": false,
@@ -78,7 +79,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 109.24167185091324
+    "base_of": 55.08287320208595
   },
-  "timestamp": 1787223237.2236078
+  "timestamp": 1788038336.719151
 }

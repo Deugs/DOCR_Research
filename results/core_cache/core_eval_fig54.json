@@ -1,13 +1,13 @@
 {
   "fig_num": 54,
   "data": {
-    "of": 653.5293040849795,
+    "of": 1286.354929192287,
     "success": 1.0,
     "norm": 0.0
   },
   "metadata": {
     "method": "_eval_adversarial",
-    "duration": 0.17740559577941895,
+    "duration": 0.12855887413024902,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -80,7 +80,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 77.84522844468644
+    "base_of": 55.08287320208595
   },
-  "timestamp": 1787245892.6416497
+  "timestamp": 1788038132.0222802
 }

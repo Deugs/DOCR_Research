@@ -1,7 +1,7 @@
 {
-  "3079e65643b1df10": {
-    "name": "core_A_mappo_safe_ewc_8bus_100pv",
-    "created": "2026-08-20T06:45:58.182516",
+  "fca7f6b89fa4cbcf": {
+    "name": "core_A_mappo_safe_ewc_8bus_60pv",
+    "created": "2026-08-29T11:37:19.858997",
     "config_keys": [
       "name",
       "method",
@@ -13,25 +13,42 @@
       "fault_type",
       "real_safety_ewc"
     ],
-    "size_mb": 0.12528133392333984
+    "size_mb": 0.12524795532226562
   },
-  "231a3acbd86d59c1": {
-    "name": "core_C_baselines",
-    "created": "2026-08-20T08:53:08.531010",
+  "6c47c1b99292a7e1": {
+    "name": "core_B_curriculum",
+    "created": "2026-08-29T13:06:12.536258",
     "config_keys": [
       "name",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed",
+      "fault_type",
+      "real_safety",
+      "real_pv_eval"
+    ],
+    "size_mb": 0.001468658447265625
+  },
+  "2b9d1b388f32dc87": {
+    "name": "core_C_baselines_8bus",
+    "created": "2026-08-29T16:26:12.062524",
+    "config_keys": [
+      "name",
+      "system",
       "methods",
       "n_runs",
       "n_episodes",
       "seed",
       "fault_type",
-      "real_safety_ewc"
+      "real_safety_ewc",
+      "real_multi_system"
     ],
     "size_mb": 0.02017688751220703
   },
   "64353ed3bb63ad9e": {
     "name": "core_D_ablation",
-    "created": "2026-08-20T10:19:56.445049",
+    "created": "2026-08-29T20:12:05.434836",
     "config_keys": [
       "name",
       "configs",
@@ -41,11 +58,11 @@
       "fault_type",
       "real_safety_ewc"
     ],
-    "size_mb": 0.0004291534423828125
+    "size_mb": 0.00036907196044921875
   },
   "28b14fe96ef27938": {
     "name": "core_E_hparam",
-    "created": "2026-08-20T10:30:37.329186",
+    "created": "2026-08-29T20:42:57.333033",
     "config_keys": [
       "name",
       "lambda_ewc",
@@ -57,22 +74,51 @@
       "fault_type",
       "real_hparam_effect"
     ],
-    "size_mb": 0.00787353515625
+    "size_mb": 0.004332542419433594
   },
   "86ef40a3dd756e02": {
     "name": "core_F_scalability",
-    "created": "2026-08-20T10:48:17.540342",
+    "created": "2026-08-29T21:13:58.044438",
     "config_keys": [
       "name",
       "systems",
       "seed",
       "fault_type"
     ],
-    "size_mb": 0.00023174285888671875
+    "size_mb": 0.00015926361083984375
+  },
+  "7bb89fe9ec97ec3a": {
+    "name": "core_G_robustness",
+    "created": "2026-08-29T21:15:32.022897",
+    "config_keys": [
+      "name",
+      "stress_types",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_sweep_v2"
+    ],
+    "size_mb": 0.0008592605590820312
+  },
+  "a5a346edb4c75c2f": {
+    "name": "core_H_transfer",
+    "created": "2026-08-29T21:16:44.150346",
+    "config_keys": [
+      "name",
+      "evaluations",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_unseen_sweep_v2",
+      "real_14bus_transfer"
+    ],
+    "size_mb": 0.00025081634521484375
   },
   "d5163a43d5271ee6": {
     "name": "core_I_deployment",
-    "created": "2026-08-20T10:52:31.194989",
+    "created": "2026-08-29T21:17:48.147967",
     "config_keys": [
       "name",
       "benchmarks",
@@ -86,7 +132,7 @@
   },
   "aad3e854030d6219": {
     "name": "core_J_protection",
-    "created": "2026-08-20T10:53:57.224585",
+    "created": "2026-08-29T21:18:56.720009",
     "config_keys": [
       "name",
       "analyses",
@@ -100,7 +146,7 @@
   },
   "31027c769c1483fb": {
     "name": "core_K_seasonal",
-    "created": "2026-08-20T10:55:21.753644",
+    "created": "2026-08-29T21:20:03.895649",
     "config_keys": [
       "name",
       "seasons",
@@ -110,49 +156,5 @@
       "real_safety_ewc"
     ],
     "size_mb": 0.0001277923583984375
-  },
-  "6c47c1b99292a7e1": {
-    "name": "core_B_curriculum",
-    "created": "2026-08-20T12:48:42.000000",
-    "config_keys": [
-      "name",
-      "tasks",
-      "episodes_per_task",
-      "n_runs",
-      "seed",
-      "fault_type",
-      "real_safety",
-      "real_pv_eval"
-    ],
-    "size_mb": 0.00157928466796875
-  },
-  "b78f3ecb56a2557f": {
-    "name": "core_G_robustness",
-    "created": "2026-08-20T17:11:32.642349",
-    "config_keys": [
-      "name",
-      "stress_types",
-      "seed",
-      "fault_type",
-      "real_eval",
-      "real_safety_ewc",
-      "real_sweep_v2"
-    ],
-    "size_mb": 0.0008592605590820312
-  },
-  "bc9a6636d6a9d20c": {
-    "name": "core_H_transfer",
-    "created": "2026-08-21T02:48:35.798419",
-    "config_keys": [
-      "name",
-      "evaluations",
-      "seed",
-      "fault_type",
-      "real_eval",
-      "real_safety_ewc",
-      "real_unseen_sweep_v2",
-      "real_14bus_transfer"
-    ],
-    "size_mb": 0.00025081634521484375
   }
 }

@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-08-20T10:55:21.755644",
+  "timestamp": "2026-08-29T21:20:03.896929",
   "fast_mode": true,
   "use_synthetic": false,
   "config_used": true,
-  "elapsed_seconds": 17127.585805416107,
+  "elapsed_seconds": 38447.55163049698,
   "cores": {
     "A": {
       "feeds": "Figs 9,10,12,21,37,38,41,48-50,55-57",
@@ -57,5 +57,5 @@
     "misses": 11,
     "stores": 11
   },
-  "progress_report": "/home/user/DOCR_Research/results/progress/training_progress_20260820_105521.json"
+  "progress_report": "/home/user/DOCR_Research/results/progress/training_progress_20260829_212003.json"
 }
