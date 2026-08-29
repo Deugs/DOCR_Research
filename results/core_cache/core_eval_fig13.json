@@ -1,13 +1,13 @@
 {
   "fig_num": 13,
   "data": {
-    "packet_loss": 145.24883876044333,
+    "packet_loss": 133.91278219842374,
     "latency": 500,
-    "cti_ok": true
+    "cti_ok": false
   },
   "metadata": {
     "method": "_eval_comm_stress",
-    "duration": 1.3683645725250244,
+    "duration": 1.007883071899414,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -80,7 +80,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 77.84522844468644
+    "base_of": 55.08287320208595
   },
-  "timestamp": 1787245866.5160413
+  "timestamp": 1788038112.8331459
 }

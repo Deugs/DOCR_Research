@@ -1,7 +1,7 @@
 {
   "fig_num": 20,
   "data": {
-    "byzantine_of": 143.52392169661445,
+    "byzantine_of": 5746.979722803486,
     "detected": false,
     "trust": [
       1.0,
@@ -22,7 +22,7 @@
   },
   "metadata": {
     "method": "_eval_byzantine",
-    "duration": 1.2353599071502686,
+    "duration": 0.9410557746887207,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -97,7 +97,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 77.84522844468644
+    "base_of": 55.08287320208595
   },
-  "timestamp": 1787245870.3365743
+  "timestamp": 1788038115.7084808
 }

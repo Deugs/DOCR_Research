@@ -2,12 +2,12 @@
   "fig_num": 22,
   "data": {
     "bandwidth": 3.584,
-    "of": 145.1127534287996,
+    "of": 155.78411602790865,
     "params": 1978
   },
   "metadata": {
     "method": "_eval_bandwidth",
-    "duration": 1.3457965850830078,
+    "duration": 1.0143706798553467,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -80,7 +80,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 77.84522844468644
+    "base_of": 55.08287320208595
   },
-  "timestamp": 1787245875.90104
+  "timestamp": 1788038119.9208987
 }

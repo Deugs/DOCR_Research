@@ -1,13 +1,13 @@
 {
   "fig_num": 24,
   "data": {
-    "noisy_of": 143.16725249755262,
-    "cti_ok": true,
-    "snr": 97.38396028476758
+    "noisy_of": 131.90325757041194,
+    "cti_ok": false,
+    "snr": 93.68546833776233
   },
   "metadata": {
     "method": "_eval_sensor_robustness",
-    "duration": 1.5735774040222168,
+    "duration": 1.0097362995147705,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -80,7 +80,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 77.84522844468644
+    "base_of": 55.08287320208595
   },
-  "timestamp": 1787245891.4782364
+  "timestamp": 1788038131.2521312
 }
