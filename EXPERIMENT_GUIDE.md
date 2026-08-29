@@ -223,15 +223,32 @@ i.e. they silently fall back to fabricated numbers whenever the named
 `results/core_cache/` entry is missing. As of 2026-08-07 every one of these
 41 functions now sets `is_synthetic = data is None`, logs a warning naming
 the missing cache, and watermarks the figure when the fallback actually
-fires. **Update (2026-08-08): `results/core_cache/` was cleared** (previously
-3 of the 11 core caches existed — `core_A_mappo_safe_ewc_8bus_100pv`,
-`core_B_curriculum`, `core_C_baselines`) and is now empty, so *every*
-`run_post_processing.py` figure generated from the current checkout is
-synthetic until Cores A–K are (re-)run. They are still honestly labeled as
-such rather than silently passed off as real.
+fires. (2026-08-08: `results/core_cache/` was cleared once to verify this
+disclosure behavior end-to-end; Cores A–K were re-run immediately after and
+the cache was repopulated with real results.)
+
+**Update (2026-08-29): Cores A–K re-run fresh** (`run_core_training.py --all
+--fast`, ~40 commits' worth of production-path fixes after the prior cache),
+and all 58 figures regenerated (`run_post_processing.py --all`, 50/50
+auto-generated, 0 failures). As of that run, only 8 of the 58 figures are
+synthetic — each for a pre-existing, documented architectural reason (not a
+missing cache): Fig 14 (a separate standalone script's own missing .npz),
+Fig 33/56 (Core C doesn't measure the specific per-dimension/speed-vs-
+selectivity breakdown those figures plot), Fig 36 (no Core evaluation feeds
+it by design), Fig 38 (Core A's batched-ES trainer never captures per-step
+attention snapshots), Fig 53/18 (Core I's Phase 2 GNN latency has no real
+measurement path — see `experiments/exp_fig18_inference_latency.py`'s own
+disclosure), and Fig 58 (Core K measures `{of, cti_ok}` per season, not the
+`performance`/`pv_variability` fields the figure plots). See each figure
+function's own code comment in `run_post_processing.py` for the full
+rationale. Also fixed in this pass: `shap==0.41.0`'s prebuilt C extension is
+ABI-incompatible with numpy>=2.0, which was silently degrading Fig 48 (SHAP)
+to its null fallback with no visible error — `requirements.txt` now pins
+`shap>=0.51.0`.
 See the module docstring at the top of `run_post_processing.py` for the full
-list of missing caches, and `tests/test_phase6.py` / `tests/test_phase7.py`
-for regression coverage locking this behavior in.
+list of figures and their cache dependencies, and `tests/test_phase6.py` /
+`tests/test_phase7.py` for regression coverage locking the disclosure
+behavior in.
 
 Figures produced by `evaluation/utils/exp_fig06_cti_violation_rate.py` and the
 repaired `baselines/experiments/unified_exp_fig05.py` (Fig 5, now including
