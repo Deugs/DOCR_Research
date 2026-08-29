@@ -1,0 +1,48 @@
+
+======================================================================
+PV level 0% — pairwise significance across 3 seeds
+======================================================================
+  MAPPO-Safe-EWC vs       MAPPO-Safe:  p=1  p_holm=1  reject_H0=False  cliffs_delta=+0.000 (negligible)
+  MAPPO-Safe-EWC vs            MAPPO:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+0.778 (large)
+  MAPPO-Safe-EWC vs           GA-SQP:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs             HWOA:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs              HHO:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs             JAYA:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs              EEO:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs      Traditional:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+
+======================================================================
+PV level 20% — pairwise significance across 3 seeds
+======================================================================
+  MAPPO-Safe-EWC vs       MAPPO-Safe:  p=1  p_holm=1  reject_H0=False  cliffs_delta=+0.000 (negligible)
+  MAPPO-Safe-EWC vs            MAPPO:  p=1  p_holm=1  reject_H0=False  cliffs_delta=+0.111 (negligible)
+  MAPPO-Safe-EWC vs           GA-SQP:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs             HWOA:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs              HHO:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs             JAYA:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs              EEO:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs      Traditional:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+
+======================================================================
+PV level 40% — pairwise significance across 3 seeds
+======================================================================
+  MAPPO-Safe-EWC vs       MAPPO-Safe:  p=1  p_holm=1  reject_H0=False  cliffs_delta=+0.000 (negligible)
+  MAPPO-Safe-EWC vs            MAPPO:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs           GA-SQP:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs             HWOA:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs              HHO:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs             JAYA:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs              EEO:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs      Traditional:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+
+======================================================================
+PV level 60% — pairwise significance across 3 seeds
+======================================================================
+  MAPPO-Safe-EWC vs       MAPPO-Safe:  p=1  p_holm=1  reject_H0=False  cliffs_delta=+0.000 (negligible)
+  MAPPO-Safe-EWC vs            MAPPO:  p=1  p_holm=1  reject_H0=False  cliffs_delta=+0.333 (medium)
+  MAPPO-Safe-EWC vs           GA-SQP:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs             HWOA:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs              HHO:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs             JAYA:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs              EEO:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
+  MAPPO-Safe-EWC vs      Traditional:  p=0.25  p_holm=1  reject_H0=False  cliffs_delta=+1.000 (large)
