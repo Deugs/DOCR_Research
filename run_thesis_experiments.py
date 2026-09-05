@@ -71,7 +71,16 @@ except ImportError as e:
 # ──────────────────────────────────────────────────────────────────
 # Windows Unicode Fix
 # ──────────────────────────────────────────────────────────────────
-if sys.platform == 'win32':
+# Skipped under pytest: wrapping sys.stdout/stderr.buffer here creates a
+# second TextIOWrapper around the same underlying buffer pytest's own
+# capture manager owns. Whichever wrapper is garbage-collected first
+# closes that shared buffer, so pytest's own capture object later finds
+# its tmpfile closed ("ValueError: I/O operation on closed file") during
+# teardown -- breaking every test file that imports this module. Pytest
+# sets PYTEST_VERSION in os.environ for the whole session (collection
+# included), so this reliably detects "running under pytest" even
+# though PYTEST_CURRENT_TEST isn't set yet at import/collection time.
+if sys.platform == 'win32' and 'PYTEST_VERSION' not in os.environ:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
