@@ -23,6 +23,8 @@ Usage:
 
 import numpy as np
 import time
+import zlib
+import multiprocessing as mp
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
 
@@ -46,6 +48,15 @@ from evaluation.stat_analysis import (
 )
 
 
+def _method_seed_offset(name: str, modulus: int = 10000) -> int:
+    # zlib.crc32 instead of hash(): Python's hash() is randomized per
+    # process by default (PEP 456), so the same method name would derive
+    # a different offset across separate invocations/worker processes,
+    # silently breaking reproducibility. Same convention as
+    # run_core_training.py's _method_seed_offset.
+    return zlib.crc32(name.encode()) % modulus
+
+
 @dataclass
 class BenchmarkConfig:
     """Configuration for benchmark experiments."""
@@ -65,6 +76,11 @@ class BenchmarkConfig:
     use_pandapower: bool = False
     seed_base: int = 42
     verbose: bool = True
+    n_workers: int = 1            # >1 parallelizes across (system, run, method)
+                                   # jobs via a process Pool; matches the
+                                   # --n-workers convention used everywhere
+                                   # else in this codebase (see
+                                   # EXPERIMENT_GUIDE.md §2.2.2/§2.2.4)
 
 
 class BenchmarkSuite:
@@ -84,176 +100,76 @@ class BenchmarkSuite:
     def run_all(self) -> Dict[str, List[Dict]]:
         """
         Run complete benchmark suite.
-        
+
         Returns:
             results: {system_name: [run1, run2, ...]}
                      where each run = {method_name: result_dict}
         """
         cfg = self.config
-        
-        for sys_key in cfg.systems:
-            if sys_key not in NETWORKS:
-                print(f"Warning: Unknown system {sys_key}, skipping")
-                continue
-            
+
+        valid_systems = [s for s in cfg.systems if s in NETWORKS]
+        for s in cfg.systems:
+            if s not in NETWORKS:
+                print(f"Warning: Unknown system {s}, skipping")
+
+        for sys_key in valid_systems:
             net = NETWORKS[sys_key]()
             print(f"\\n{'█'*60}")
             print(f"  SYSTEM: {net.name}")
             print(f"  Relays: {net.n_relays}  |  Pairs: {net.n_pairs}")
             print(f"  Runs: {cfg.n_runs}  |  Methods: {', '.join(cfg.methods)}")
             print(f"{'█'*60}")
-            
-            self.results[sys_key] = []
-            
-            for run_idx in range(cfg.n_runs):
-                print(f"\\n  --- Run {run_idx + 1}/{cfg.n_runs} ---")
-                run_results = {}
-                seed = cfg.seed_base + run_idx * 100
-                
-                for method in cfg.methods:
-                    try:
-                        result = self._run_method(
-                            method, net, seed, cfg,
-                            verbose=(cfg.verbose and run_idx == 0)
-                        )
-                        run_results[method] = result
-                    except Exception as e:
-                        print(f"    ERROR running {method}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                
-                self.results[sys_key].append(run_results)
-        
+            # Pre-allocated by run_idx (not appended in completion order)
+            # so results stay in the same slot regardless of which
+            # worker/job finishes first when n_workers > 1.
+            self.results[sys_key] = [{} for _ in range(cfg.n_runs)]
+
+        # Every (system, run, method) job is independent, so they can all
+        # be dispatched to one shared pool across the whole sweep rather
+        # than per-system/per-run batches -- maximizes parallelism when
+        # n_workers is large relative to any single system's method count.
+        jobs = [
+            (sys_key, run_idx, method,
+             # Per-method offset (not just per-run): without this, every
+             # method within a run shared the exact same seed, so any two
+             # methods whose code paths happened to be otherwise identical
+             # (see _run_marl_method_impl's Safe/EWC fix) produced
+             # byte-identical results -- not distinct observations of a
+             # real difference.
+             cfg.seed_base + run_idx * 100 + _method_seed_offset(method),
+             cfg)
+            for sys_key in valid_systems
+            for run_idx in range(cfg.n_runs)
+            for method in cfg.methods
+        ]
+
+        total = len(jobs)
+        done = 0
+        for (sys_key, run_idx, method), result in _run_pool(jobs, _benchmark_job, cfg.n_workers):
+            done += 1
+            if "error" in result and len(result) == 1:
+                print(f"    ERROR running {method} on {sys_key} (run {run_idx + 1}): {result['error']}")
+            else:
+                self.results[sys_key][run_idx][method] = result
+            if cfg.verbose and (done % max(total // 20, 1) == 0 or done == total):
+                print(f"  [{done}/{total}] {sys_key} run {run_idx + 1}/{cfg.n_runs}: {method}")
+
         # Aggregate results
         self.aggregated = aggregate_results(
             self.results, metric="OF", aggregation="mean"
         )
-        
+
         return self.results
     
     def _run_method(self, method: str, net: NetworkData, seed: int,
                     cfg: BenchmarkConfig, verbose: bool = False) -> Dict:
-        """Run a single method and return standardized result dict."""
+        """Instance-method entry point, kept for any external caller --
+        delegates to the top-level _run_method_impl (a plain function, so
+        it's picklable for the multiprocessing Pool in run_all() without
+        needing to pickle a whole BenchmarkSuite instance)."""
+        return _run_method_impl(method, net, seed, cfg, verbose)
 
-        # PV-scale the network before it reaches any objective/constraint
-        # evaluation. `topology_state["fault_currents"]` carries the
-        # PV-penetration-dependent fault currents (see
-        # network.relay_physics.compute_fault_currents_dynamic) that
-        # objective_function/check_constraints use when present, falling
-        # back to the network's static (0% PV) fault currents otherwise.
-        # Without this, cfg.pv_level was accepted by every run_* call only
-        # for logging/result-dict bookkeeping and never actually changed
-        # what was optimized or measured.
-        topology_state = {
-            "fault_currents": compute_fault_currents_dynamic(
-                net, pv_penetration=cfg.pv_level, fault_type=cfg.fault_type
-            )
-        }
 
-        if method == "GA-SQP":
-            from baselines.ga_sqp import run_ga_sqp
-            result = run_ga_sqp(
-                net, ga_pop=cfg.ga_pop, ga_gen=cfg.ga_gen,
-                seed=seed, verbose=verbose,
-                fault_type=cfg.fault_type, pv_level=cfg.pv_level,
-                topology_state=topology_state,
-            )
-            result["method"] = "GA-SQP"
-            return result
-
-        elif method == "HWOA":
-            return run_hwoa(
-                net, n_whales=cfg.pop_size, max_iter=cfg.max_iter,
-                seed=seed, verbose=verbose,
-                fault_type=cfg.fault_type, pv_level=cfg.pv_level,
-                use_sqp=cfg.use_sqp, topology_state=topology_state,
-            )
-
-        elif method == "HHO":
-            return run_hho(
-                net, n_hawks=cfg.pop_size, max_iter=cfg.max_iter,
-                seed=seed, verbose=verbose,
-                fault_type=cfg.fault_type, pv_level=cfg.pv_level,
-                use_sqp=cfg.use_sqp, topology_state=topology_state,
-            )
-
-        elif method == "JAYA":
-            return run_jaya(
-                net, n_pop=cfg.pop_size, max_iter=cfg.max_iter,
-                seed=seed, verbose=verbose,
-                fault_type=cfg.fault_type, pv_level=cfg.pv_level,
-                use_sqp=cfg.use_sqp, topology_state=topology_state,
-            )
-
-        elif method == "EEO":
-            return run_eeo(
-                net, n_particles=cfg.pop_size, max_iter=cfg.max_iter,
-                seed=seed, verbose=verbose,
-                fault_type=cfg.fault_type, pv_level=cfg.pv_level,
-                use_sqp=cfg.use_sqp, topology_state=topology_state,
-            )
-
-        elif method in ("IPPO", "MAPPO", "MAPPO-Comm", "MAPPO-Safe", "MAPPO-Safe-EWC", "Single-PPO"):
-            # MARL methods - import dynamically to avoid dependency issues
-            return self._run_marl_method(method, net, seed, cfg, verbose)
-
-        else:
-            raise ValueError(f"Unknown method: {method}")
-    
-    def _run_marl_method(self, method: str, net: NetworkData, seed: int,
-                         cfg: BenchmarkConfig, verbose: bool = False) -> Dict:
-        """Run MARL methods (requires marl modules)."""
-        from marl.marl_env import DynamicDOCREnv
-        from marl.marl_agents import MAPPOMARLTrainer
-
-        # Map the requested PV level onto DynamicDOCREnv's curriculum_stage,
-        # matching the convention run_core_training.py's curriculum runs use
-        # (env.curriculum_stage = int(pv * 5): 0.0->0, 0.2->1, 0.4->2, 0.6->3,
-        # 0.8->4, 1.0->5) — env.pv_levels[curriculum_stage] then sets
-        # env.current_pv_level for the whole episode. Previously this
-        # constructor call never set curriculum_stage, so every MARL method
-        # trained/evaluated at the env default (0% PV) regardless of
-        # cfg.pv_level.
-        curriculum_stage = int(round(cfg.pv_level * 5))
-        env = DynamicDOCREnv(
-            net, action_scale=0.05, max_steps=300, seed=seed,
-            use_pandapower=cfg.use_pandapower, fault_type=cfg.fault_type,
-            curriculum_stage=curriculum_stage,
-        )
-
-        use_comm = "Comm" in method
-        
-        trainer = MAPPOMARLTrainer(
-            env, use_comm=use_comm,
-            hidden_actor=64, hidden_critic=128,
-            lr_actor=0.02, lr_critic=0.01,
-            clip_eps=0.2, gamma=0.99, lam=0.95,
-            rollout_len=64, n_epochs=4, seed=seed, curriculum=False,
-        )
-        
-        t0 = time.perf_counter()
-        result = trainer.train(
-            total_steps=cfg.marl_steps, verbose=verbose,
-            log_every=max(cfg.marl_steps // 10, 1)
-        )
-        elapsed = time.perf_counter() - t0
-        
-        topology_state = {
-            "fault_currents": compute_fault_currents_dynamic(
-                net, pv_penetration=cfg.pv_level, fault_type=cfg.fault_type
-            )
-        }
-        result["constraints"] = check_constraints(
-            net, result["TMS"], result["PS"], fault_type=cfg.fault_type,
-            topology_state=topology_state,
-        )
-        result["elapsed"] = elapsed
-        result["method"] = method
-        result["fault_type"] = cfg.fault_type
-        result["pv_level"] = cfg.pv_level
-        
-        return result
-    
     def print_comparison_table(self):
         """Print formatted comparison table."""
         cfg = self.config
@@ -503,6 +419,233 @@ class BenchmarkSuite:
         
         np.savez_compressed(out_path, **save_dict)
         print(f"  ✓ Results saved: {out_path}")
+
+
+def _run_method_impl(method: str, net: NetworkData, seed: int,
+                     cfg: BenchmarkConfig, verbose: bool = False) -> Dict:
+    """Run a single method and return standardized result dict."""
+
+    # PV-scale the network before it reaches any objective/constraint
+    # evaluation. `topology_state["fault_currents"]` carries the
+    # PV-penetration-dependent fault currents (see
+    # network.relay_physics.compute_fault_currents_dynamic) that
+    # objective_function/check_constraints use when present, falling
+    # back to the network's static (0% PV) fault currents otherwise.
+    # Without this, cfg.pv_level was accepted by every run_* call only
+    # for logging/result-dict bookkeeping and never actually changed
+    # what was optimized or measured.
+    topology_state = {
+        "fault_currents": compute_fault_currents_dynamic(
+            net, pv_penetration=cfg.pv_level, fault_type=cfg.fault_type
+        )
+    }
+
+    if method == "GA-SQP":
+        from baselines.ga_sqp import run_ga_sqp
+        result = run_ga_sqp(
+            net, ga_pop=cfg.ga_pop, ga_gen=cfg.ga_gen,
+            seed=seed, verbose=verbose,
+            fault_type=cfg.fault_type, pv_level=cfg.pv_level,
+            topology_state=topology_state,
+        )
+        result["method"] = "GA-SQP"
+        return result
+
+    elif method == "HWOA":
+        return run_hwoa(
+            net, n_whales=cfg.pop_size, max_iter=cfg.max_iter,
+            seed=seed, verbose=verbose,
+            fault_type=cfg.fault_type, pv_level=cfg.pv_level,
+            use_sqp=cfg.use_sqp, topology_state=topology_state,
+        )
+
+    elif method == "HHO":
+        return run_hho(
+            net, n_hawks=cfg.pop_size, max_iter=cfg.max_iter,
+            seed=seed, verbose=verbose,
+            fault_type=cfg.fault_type, pv_level=cfg.pv_level,
+            use_sqp=cfg.use_sqp, topology_state=topology_state,
+        )
+
+    elif method == "JAYA":
+        return run_jaya(
+            net, n_pop=cfg.pop_size, max_iter=cfg.max_iter,
+            seed=seed, verbose=verbose,
+            fault_type=cfg.fault_type, pv_level=cfg.pv_level,
+            use_sqp=cfg.use_sqp, topology_state=topology_state,
+        )
+
+    elif method == "EEO":
+        return run_eeo(
+            net, n_particles=cfg.pop_size, max_iter=cfg.max_iter,
+            seed=seed, verbose=verbose,
+            fault_type=cfg.fault_type, pv_level=cfg.pv_level,
+            use_sqp=cfg.use_sqp, topology_state=topology_state,
+        )
+
+    elif method in ("IPPO", "MAPPO", "MAPPO-Comm", "MAPPO-Safe", "MAPPO-Safe-EWC", "Single-PPO"):
+        # MARL methods - import dynamically to avoid dependency issues
+        return _run_marl_method_impl(method, net, seed, cfg, verbose)
+
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+
+def _run_marl_method_impl(method: str, net: NetworkData, seed: int,
+                          cfg: BenchmarkConfig, verbose: bool = False) -> Dict:
+    """Run MARL methods (requires marl modules)."""
+    from marl.marl_env import DynamicDOCREnv
+    from marl.marl_agents import MAPPOMARLTrainer
+
+    # Map the requested PV level onto DynamicDOCREnv's curriculum_stage,
+    # matching the convention run_core_training.py's curriculum runs use
+    # (env.curriculum_stage = int(pv * 5): 0.0->0, 0.2->1, 0.4->2, 0.6->3,
+    # 0.8->4, 1.0->5) — env.pv_levels[curriculum_stage] then sets
+    # env.current_pv_level for the whole episode. Previously this
+    # constructor call never set curriculum_stage, so every MARL method
+    # trained/evaluated at the env default (0% PV) regardless of
+    # cfg.pv_level.
+    curriculum_stage = int(round(cfg.pv_level * 5))
+    env = DynamicDOCREnv(
+        net, action_scale=0.05, max_steps=300, seed=seed,
+        use_pandapower=cfg.use_pandapower, fault_type=cfg.fault_type,
+        curriculum_stage=curriculum_stage,
+    )
+
+    use_comm = "Comm" in method
+    # "Safe"/"EWC" in the method name previously did nothing here --
+    # "MAPPO-Safe"/"MAPPO-Safe-EWC" trained through the exact same
+    # unconstrained MAPPOMARLTrainer as plain "MAPPO", with no Safe RL
+    # wrapper or EWC regularizer ever applied, and (combined with
+    # run_all()'s previously-shared per-run seed) produced literally
+    # byte-identical results across all three. Same bug class as
+    # run_core_training.py's Core C had (see its _run_baseline_single),
+    # fixed here the same way: Safe RL is a real env wrapper (action
+    # projection + Augmented Lagrangian) and must wrap env BEFORE the
+    # trainer is constructed.
+    use_safe = method in ("MAPPO-Safe", "MAPPO-Safe-EWC")
+    use_ewc = method == "MAPPO-Safe-EWC"
+
+    train_env = env
+    if use_safe:
+        from marl.safe_rl import create_safe_rl_env, SafeRLConfig
+        train_env = create_safe_rl_env(env, SafeRLConfig(
+            project_actions=True, enforce_cti=True,
+            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+            use_pid=True, adaptive_rho=True,
+        ))
+
+    trainer = MAPPOMARLTrainer(
+        train_env, use_comm=use_comm,
+        hidden_actor=64, hidden_critic=128,
+        lr_actor=0.02, lr_critic=0.01,
+        clip_eps=0.2, gamma=0.99, lam=0.95,
+        rollout_len=64, n_epochs=4, seed=seed, curriculum=False,
+    )
+
+    t0 = time.perf_counter()
+    result = trainer.train(
+        total_steps=cfg.marl_steps, verbose=verbose,
+        log_every=max(cfg.marl_steps // 10, 1)
+    )
+    elapsed = time.perf_counter() - t0
+
+    if use_ewc:
+        # Register this (single) task with EWC so the apparatus
+        # genuinely runs (n_tasks_learned reflects reality) rather
+        # than staying entirely inert -- same pattern and rationale
+        # as run_core_training.py's Core A/C: a lone task has nothing
+        # to protect against forgetting (expected, not a bug), but
+        # the real finite-difference Fisher estimate is computed
+        # rather than a placeholder.
+        from marl.continual_trainer import create_ewc_trainer, EWCConfig
+        ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
+        fisher_rng = np.random.default_rng(seed + 8000)
+        cur_params = trainer.actor.get_all_params()
+        obs_f = train_env.reset(seed=seed + 9000)
+        s_obs, s_act = [], []
+        done_f, sf = False, 0
+        while not done_f and sf < 30:
+            acts = np.zeros((env.n_agents, env.ACT_DIM))
+            enhanced_f, _, _ = trainer.comm_graph.forward(obs_f, fisher_rng) if trainer.comm_graph is not None else (obs_f, None, None)
+            for i in range(env.n_agents):
+                a, _ = trainer.actor.sample(enhanced_f[i], fisher_rng)
+                acts[i] = a
+                s_obs.append(enhanced_f[i].copy())
+                s_act.append(a.copy())
+            obs_f, _, done_f, _ = train_env.step(acts); sf += 1
+        n_p = len(cur_params)
+        fisher = np.zeros(n_p)
+        if s_obs:
+            idx = fisher_rng.choice(len(s_obs), size=min(30, len(s_obs)), replace=False)
+            h = 1e-3
+            for p_idx in fisher_rng.choice(n_p, size=min(n_p, 50), replace=False):
+                bl = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                b2 = cur_params.copy(); b2[p_idx] += h
+                trainer.actor.set_all_params(b2)
+                ul = np.mean([trainer.actor.log_prob(s_obs[j], s_act[j]) for j in idx])
+                fisher[p_idx] = ((ul - bl) / h) ** 2
+            trainer.actor.set_all_params(cur_params)
+        ewc_trainer.ewc_regularizer.register_task(method, cur_params)
+        ewc_trainer.ewc_regularizer.update_fisher(method, fisher)
+        ewc_trainer.ewc_regularizer.finalize()
+        result["ewc_stats"] = ewc_trainer.get_adaptation_stats()
+
+    if use_safe:
+        result["safe_rl_stats"] = train_env.get_safe_rl_stats()
+
+    topology_state = {
+        "fault_currents": compute_fault_currents_dynamic(
+            net, pv_penetration=cfg.pv_level, fault_type=cfg.fault_type
+        )
+    }
+    result["constraints"] = check_constraints(
+        net, result["TMS"], result["PS"], fault_type=cfg.fault_type,
+        topology_state=topology_state,
+    )
+    result["elapsed"] = elapsed
+    result["method"] = method
+    result["fault_type"] = cfg.fault_type
+    result["pv_level"] = cfg.pv_level
+
+    return result
+
+
+def _run_pool(jobs, worker_fn, n_workers):
+    """Run `worker_fn` over `jobs` either sequentially or via a Pool,
+    yielding (job, result) pairs as they complete. Sequential path calls
+    worker_fn directly (no process overhead) when n_workers <= 1. Same
+    convention as run_core_training.py's _run_pool."""
+    if n_workers > 1:
+        with mp.Pool(n_workers, initializer=_benchmark_pool_worker_init) as pool:
+            for job, result in pool.imap_unordered(worker_fn, jobs):
+                yield job, result
+    else:
+        for job in jobs:
+            yield worker_fn(job)
+
+
+def _benchmark_pool_worker_init():
+    import threadpoolctl
+    threadpoolctl.threadpool_limits(1)
+
+
+def _benchmark_job(args):
+    """Top-level, picklable worker for BenchmarkSuite.run_all()'s Pool.
+    Rebuilds `net` from the system name inside the worker rather than
+    pickling a NetworkData across the process boundary -- same pattern
+    run_core_training.py's job functions use (e.g. _core_C_job passing
+    `system` and calling load_network(system) inside the worker)."""
+    sys_key, run_idx, method, seed, cfg = args
+    net = NETWORKS[sys_key]()
+    try:
+        result = _run_method_impl(method, net, seed, cfg, verbose=False)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        result = {"error": str(e)}
+    return (sys_key, run_idx, method), result
+
 
 
 def quick_benchmark(
