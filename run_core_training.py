@@ -634,6 +634,13 @@ def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None,
         # "MAPPO-Safe-EWC". This marker forces a genuine re-run now that
         # both are wired for real (env-wrapped Safe RL + registered EWC task).
         "real_safety_ewc": True,
+        # Bumped: the eval loop now also captures real attention snapshots
+        # (Fig 38, previously always empty — see history["attention_snapshots"]
+        # in _run_core_A_experimental) and real raw-vs-projected action
+        # samples (Fig 36, previously not measured at all anywhere in the
+        # pipeline). A stale cache entry from before this change would
+        # silently lack both.
+        "real_fig36_fig38_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -732,6 +739,33 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
     history = trainer.train(total_steps=total_steps, verbose=False)
     logger.info(f"  [Core A] Training complete.")
 
+    # Populate real per-step attention snapshots (Figs 8, 38) captured
+    # during training itself (marl_agents.py's _collect_rollout, every
+    # attention_checkpoint_interval=500 steps) -- previously discarded here;
+    # the eval loop below never had real attention to record in its place
+    # (see the `attn = None` note there).
+    # Real bug found running this on a fresh pod: at the checkpoint
+    # interval (500 steps) and this run's total_steps (n_episodes*300),
+    # training captures ~len(total_steps/500) snapshots -- e.g. 300 for
+    # n_episodes=500 -- and every single one used to get stored into
+    # attention_snapshots. fig_38's gridspec(3, len(snapshots)) then tried
+    # to build a 3x300 subplot grid in one figure, which crashed the
+    # whole process (no Python traceback -- a low-level rendering
+    # crash/hang, not a catchable exception). Keep the full entropy
+    # curve (a normal line plot, any length is fine) but only keep a
+    # handful of representative attention MATRICES for the per-panel
+    # heatmaps, matching the synthetic fallback's own ~5-snapshot shape.
+    max_steps_local = getattr(env, 'max_steps', 300)
+    all_snaps = history.get("attention_snapshots", [])
+    for snap in all_snaps:
+        logger_obj.attention_entropies.append(snap["entropy"])
+    max_snapshot_panels = 5
+    snap_indices = np.linspace(0, len(all_snaps) - 1, min(max_snapshot_panels, len(all_snaps)), dtype=int) if all_snaps else []
+    for idx in snap_indices:
+        snap = all_snaps[idx]
+        pseudo_ep = snap["step"] // max_steps_local
+        logger_obj.attention_snapshots[pseudo_ep] = snap["attn_matrix"]
+
     # Register this (single) task with EWC. A lone task has nothing to
     # protect against forgetting — that's expected, not a bug — but the
     # apparatus should genuinely run rather than stay entirely inert:
@@ -773,6 +807,16 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
 
     act_fn = _make_act_fn(trainer)
 
+    # Fig 36: real raw-vs-projected action samples, from the same
+    # ActionProjector safe_env.step() already applies internally to
+    # whatever actions this eval loop passes in below -- capture the
+    # (TMS, PS) pair each raw action proposes vs. what the projector
+    # actually allows, rather than an illustrative formula. Capped so a
+    # long eval (up to 200 episodes x max_steps) doesn't collect an
+    # unbounded number of points.
+    action_projection_samples = {"raw": [], "projected": []}
+    max_projection_samples = 200
+
     # Post-training evaluation rollout (for logging/convergence curves) —
     # uses safe_env (not the raw env) so action projection and the
     # Lagrangian CTI penalty are actually exercised during evaluation,
@@ -789,6 +833,21 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
                 for i in range(env.n_agents):
                     a, _ = act_fn(obs, i, rng)
                     actions[i] = a
+
+                if len(action_projection_samples["raw"]) < max_projection_samples:
+                    TMS_cur, PS_cur = safe_env.get_state()
+                    proj_dt, proj_dp = safe_env.projector.project(
+                        TMS_cur, PS_cur, actions[:, 0], actions[:, 1],
+                        action_scale=safe_env.action_scale)
+                    scale = safe_env.action_scale
+                    raw_tms = TMS_cur + actions[:, 0] * scale * safe_env.projector.tms_range
+                    raw_ps = PS_cur + actions[:, 1] * scale * safe_env.projector.ps_range
+                    proj_tms = TMS_cur + proj_dt * scale * safe_env.projector.tms_range
+                    proj_ps = PS_cur + proj_dp * scale * safe_env.projector.ps_range
+                    for i in range(env.n_agents):
+                        action_projection_samples["raw"].append((float(raw_tms[i]), float(raw_ps[i])))
+                        action_projection_samples["projected"].append((float(proj_tms[i]), float(proj_ps[i])))
+
                 obs, reward, done, info = safe_env.step(actions)
                 ep_reward += float(np.mean(reward))
                 if info.get("safe_rl", {}).get("projected_actions"):
@@ -798,9 +857,11 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
             TMS, PS = safe_env.get_state()
             c = check_constraints(env.net, TMS, PS)
             lag_norm = float(np.mean(safe_env.get_safe_rl_stats().get("lambda_mean", 0.0)))
-            attn = getattr(getattr(trainer, 'actor', None), 'attention_weights', None)
-            if attn is not None:
-                attn = attn.copy()
+            # Real attention snapshots (Figs 8, 38) are populated above from
+            # training itself -- act_fn's post-training eval rollout here
+            # doesn't expose per-step attention, so there's nothing real to
+            # pass log_episode for this eval episode.
+            attn = None
 
             logger_obj.log_episode(
                 ep=ep, global_return=ep_reward,
@@ -813,7 +874,9 @@ def _run_core_A_experimental(n_episodes: int, seed: int, n_agents: int = None, n
                 logger.info(f"  Ep {ep:5d}: return={ep_reward:8.3f} viol={c['cti_violations']:3d}")
             pbar.update(1)
 
-    return logger_obj.to_dict()
+    result = logger_obj.to_dict()
+    result["action_projection_samples"] = action_projection_samples
+    return result
 
 
 def _generate_synthetic_core_A(n_episodes: int, seed: int, n_agents: int = None, n_pairs: int = None) -> Dict:
@@ -890,7 +953,21 @@ def _aggregate_runs(runs_data: List[Dict]) -> Dict:
         entropies = np.stack(entropy_arrays)
         aggregated["attention_entropy_mean"] = entropies.mean(axis=0)
         aggregated["attention_entropy_std"] = entropies.std(axis=0)
-        
+
+    # Fig 36: real raw-vs-projected action samples (see
+    # _run_core_A_experimental) — concatenated across runs rather than
+    # just the "_mean"/"_std"/"_all" reduction the other keys get, since
+    # this is already a flat list of per-step samples, not a per-episode
+    # curve.
+    raw_samples, proj_samples = [], []
+    for r in runs_data:
+        aps = r.get("action_projection_samples")
+        if aps:
+            raw_samples.extend(aps.get("raw", []))
+            proj_samples.extend(aps.get("projected", []))
+    if raw_samples:
+        aggregated["action_projection_samples"] = {"raw": raw_samples, "projected": proj_samples}
+
     return aggregated
 
 
@@ -939,6 +1016,13 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
         # policy via objective_function/check_constraints (see
         # _run_curriculum_single's "pv_evaluation").
         "real_pv_eval": True,
+        # Bumped: with_ewc runs now also return the real per-parameter
+        # Fisher diagonal already computed for EWC's own penalty term
+        # ("fisher" key) -- a stale cache entry from before this fix has
+        # no "fisher" key, so fig_29_ewc_continual's left panel falls
+        # back to its illustrative placeholder even though real data now
+        # exists.
+        "real_fisher_capture_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1187,6 +1271,12 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
         "use_ewc": use_ewc,
         "final_checkpoint": "saved",
         "pv_evaluation": pv_evaluation,
+        # Real per-parameter Fisher Information diagonal (Fig 29a) — already
+        # computed above for EWC's own penalty term (update_fisher calls),
+        # previously discarded once EWC consumed it. Only ~50 randomly
+        # sampled indices are nonzero (see the finite-difference loop
+        # above); None when use_ewc=False since it's never computed there.
+        "fisher": prev_fisher if use_ewc else None,
     }
 
 
@@ -1267,6 +1357,12 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
         # regardless of what config/CLI --system requested. Now genuinely
         # threaded through to _run_baseline_single/_evaluate_traditional.
         "real_multi_system": True,
+        # Bumped: _run_baseline_single now also measures real CTI
+        # satisfaction rate, convergence episode, sample efficiency, and
+        # robustness-under-noise per method (Figs 33/55/56), cached
+        # separately under core_C_metrics_{system}. A stale cache entry
+        # from before this change has no corresponding metrics entry.
+        "real_fig33_55_56_metrics_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1289,14 +1385,17 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
     # order — required for reproducible aggregation regardless of which
     # worker finishes first.
     results = {method: [None] * n_runs for method in config["methods"]}
+    metrics_by_method = {method: [] for method in config["methods"]}
     jobs = [
         (method, run_idx, seed + run_idx + _method_seed_offset(method), n_episodes, system)
         for method in config["methods"] for run_idx in range(n_runs)
     ]
 
     with ProgressTracker(total=total_steps, desc="[Core C] Baseline runs", unit="run") as pbar:
-        for (method, run_idx), returns in _run_pool(jobs, _core_C_job, n_workers):
+        for (method, run_idx), (returns, run_metrics) in _run_pool(jobs, _core_C_job, n_workers):
             results[method][run_idx] = returns
+            if run_metrics is not None:
+                metrics_by_method[method].append(run_metrics)
             pbar.update(1)
             pbar.set_postfix(method=method[:10], run=run_idx + 1)
             if progress:
@@ -1304,7 +1403,37 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
 
     for method in results:
         results[method] = np.array(results[method])
-        
+
+    # Fig 33/55/56: real per-method metrics (CTI satisfaction rate,
+    # convergence episode, sample efficiency, robustness, relay
+    # speed/selectivity) — averaged across runs when there's more than
+    # one; a method left out here (all-synthetic-fallback runs) means
+    # these figures fall back to their own honest disclosure.
+    real_metrics = {}
+    metric_keys = ["cti_satisfaction_rate", "convergence_ep", "sample_efficiency",
+                   "robustness", "top_pri_mean", "delta_cti_mean", "final_of"]
+    for method, runs_metrics in metrics_by_method.items():
+        if not runs_metrics:
+            continue
+        real_metrics[method] = {
+            key: float(np.mean([m[key] for m in runs_metrics if m.get(key) is not None]))
+                 if any(m.get(key) is not None for m in runs_metrics) else None
+            for key in metric_keys
+        }
+        # Per-run values (not just the cross-run mean above) -- needed by
+        # anything that wants >=2 independent samples per method for a
+        # real significance test (e.g. the Core-A-K -> phase5_results.json
+        # bridge's Mann-Whitney/Cliff's-delta comparisons), which the
+        # averaged figures above can't provide on their own.
+        real_metrics[method]["per_run"] = runs_metrics
+    if real_metrics:
+        # Stored under a separate cache entry (not merged into `results`)
+        # so every existing consumer that iterates `results.keys()`/
+        # `.items()` expecting only method names (Figs 11, 12, 31, 32)
+        # keeps working unchanged — Figs 33/55/56 look this entry up
+        # explicitly instead.
+        cache.put({**config, "name": f"core_C_metrics_{system}"}, real_metrics)
+
     cache.put(config, results)
     logger.info("[Core C] Complete.")
     
@@ -1394,7 +1523,11 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int, system: str = 
     act_fn = _make_act_fn(trainer)
     rng = np.random.default_rng(seed + 9999)
 
+    from network.relay_physics import check_constraints
+
     returns = []
+    cti_satisfied_flags = []
+    final_TMS, final_PS = None, None
     with ProgressTracker(total=min(n_episodes, 200), desc=f"[Core C] {method} eval", unit="ep", enable=False) as pbar:
         for ep in range(min(n_episodes, 200)):
             obs = train_env.reset(seed=seed + ep)
@@ -1408,14 +1541,88 @@ def _run_baseline_single(method: str, seed: int, n_episodes: int, system: str = 
                 obs, reward, done, _ = train_env.step(actions)
                 ep_return += float(np.mean(reward))
             returns.append(ep_return)
+            # Fig 33/55: real per-episode CTI satisfaction (previously
+            # illustrative jitter/a footnoted random column — core_C never
+            # tracked this even though check_constraints was already the
+            # standard, cheap way every other Core measures it).
+            final_TMS, final_PS = env.get_state()
+            cti_satisfied_flags.append(check_constraints(net, final_TMS, final_PS, fault_type=FAULT_TYPE)["cti_satisfied"])
             pbar.update(1)
 
-    return np.array(returns)
+    returns_arr = np.array(returns)
+
+    # Fig 33: real "Robustness" axis — relative performance under
+    # observation noise, the same kind of corruption Core G's sensor
+    # sweep already uses for Fig 24, applied here to each Core-C-trained
+    # policy rather than only the bridge's separate base policy.
+    noisy_rng = np.random.default_rng(seed + 20000)
+    noisy_returns = []
+    for ep in range(min(10, n_episodes)):
+        obs = train_env.reset(seed=seed + 30000 + ep)
+        done = False
+        ep_return = 0.0
+        while not done:
+            noisy_obs = obs + noisy_rng.normal(0, 0.1, size=obs.shape)
+            actions = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                a, _ = act_fn(noisy_obs, i, noisy_rng)
+                actions[i] = a
+            obs, reward, done, _ = train_env.step(actions)
+            ep_return += float(np.mean(reward))
+        noisy_returns.append(ep_return)
+    clean_mean = float(np.mean(returns_arr[-100:] if len(returns_arr) > 100 else returns_arr))
+    noisy_mean = float(np.mean(noisy_returns))
+    robustness = float(noisy_mean / clean_mean) if clean_mean else None
+
+    # Fig 33: real "Convergence Speed" / "Sample Efficiency" — the first
+    # episode returns settle within 10% of their final plateau (mean of
+    # the last 20% of episodes), and how much of that final performance
+    # is already reached using only the first half of the episode budget.
+    n_eps = len(returns_arr)
+    plateau = float(np.mean(returns_arr[-max(1, n_eps // 5):]))
+    tolerance = 0.1 * abs(plateau) if plateau else 1e-6
+    converged = np.where(np.abs(returns_arr - plateau) <= tolerance)[0]
+    convergence_ep = int(converged[0]) if len(converged) else n_eps
+    first_half_mean = float(np.mean(returns_arr[:max(1, n_eps // 2)]))
+    sample_efficiency = float(first_half_mean / plateau) if plateau else None
+
+    metrics = {
+        "cti_satisfaction_rate": float(np.mean(cti_satisfied_flags)) if cti_satisfied_flags else None,
+        "convergence_ep": convergence_ep,
+        "sample_efficiency": sample_efficiency,
+        "robustness": robustness,
+        # Fig 56: real per-relay speed/selectivity at the final trained
+        # (TMS, PS) — top_pri_mean is the mean primary-relay operating
+        # time ("speed": lower is faster), delta_cti is each pair's real
+        # coordination margin over the CTI requirement ("selectivity":
+        # higher is more selective).
+        "top_pri_mean": None,
+        "delta_cti_mean": None,
+        # Fig 25: the objective_function value at the same final (TMS, PS)
+        # state, on the same 0-1 scale/sign convention _eval_zero_shot_
+        # transfer's transfer_of/base_of use — lets Core H's cold-start
+        # baseline (a from-scratch _run_baseline_single training run on
+        # the target system) be compared like-for-like against zero-shot
+        # transfer without a separate training path.
+        "final_of": None,
+    }
+    if final_TMS is not None:
+        final_constraints = check_constraints(net, final_TMS, final_PS, fault_type=FAULT_TYPE)
+        metrics["top_pri_mean"] = final_constraints["top_pri_mean"]
+        metrics["delta_cti_mean"] = float(np.mean(final_constraints["delta_cti"]))
+        from network.relay_physics import objective_function
+        of_val, _, _ = objective_function(net, final_TMS, final_PS, fault_type=FAULT_TYPE)
+        metrics["final_of"] = float(of_val)
+
+    return returns_arr, metrics
 
 
 def _evaluate_traditional(env, net, n_episodes: int, seed: int):
+    from network.relay_physics import check_constraints
+
     rng = np.random.default_rng(seed)
     returns = []
+    cti_satisfied_flags = []
     with ProgressTracker(total=n_episodes, desc="[Core C] Traditional ep", unit="ep", enable=False) as pbar:
         for ep in range(n_episodes):
             env.reset(seed=seed + ep)
@@ -1425,8 +1632,27 @@ def _evaluate_traditional(env, net, n_episodes: int, seed: int):
                 obs, reward, done, _ = env.step(np.zeros((env.n_agents, env.ACT_DIM)))
                 ep_return += float(np.mean(reward))
             returns.append(ep_return)
+            TMS, PS = env.get_state()
+            cti_satisfied_flags.append(check_constraints(net, TMS, PS, fault_type=FAULT_TYPE)["cti_satisfied"])
             pbar.update(1)
-    return np.array(returns)
+
+    returns_arr = np.array(returns)
+    final_constraints = check_constraints(net, TMS, PS, fault_type=FAULT_TYPE)
+    metrics = {
+        "cti_satisfaction_rate": float(np.mean(cti_satisfied_flags)) if cti_satisfied_flags else None,
+        # No learning/adaptation happens for "Traditional" (zero action
+        # every step, by construction) -- there's no convergence episode
+        # or first-half-vs-final training-curve ratio to measure, and its
+        # fixed, observation-independent policy is unaffected by
+        # observation noise by construction (not a real robustness test).
+        "convergence_ep": 0,
+        "sample_efficiency": None,
+        "robustness": 1.0,
+        "top_pri_mean": final_constraints["top_pri_mean"],
+        "delta_cti_mean": float(np.mean(final_constraints["delta_cti"])),
+        "final_of": None,
+    }
+    return returns_arr, metrics
 
 
 def _generate_synthetic_baseline(method: str, seed: int, n_episodes: int, system: str = "8bus"):
@@ -1456,8 +1682,11 @@ def _generate_synthetic_baseline(method: str, seed: int, n_episodes: int, system
             val = base + amplitude * (1 - np.exp(-3 * progress))
             returns.append(val + rng.normal(0, 0.5))
             pbar.update(1)
-            
-    return np.array(returns)
+
+    # None metrics (rather than fabricated ones) so downstream consumers
+    # (Fig 33/55/56) can tell a synthetic-fallback run from a real one
+    # that happens to be missing a value.
+    return np.array(returns), None
 
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN D — Ablation Study
@@ -2086,20 +2315,27 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # branch as "random" (only "colluding", misspelled relative to
         # what this sweep passes, and "reverse" were ever recognized).
         "real_sweep_v2": True,
+        # Bumped: added Fig 14's N-1 contingency sweep below, previously
+        # never called by any Core despite _eval_n1_contingency already
+        # being fully implemented (Fig 14 fell back to a missing standalone
+        # .npz). Without a cache-key bump, a pre-existing cache entry for
+        # this identical config would be returned as-is, silently missing
+        # the new "n1_contingency" key.
+        "real_sweep_v3_n1": True,
     }
     cached = cache.get(config)
     if cached is not None:
         logger.info("[Core G] Using cached results")
         return cached
-        
+
     run_name = "Core G"
     if progress:
-        progress.start_run(run_name, total_steps=5,
-                          desc="Robustness evaluation — 5 stress types (REAL)")
-        
+        progress.start_run(run_name, total_steps=6,
+                          desc="Robustness evaluation — 6 stress types (REAL)")
+
     logger.info("=" * 70)
     logger.info("CORE RUN G: Robustness Evaluation (REAL via training_pipeline)")
-    logger.info("  Feeds: Figs 13, 20, 22, 24, 54")
+    logger.info("  Feeds: Figs 13, 14, 20, 22, 24, 54")
     logger.info("=" * 70)
     
     results = {}
@@ -2186,6 +2422,25 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
                 r = bridge.run_evaluation(54, attack="PGD", epsilon=eps)
                 pgd_sweep[eps] = _rel_perf(r.raw_data["of"])
             results["adversarial"] = {"fgsm": fgsm_sweep, "pgd": pgd_sweep}
+
+            # Fig 14: N-1 Contingency — one real evaluation per line in the
+            # network, reusing _eval_n1_contingency (genuine
+            # NetworkData.apply_n1_outage + post-outage policy rollout,
+            # experiments/training_pipeline.py) which was already fully
+            # implemented and bridge-wired but never called by any Core.
+            logger.info("[Core G] Fig 14: N-1 Contingency (REAL)")
+            from network.network_data import get_8bus
+            n_lines = get_8bus().n_lines
+            n1_sweep = {}
+            for line_idx in range(n_lines):
+                r = bridge.run_evaluation(14, line_outage=line_idx, recovery=True)
+                recovery_of = r.raw_data.get("recovery_of")
+                n1_sweep[line_idx] = {
+                    "performance": _rel_perf(r.raw_data["n1_of"]),
+                    "cti_ok": bool(r.raw_data["n1_cti_ok"]),
+                    "recovery_performance": _rel_perf(recovery_of) if recovery_of is not None else None,
+                }
+            results["n1_contingency"] = n1_sweep
 
             is_synthetic = False
         except Exception as e:
@@ -2279,6 +2534,11 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # 0-60% PV) — retargeted to 14bus so Fig 25 evaluates transfer to
         # a system this codebase actually trains/evaluates elsewhere.
         "real_14bus_transfer": True,
+        # Bumped: added a genuine from-scratch cold-start baseline
+        # (_run_baseline_single on 14bus) below — a stale cache entry
+        # from before this change would silently lack
+        # results["zero_shot"]["cold_start"].
+        "real_cold_start_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2323,7 +2583,24 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
                 **fig25.raw_data,
                 "base_of": bridge._get_base_result().best_of,
             }
-            
+
+            # Fig 25: Cold-Start Baseline — a genuine from-scratch training
+            # run on the target system (14bus), reusing Core C's own
+            # baseline-training entry point (_run_baseline_single, same
+            # "MAPPO-Safe-EWC" method used everywhere else). This is the
+            # one part of this figure that needs real training, not just
+            # a new eval: previously nothing anywhere trained a target-
+            # system policy from scratch, so the "cold start" comparison
+            # point never had real data behind it.
+            logger.info("[Core H] Fig 25: Cold-Start Baseline on 14-Bus (REAL, from-scratch training)")
+            cold_n_episodes = EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT
+            _, cold_metrics = _run_baseline_single("MAPPO-Safe-EWC", seed + 40000, cold_n_episodes, system="14bus")
+            if cold_metrics and cold_metrics.get("final_of") is not None:
+                results["zero_shot"]["cold_start"] = {
+                    "performance": float(results["zero_shot"]["base_of"] / max(cold_metrics["final_of"], 1e-9)),
+                    "convergence_ep": cold_metrics["convergence_ep"],
+                }
+
             is_synthetic = False
         except Exception as e:
             logger.error(f"Real evaluation failed: {e}. Using synthetic fallback.")
@@ -2380,6 +2657,12 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # unseeded np.random.randn() call ("simulate inference") rather
         # than the trained actor — see run_core_I.
         "real_inference_timing": True,
+        # Bumped: "compression" now holds one real per-method entry
+        # (original/int8/pruning) instead of a single fixed
+        # quantize_bits=8/prune_ratio=0.3 result — a stale cache entry
+        # would silently keep the old single-config shape Fig 53 no
+        # longer expects.
+        "real_compression_per_method_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2406,6 +2689,7 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             logger.info("\n[Core I] Fig 18: Inference Latency (REAL)")
             # Latency is measured during base policy inference
             base_result = bridge._get_base_result()
+            base_of = base_result.best_of
             import time
             from network.network_data import get_8bus
             from marl.marl_env import DynamicDOCREnv
@@ -2433,10 +2717,30 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
                 "p99_ms": np.percentile(latencies, 99),
             }
             
-            # Fig 53: Model Compression
+            # Fig 53: Model Compression — one real evaluation per method.
+            # int8 quantization and magnitude pruning are already fully
+            # implemented in _eval_compression (genuinely quantizes/prunes
+            # the actor's weights, then re-rolls a real episode) — this
+            # previously called it exactly once instead of once per
+            # method, so there was no per-method comparison to plot.
+            # "distillation" is intentionally not included: no student-
+            # network training exists anywhere in this codebase, and
+            # building one is new ML work, not wiring existing logic.
             logger.info("[Core I] Fig 53: Model Compression (REAL)")
-            fig53 = bridge.run_evaluation(53, quantize_bits=8, prune_ratio=0.3)
-            results["compression"] = fig53.raw_data
+            compression_configs = {
+                "original": {"quantize_bits": None, "prune_ratio": 0.0},
+                "int8": {"quantize_bits": 8, "prune_ratio": 0.0},
+                "pruning": {"quantize_bits": None, "prune_ratio": 0.3},
+            }
+            compression = {}
+            for method_name, kw in compression_configs.items():
+                r = bridge.run_evaluation(53, **kw)
+                comp_of = r.raw_data["of"]
+                compression[method_name] = {
+                    "size_mb": float(r.raw_data["size_kb"]) / 1024.0,
+                    "performance": float(base_of / comp_of) if comp_of else None,
+                }
+            results["compression"] = compression
             
             is_synthetic = False
         except Exception as e:
@@ -2498,6 +2802,16 @@ def run_core_J(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # Bumped: coordination-diagram jitter previously drew from
         # unseeded global np.random.normal.
         "seeded_jitter": True,
+        # Bumped: (1) Fig 44's fault-contribution short-circuit study now
+        # actually completes -- network/pandapower_network.py's ext_grid
+        # was missing s_sc_max_mva/rx_max and its PV sgens were missing
+        # sn_mva/generator_type/k, both required by pandapower's
+        # sc.calc_sc(); a stale cache entry from before this fix has
+        # {"error": ...} instead of real fault-contribution data. (2)
+        # _eval_sympathetic_tripping (Fig 47b) now sweeps all 3 real
+        # fault types instead of just config.fault_type -- a stale entry
+        # has no "sympathetic_by_fault_type" key.
+        "real_fig44_sc_and_fig47_fault_sweep_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2604,6 +2918,13 @@ def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         "fault_type": FAULT_TYPE,
         "real_eval": BRIDGE_AVAILABLE,
         "real_safety_ewc": True,
+        # Bumped: each season's entry now also carries a real "performance"
+        # (base_of/seasonal_of) and "pv_variability" (real intra-day PV
+        # std, training_pipeline.py's _eval_seasonal) -- a stale cache
+        # entry from before this fix has neither, and fig_58_seasonal
+        # would silently fall back to its hardcoded placeholder without
+        # this bump forcing a fresh run.
+        "real_performance_pv_variability_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2625,11 +2946,17 @@ def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     if BRIDGE_AVAILABLE:
         try:
             bridge = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE)
-            
+            # Same base_of reference Core G/H use for their relative-
+            # performance ratios (bridge._get_base_result() trains once
+            # and is cached on the bridge instance).
+            base_of = bridge._get_base_result().best_of
+
             for season in config["seasons"]:
                 logger.info(f"\n[Core K] Season: {season} (REAL)")
                 fig58 = bridge.run_evaluation(58, season=season)
-                results[season] = fig58.raw_data
+                seasonal_of = fig58.raw_data.get("of")
+                performance = float(base_of / seasonal_of) if seasonal_of else None
+                results[season] = {**fig58.raw_data, "performance": performance}
 
             is_synthetic = False
         except Exception as e:

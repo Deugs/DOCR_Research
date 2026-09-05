@@ -702,13 +702,13 @@ class CoreEvalBridge:
             44: lambda r: r.fault_contributions or {},
             45: lambda r: {"tms": r.daily_tms_trajectory, "ps": r.daily_ps_trajectory, "of": r.daily_of_trajectory, "irradiance": r.daily_irradiance},
             46: lambda r: r.relay_curves or {},
-            47: lambda r: {"sympathetic": r.sympathetic_trips, "traditional": r.traditional_trips},
+            47: lambda r: {"sympathetic": r.sympathetic_trips, "traditional": r.traditional_trips, "by_fault_type": r.sympathetic_by_fault_type},
             48: lambda r: {"shap": r.shap_values, "base": r.shap_base_value},
             49: lambda r: {"obs": r.tsne_observations, "actions": r.tsne_actions, "embeddings": r.tsne_embeddings},
             50: lambda r: r.critical_pairs or [],
             53: lambda r: {"of": r.compressed_of, "size_kb": r.compressed_size_kb, "drop": r.compression_accuracy_drop},
             54: lambda r: {"of": r.adversarial_of, "success": r.adversarial_success_rate, "norm": r.attack_perturbation_norm},
-            58: lambda r: {"of": r.seasonal_of, "cti_ok": r.seasonal_cti_ok},
+            58: lambda r: {"of": r.seasonal_of, "cti_ok": r.seasonal_cti_ok, "pv_variability": r.seasonal_pv_variability},
         }
         
         extractor = extractors.get(fig_num, lambda r: {})

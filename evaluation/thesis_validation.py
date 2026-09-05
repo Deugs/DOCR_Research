@@ -2,7 +2,11 @@
 evaluation/thesis_validation.py
 ─────────────────────────────────
 Phase 8: Statistical validation framework and novelty claim verification.
-Supports all IEEE test systems: 3, 8, 14, 30, 39, 57, 118 buses.
+Active thesis scope: IEEE 8/14/39-bus test systems, 0-60% PV penetration
+(see EXPERIMENT_GUIDE.md's Reproducibility Checklist). The network
+catalog (network/network_data.py) also defines 3/30/57/118-bus systems
+for other uses (e.g. Core F's separate scalability sweep), but those are
+not part of the primary claim-validation scope below.
 
 Validates the 5 novelty claims from the thesis:
 1. MAPPO with GNN communication outperforms all baselines
@@ -100,7 +104,11 @@ class ThesisValidator:
                 "cliffs_delta": (0.33, ">"),
             },
             required_methods=["GA-SQP", "Single-PPO", "IPPO", "MAPPO", "MAPPO-Comm"],
-            systems=["3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"],
+            # Active thesis scope is exactly 8/14/39-bus, 0-60% PV (see
+            # EXPERIMENT_GUIDE.md's Reproducibility Checklist) -- trimmed
+            # from the broader 3/8/14/30/39/57/118-bus list this claim
+            # previously spanned, to match.
+            systems=["8bus", "14bus", "39bus"],
         ),
         NoveltyClaim(
             id="C2",
@@ -114,7 +122,7 @@ class ThesisValidator:
                 "cti_satisfied_rate": (0.95, ">"),  # > 95%
             },
             required_methods=["MAPPO", "MAPPO-Safe"],
-            systems=["3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"],
+            systems=["8bus", "14bus", "39bus"],
         ),
         NoveltyClaim(
             id="C3",
@@ -128,7 +136,7 @@ class ThesisValidator:
                 "backward_transfer": (-0.05, ">"),  # > -5% (minimal forgetting)
             },
             required_methods=["MAPPO-Safe", "MAPPO-Safe-EWC"],
-            systems=["8bus", "30bus"],
+            systems=["8bus", "14bus"],
         ),
         NoveltyClaim(
             id="C4",
@@ -141,7 +149,7 @@ class ThesisValidator:
                 "sample_efficiency_ratio": (0.60, "<"),  # < 60% of baseline steps
             },
             required_methods=["MAPPO", "MAPPO-Safe-EWC"],
-            systems=["8bus", "30bus"],
+            systems=["8bus", "14bus"],
         ),
         NoveltyClaim(
             id="C5",
@@ -327,7 +335,7 @@ class ThesisValidator:
         # OF comparison
         if "OF" in claim.metrics:
             for method in claim.required_methods:
-                ofs = [r.get("best_of", r.get("OF", 0)) for r in by_method.get(method, [])]
+                ofs = [v for v in (r.get("best_of", r.get("OF")) for r in by_method.get(method, [])) if v is not None]
                 if ofs:
                     metrics[f"{method}_OF_mean"] = float(np.mean(ofs))
                     metrics[f"{method}_OF_std"] = float(np.std(ofs))
@@ -380,11 +388,20 @@ class ThesisValidator:
                 total_pairs = 0
                 total_viols = 0
                 for r in method_results:
+                    # A run missing "cti_violations" entirely (never
+                    # measured) previously still counted its full n_pairs
+                    # into the denominator with `.get(..., 0)` silently
+                    # adding 0 violations to the numerator -- indistinguishable
+                    # from a run that genuinely measured zero violations,
+                    # so missing data quietly inflated the apparent safety
+                    # rate. Skip runs that never actually measured this.
+                    if r.get("cti_violations") is None:
+                        continue
                     system = r.get("system")
                     n_pairs = NETWORKS[system]().n_pairs if system in NETWORKS else r.get("n_pairs")
                     if n_pairs:
                         total_pairs += n_pairs
-                        total_viols += r.get("cti_violations", 0)
+                        total_viols += r["cti_violations"]
                 if total_pairs > 0:
                     metrics[f"{method}_cti_violation_rate"] = total_viols / total_pairs
                 else:
@@ -497,15 +514,24 @@ class ThesisValidator:
                 metrics["sample_efficiency_ratio"] = metrics[curr_key] / metrics[base_key]
                 metrics["final_of"] = metrics.get(f"{curriculum_method}_final_of")
 
-        # Inference latency
+        # Inference latency. `.get(key, 0)` previously defaulted every
+        # result missing this field to a literal 0 -- for a "<" threshold
+        # criterion, "never measured" and "measured as 0ms" are
+        # indistinguishable that way, so a claim with NO real latency
+        # data at all would vacuously pass (0 < 100 is always true).
+        # Only average over entries that actually carry the field, and
+        # leave the metric entirely unset (not 0.0) when none do, so the
+        # pass_criteria check below reports it as a genuine
+        # unevaluated_criteria failure instead of a false pass.
         if "inference_latency_ms" in claim.metrics:
-            latencies = [r.get("inference_latency_ms", 0) for r in results]
+            latencies = [r["inference_latency_ms"] for r in results if r.get("inference_latency_ms") is not None]
             if latencies:
                 metrics["inference_latency_ms"] = float(np.mean(latencies))
 
-        # Bandwidth
+        # Bandwidth -- same "don't fabricate a measurement via a missing-
+        # field default" fix as inference_latency_ms above.
         if "bandwidth_kbps" in claim.metrics:
-            bws = [r.get("comm_bandwidth", 0) for r in results]
+            bws = [r["comm_bandwidth"] for r in results if r.get("comm_bandwidth") is not None]
             if bws:
                 metrics["bandwidth_kbps"] = float(np.mean(bws))
 

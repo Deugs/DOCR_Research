@@ -905,19 +905,32 @@ def fig_12_convergence_bands():
     ax.grid(True, alpha=0.3)
     
     ax = axes[1]
-    # Only mean/std per method are cached (not raw per-episode returns),
-    # so this panel always resamples a distribution around them rather
-    # than showing genuine per-episode data — true even when the curves
-    # in the left panel are real. Seeded so re-running is deterministic.
-    rng_box = np.random.default_rng(42)
+    # core_A's "global_returns_all" and core_C's per-method arrays already
+    # hold real raw (n_runs, n_episodes) returns — use them directly
+    # instead of resampling a distribution around mean/std. Falls back to
+    # resampling only if a real cache is present but genuinely lacks these
+    # (e.g. an older cache format).
+    real_boxplot = not is_synthetic and "global_returns_all" in core_A
     final_returns = []
     labels = []
-    for method, data in methods.items():
-        if method == "Traditional": continue
-        final_mean = data["mean"][-100:].mean() if len(data["mean"]) > 100 else data["mean"][-1]
-        final_std = data["std"][-100:].mean() if len(data["std"]) > 100 else data["std"][-1]
-        final_returns.append(rng_box.normal(final_mean, final_std, 50))
-        labels.append(method)
+    last_n = 100
+    if real_boxplot:
+        ewc_all = np.asarray(core_A["global_returns_all"])
+        final_returns.append(ewc_all[:, -last_n:].mean(axis=1) if ewc_all.shape[1] > last_n else ewc_all[:, -1])
+        labels.append("MAPPO-Safe-EWC")
+        for method, arr in core_C.items():
+            if method == "Traditional": continue
+            arr = np.asarray(arr)
+            final_returns.append(arr[:, -last_n:].mean(axis=1) if arr.shape[1] > last_n else arr[:, -1])
+            labels.append(method)
+    else:
+        rng_box = np.random.default_rng(42)
+        for method, data in methods.items():
+            if method == "Traditional": continue
+            final_mean = data["mean"][-100:].mean() if len(data["mean"]) > 100 else data["mean"][-1]
+            final_std = data["std"][-100:].mean() if len(data["std"]) > 100 else data["std"][-1]
+            final_returns.append(rng_box.normal(final_mean, final_std, 50))
+            labels.append(method)
 
     bp = ax.boxplot(final_returns, tick_labels=labels, patch_artist=True)
     for patch, label in zip(bp["boxes"], labels):
@@ -927,7 +940,8 @@ def fig_12_convergence_bands():
     ax.set_title("Final Performance Distribution", fontsize=12)
     ax.set_xticklabels(labels, rotation=15, ha="right", fontsize=9)
     ax.grid(True, alpha=0.3, axis="y")
-    _annotate_panel_synthetic(ax, "resampled from cached mean/std, not raw per-episode returns")
+    if not real_boxplot:
+        _annotate_panel_synthetic(ax, "resampled from cached mean/std, not raw per-episode returns")
 
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
@@ -983,45 +997,50 @@ def fig_13_communication_stress():
 # ==================================================================
 @timed_figure(14)
 def fig_14_n1_contingency():
-    """Fig 14: N-1 contingency impact — from experiments/exp_fig14_n1_contingency.py's npz, if run."""
+    """Fig 14: N-1 contingency impact — from Core G's real per-line sweep."""
     logger.info("\\n[Fig 14] N-1 Contingency Impact and Recovery")
-    # experiments/exp_fig14_n1_contingency.py is a real, standalone
-    # per-line N-1 evaluation (trains a policy, outages each line via
-    # NetworkData.apply_n1_outage(), evaluates pre-trained vs.
-    # fine-tuned) that saves outputs/fig14_n1_contingency.npz. No Core
-    # run currently produces the 12-line matrix this figure needs
-    # (Core G's real bridge only covers figs 13/20/22/24/54 — see
-    # run_core_training.py:run_core_G), and this module is pure
-    # post-processing (no training here), so we load that npz if
-    # someone has run the real script, else honestly disclose.
+    # Core G now sweeps _eval_n1_contingency (genuine
+    # NetworkData.apply_n1_outage() + post-outage policy rollout,
+    # experiments/training_pipeline.py) over every line in the network —
+    # previously no Core called it at all, so this figure fell back to a
+    # standalone script's npz that was never actually run. Keep reading
+    # that npz as a secondary fallback in case someone still has one from
+    # before this fix.
+    core_g = load_cache("core_G_robustness")
+    n1_data = core_g.get("n1_contingency") if core_g else None
+    is_synthetic = not n1_data
+
     npz_path = BASE_DIR / "outputs" / "fig14_n1_contingency.npz"
-    real = None
-    if npz_path.exists():
+    legacy_npz = None
+    if is_synthetic and npz_path.exists():
         try:
             with np.load(npz_path, allow_pickle=True) as npz:
-                real = {k: npz[k] for k in npz.files}
+                legacy_npz = {k: npz[k] for k in npz.files}
+            is_synthetic = False
         except Exception as e:
             logger.warning(f"Fig 14: failed to load {npz_path}: {e}")
-    is_synthetic = real is None
 
-    if is_synthetic:
-        logger.warning(f"Fig 14: '{npz_path}' not found — using synthetic/hardcoded fallback data, NOT a real measurement. Run experiments/exp_fig14_n1_contingency.py to produce real data.")
+    if n1_data:
+        line_outages = [f"L{i}" for i in sorted(n1_data.keys())]
+        impact = [n1_data[i]["performance"] for i in sorted(n1_data.keys())]
+        recovery = [n1_data[i]["recovery_performance"] or n1_data[i]["performance"] for i in sorted(n1_data.keys())]
+        ylabel = "Relative Performance (base_of / observed_of)"
+        label_impact, label_recovery = "Immediate Impact", "After Recovery"
+    elif legacy_npz:
+        line_outages = [str(n) for n in legacy_npz["line_names"]]
+        baseline_of = float(legacy_npz["baseline_of"][0])
+        impact = [baseline_of / max(v, 1e-9) for v in legacy_npz["pretrain_of"]]
+        recovery = [baseline_of / max(v, 1e-9) for v in legacy_npz["finetuned_of"]]
+        ylabel = "Relative Performance (baseline OF / observed OF)"
+        label_impact, label_recovery = "Pre-trained (no adapt)", "After Fine-tuning"
+    else:
+        logger.warning("Fig 14: 'core_G_robustness' cache has no 'n1_contingency' entry — using synthetic/hardcoded fallback data, NOT a real measurement.")
         rng = np.random.default_rng(42)
         line_outages = [f"L{i}" for i in range(1, 13)]
         impact = [rng.uniform(0.1, 0.4) for _ in line_outages]
         recovery = [rng.uniform(0.7, 0.95) for _ in line_outages]
         ylabel = "Relative Performance"
         label_impact, label_recovery = "Immediate Impact", "After Recovery"
-    else:
-        line_outages = [str(n) for n in real["line_names"]]
-        baseline_of = float(real["baseline_of"][0])
-        # Normalize objective values to the same "relative performance"
-        # scale the figure's axis promises (1.0 = matches baseline;
-        # lower objective is better, so express as baseline/observed).
-        impact = [baseline_of / max(v, 1e-9) for v in real["pretrain_of"]]
-        recovery = [baseline_of / max(v, 1e-9) for v in real["finetuned_of"]]
-        ylabel = "Relative Performance (baseline OF / observed OF)"
-        label_impact, label_recovery = "Pre-trained (no adapt)", "After Fine-tuning"
 
     fig, ax = plt.subplots(figsize=(12, 6))
     x = np.arange(len(line_outages))
@@ -1030,14 +1049,14 @@ def fig_14_n1_contingency():
     ax.bar(x + width/2, recovery, width, label=label_recovery, color="#39d353", alpha=0.8, edgecolor="white")
     ax.set_xlabel("Line Outage", fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
-    ax.set_title("Figure 14 — N-1 Contingency Impact and Recovery (30-Bus)", fontsize=13)
+    ax.set_title("Figure 14 — N-1 Contingency Impact and Recovery (8-Bus)", fontsize=13)
     ax.set_xticks(x)
     ax.set_xticklabels(line_outages, rotation=45, ha="right")
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3, axis="y")
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note=f"{npz_path.name} missing")
+        mark_synthetic(fig, note="core_G_robustness cache missing 'n1_contingency'")
     save_fig(fig, get_fig_path(14, "figs_11_20"))
 
 
@@ -1450,31 +1469,42 @@ def fig_25_zero_shot_transfer():
     zs = data.get("zero_shot", {})
     # _eval_zero_shot_transfer's real output (see core_eval_bridge.
     # _extract_fig_data, fig 25) is keyed "transfer_of"/"cti_ok"/"system"
-    # (+ "base_of", added in run_core_H) — there is no "warm_start"/
-    # "cold_start" split anywhere: no code path here trains this target
-    # system's own policy from scratch to provide a genuine cold-start
-    # baseline. Reading zs.get("warm_start"/"cold_start") against a REAL
-    # cache hit always missed and fell back to the identical fabricated
-    # 0.75/0.20 placeholders, undisclosed. Plot only what's actually real:
-    # one relative-performance bar for the zero-shot transfer itself.
+    # (+ "base_of", added in run_core_H). run_core_H now also trains a
+    # genuine from-scratch policy on the target system
+    # (_run_baseline_single) for a real "cold_start" comparison point —
+    # previously no code path did this at all, so that half of the
+    # comparison was always the fabricated 0.75/0.20 placeholder.
     if not is_synthetic and "transfer_of" in zs:
         base_of = zs.get("base_of")
         transfer_of = zs["transfer_of"]
         rel_perf = float(base_of / max(transfer_of, 1e-9)) if base_of else None
         cti_ok = zs.get("cti_ok")
+        cold = zs.get("cold_start")
 
-        fig, ax = plt.subplots(figsize=(8, 6))
-        if rel_perf is not None:
-            ax.bar(["Zero-Shot Transfer\\n(learned -> " + str(zs.get("system", "target")) + ")"],
-                   [rel_perf], color="#2563eb", alpha=0.85, edgecolor="white", width=0.5)
-            ax.text(0, rel_perf + 0.02, f"{rel_perf:.2f}", ha="center", fontsize=12, fontweight="bold")
-        ax.set_ylabel("Relative Performance (base_of / transfer_of)", fontsize=12)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        categories = [f"Zero-Shot Transfer\\n(learned -> {zs.get('system', 'target')})"]
+        perfs = [rel_perf if rel_perf is not None else 0.0]
+        if cold:
+            categories.append("Cold Start\\n(trained from scratch)")
+            perfs.append(cold["performance"])
+        x = np.arange(len(categories))
+        ax.bar(x, perfs, width=0.5, color=["#2563eb", "#39d353"][:len(categories)], alpha=0.85, edgecolor="white")
+        for xi, p in zip(x, perfs):
+            ax.text(xi, p + 0.02, f"{p:.2f}", ha="center", fontsize=12, fontweight="bold")
+        ax.set_xticks(x)
+        ax.set_xticklabels(categories)
+        ax.set_ylabel("Relative Performance (base_of / observed_of)", fontsize=12)
         ax.set_title(f"Figure 25 — Zero-Shot Transfer: 8-Bus -> {zs.get('system', 'target')}", fontsize=13)
         ax.grid(True, alpha=0.3, axis="y")
         cti_text = "CTI satisfied" if cti_ok else "CTI violated"
-        _annotate_panel_synthetic(
-            ax, f"cold-start (train-from-scratch) baseline not measured — {cti_text} on transfer"
-        )
+        if cold:
+            ax.text(0.5, -0.15, f"Zero-shot: {cti_text} on transfer  |  "
+                    f"Cold-start convergence: episode {cold['convergence_ep']}",
+                    transform=ax.transAxes, ha="center", fontsize=9, style="italic", color="#555")
+        else:
+            _annotate_panel_synthetic(
+                ax, f"cold-start (train-from-scratch) baseline not measured — {cti_text} on transfer"
+            )
     else:
         warm = zs.get("warm_start", {})
         cold = zs.get("cold_start", {})
@@ -1536,23 +1566,25 @@ def fig_29_ewc_continual():
     fig.suptitle("Figure 29 — Elastic Weight Consolidation (EWC) for Continual Adaptation", fontsize=13)
     
     ax = axes[0]
-    # core_B_curriculum never stores a per-parameter Fisher Information
-    # diagonal (FisherInformationEstimator's real output — see
-    # marl/continual_trainer.py) — only aggregate task_performances
-    # matrices, used in the right panel below. This left panel was always
-    # illustrative regardless of is_synthetic, but previously used an
-    # unseeded np.random.exponential() and was never watermarked, so it
-    # looked identical to a real per-parameter Fisher plot even when the
-    # rest of the figure was real. Explicitly seeded + annotated instead.
-    fisher = np.random.default_rng(29).exponential(1.0, 100)
-    fisher = np.sort(fisher)[::-1]
-    ax.bar(range(100), fisher, color="#2563eb", edgecolor="white", alpha=0.8)
+    # core_B_curriculum now stores the real per-parameter Fisher Information
+    # diagonal each "with_ewc" run already computes for its own EWC penalty
+    # (run_core_training.py's _run_curriculum_single, "fisher" key) — only
+    # ~50 randomly sampled parameter indices are nonzero per run; average
+    # across runs when there's more than one, then show the top 100 by
+    # magnitude (sorted descending, matching this panel's original x-range).
+    real_fisher = [r["fisher"] for r in data.get("with_ewc", []) if r.get("fisher") is not None] if not is_synthetic else []
+    if real_fisher:
+        fisher = np.sort(np.mean(real_fisher, axis=0))[::-1][:100]
+    else:
+        fisher = np.sort(np.random.default_rng(29).exponential(1.0, 100))[::-1]
+    ax.bar(range(len(fisher)), fisher, color="#2563eb", edgecolor="white", alpha=0.8)
     ax.set_xlabel("Parameter Index (sorted)", fontsize=11)
     ax.set_ylabel("Fisher Information F_i", fontsize=11)
     ax.set_title("Parameter Importance", fontsize=12)
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3, axis="y")
-    _annotate_panel_synthetic(ax, "no per-parameter Fisher diagonal in core_B_curriculum cache")
+    if not real_fisher:
+        _annotate_panel_synthetic(ax, "no per-parameter Fisher diagonal in core_B_curriculum cache")
     
     ax = axes[1]
     x = np.arange(n_tasks)
@@ -1677,29 +1709,46 @@ def fig_33_radar_chart():
     N = len(categories)
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
     angles += angles[:1]
-    
+
     fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
     colors = {"MAPPO-Safe-EWC": "#2563eb", "MAPPO-Safe": "#39d353", "MAPPO": "#f7c948", "IPPO": "#ff6b35", "Traditional": "#ff6b6b"}
 
-    # core_C_baselines only stores each method's per-episode return array —
-    # a single real scalar per method (its mean), never a genuine breakdown
-    # across "CTI Satisfaction"/"Convergence Speed"/"Sample Efficiency"/
-    # "Robustness". This function fabricated all 5 radar axes as that ONE
-    # real scalar plus independent random jitter per axis, unconditionally
-    # (even when is_synthetic was False, i.e. even for a real cache hit) —
-    # a fake multi-dimensional shape built from one real number. Seeded so
-    # the illustrative jitter is at least reproducible, and always
-    # watermarked regardless of is_synthetic since there is no code path
-    # (real or synthetic) that computes genuine values for 4 of these 5 axes.
+    # _run_baseline_single (run_core_training.py) now measures real
+    # per-method CTI satisfaction rate, convergence episode, sample
+    # efficiency, and robustness-under-observation-noise, cached
+    # separately as core_C_metrics_{system} (kept out of the main
+    # per-method results dict so every OTHER consumer of that cache,
+    # which iterates its keys expecting only method names, is unaffected).
+    real_metrics = load_cache("core_C_metrics_8bus") if not is_synthetic else None
     rng = np.random.default_rng(33)
+    any_real = False
     for method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]:
-        if method in data:
-            vals = data[method]
-            base = np.mean(vals[-100:] if hasattr(vals, '__len__') and len(vals) > 100 else vals)
-            values = [base / 5.0 + rng.uniform(-0.1, 0.1) for _ in range(N)]
-            values += values[:1]
-            ax.plot(angles, values, 'o-', color=colors.get(method, "#333"), lw=2, label=method, markersize=6)
-            ax.fill(angles, values, alpha=0.1, color=colors.get(method, "#333"))
+        if method not in data:
+            continue
+        vals = data[method]
+        obj = np.mean(vals[-100:] if hasattr(vals, '__len__') and len(vals) > 100 else vals)
+        m = real_metrics.get(method) if real_metrics else None
+        if m:
+            any_real = True
+            # Normalize each real axis to roughly [0, 1] for the shared
+            # radial scale: objective via a fixed reference range (same
+            # convergence-band values used elsewhere for this system),
+            # CTI satisfaction is already a 0-1 rate, convergence speed
+            # as "fraction of episode budget saved", sample efficiency
+            # and robustness are already ~0-1 relative-performance ratios.
+            n_episodes_eval = len(vals) if hasattr(vals, '__len__') else 200
+            values = [
+                float(np.clip((obj + 5) / 10, 0, 1)),
+                m["cti_satisfaction_rate"] if m["cti_satisfaction_rate"] is not None else 0.0,
+                float(np.clip(1 - m["convergence_ep"] / max(n_episodes_eval, 1), 0, 1)),
+                float(np.clip(m["sample_efficiency"], 0, 1)) if m["sample_efficiency"] is not None else 0.0,
+                float(np.clip(m["robustness"], 0, 1)) if m["robustness"] is not None else 0.0,
+            ]
+        else:
+            values = [obj / 5.0 + rng.uniform(-0.1, 0.1) for _ in range(N)]
+        values += values[:1]
+        ax.plot(angles, values, 'o-', color=colors.get(method, "#333"), lw=2, label=method, markersize=6)
+        ax.fill(angles, values, alpha=0.1, color=colors.get(method, "#333"))
 
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(categories, fontsize=10)
@@ -1707,11 +1756,12 @@ def fig_33_radar_chart():
     ax.set_title("Figure 33 — Multi-Dimensional Method Comparison (8-Bus, 60% PV)", fontsize=13, y=1.08)
     ax.legend(fontsize=9, loc="upper right", bbox_to_anchor=(1.3, 1.1))
     ax.grid(True)
-    from evaluation.experiments._synthetic_label import mark_synthetic
-    note = ("core_C_baselines cache missing" if is_synthetic else
-            "core_C_baselines has no per-dimension breakdown — 4 of 5 axes are "
-            "illustrative jitter around the one real scalar (mean objective)")
-    mark_synthetic(fig, note=note)
+    if is_synthetic or not any_real:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        note = ("core_C_baselines cache missing" if is_synthetic else
+                "core_C_metrics_8bus cache missing — 4 of 5 axes are "
+                "illustrative jitter around the one real scalar (mean objective)")
+        mark_synthetic(fig, note=note)
     save_fig(fig, get_fig_path(33, "figs_31_40"))
 
 
@@ -1795,31 +1845,38 @@ def fig_36_action_space_geometry():
     """Fig 36: Action space bounds and safety projection geometry."""
     logger.info("\\n[Fig 36] Action Space Bounds & Safety Projection Geometry")
     fig, ax = plt.subplots(figsize=(10, 10))
-    
-    tms_range = np.linspace(0.1, 2.0, 100)
-    ps_range = np.linspace(1.0, 10.0, 100)
-    TMS, PS = np.meshgrid(tms_range, ps_range)
-    constraint = TMS * 0.5 + PS * 0.05 >= 0.3
-    
-    ax.contourf(TMS, PS, constraint.astype(float), levels=[0, 0.5, 1], colors=["#ff6b35", "#39d353"], alpha=0.3)
-    ax.contour(TMS, PS, constraint.astype(float), levels=[0.5], colors="white", linewidths=2)
 
-    # No Core currently calls bridge.run_evaluation(36) (the real
-    # _eval_action_space_grid/action_space_grid_data path exists in
-    # core_eval_bridge.py but nothing populates a cache from it), and the
-    # constraint boundary above (TMS*0.5 + PS*0.05 >= 0.3) is an
-    # illustrative formula, not the real CTI constraint — so this whole
-    # figure is unconditionally synthetic. Seeded explicitly (was a bare
-    # np.random.seed(42) global reseed) and always watermarked.
-    rng = np.random.default_rng(36)
-    raw_actions = rng.random((50, 2)) * [1.9, 9.0] + [0.1, 1.0]
+    # core_A_mappo_safe_ewc_8bus_60pv now carries real raw-vs-projected
+    # action samples (_run_core_A_experimental's eval loop, captured from
+    # the same safe_env.projector the trained policy is actually subject
+    # to) — previously no Core measured this at all and the whole figure
+    # was an illustrative formula.
+    core_a = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
+    samples = core_a.get("action_projection_samples") if core_a else None
+    is_synthetic = not samples or not samples.get("raw")
+
+    if not is_synthetic:
+        raw_actions = np.array(samples["raw"])
+        proj_actions = np.array(samples["projected"])
+        n_arrows = min(len(raw_actions), 50)
+        arrow_idx = np.linspace(0, len(raw_actions) - 1, n_arrows, dtype=int)
+    else:
+        logger.warning("Fig 36: 'core_A_mappo_safe_ewc_8bus_60pv' cache has no 'action_projection_samples' — using synthetic/hardcoded fallback data, NOT a real measurement.")
+        tms_range = np.linspace(0.1, 2.0, 100)
+        ps_range = np.linspace(1.0, 10.0, 100)
+        TMS, PS = np.meshgrid(tms_range, ps_range)
+        constraint = TMS * 0.5 + PS * 0.05 >= 0.3
+        ax.contourf(TMS, PS, constraint.astype(float), levels=[0, 0.5, 1], colors=["#ff6b35", "#39d353"], alpha=0.3)
+        ax.contour(TMS, PS, constraint.astype(float), levels=[0.5], colors="white", linewidths=2)
+        rng = np.random.default_rng(36)
+        raw_actions = rng.random((50, 2)) * [1.9, 9.0] + [0.1, 1.0]
+        proj_actions = raw_actions.copy()
+        proj_actions[:, 0] = np.maximum(proj_actions[:, 0], 0.3)
+        arrow_idx = range(0, 50, 5)
+
     ax.scatter(raw_actions[:, 0], raw_actions[:, 1], c="#ff6b35", s=50, alpha=0.6, label="Raw Actions", edgecolors="white")
-
-    proj_actions = raw_actions.copy()
-    proj_actions[:, 0] = np.maximum(proj_actions[:, 0], 0.3)
     ax.scatter(proj_actions[:, 0], proj_actions[:, 1], c="#39d353", s=50, alpha=0.6, label="Projected (Safe)", edgecolors="white")
-
-    for i in range(0, 50, 5):
+    for i in arrow_idx:
         ax.annotate("", xy=(proj_actions[i, 0], proj_actions[i, 1]),
                    xytext=(raw_actions[i, 0], raw_actions[i, 1]),
                    arrowprops=dict(arrowstyle="->", color="gray", lw=1, alpha=0.5))
@@ -1829,8 +1886,9 @@ def fig_36_action_space_geometry():
     ax.set_title("Figure 36 — Action Space Bounds & Safety Projection Geometry", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    from evaluation.experiments._synthetic_label import mark_synthetic
-    mark_synthetic(fig, note="no Core evaluation feeds this figure — illustrative constraint geometry + random action sample")
+    if is_synthetic:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_60pv cache missing 'action_projection_samples'")
     save_fig(fig, get_fig_path(36, "figs_31_40"))
 
 
@@ -2445,15 +2503,27 @@ def fig_47_sympathetic_tripping():
         autotext.set_color('white')
     ax.set_title(f"MARL: {marl_viol} violations vs. Traditional: {trad_viol}", fontsize=12)
 
-    # The trained policy is only ever evaluated against ONE fault type
-    # per run (config.fault_type) — there is no real per-fault-type
-    # breakdown anywhere in training_pipeline._eval_sympathetic_tripping,
-    # so this panel is illustrative regardless of whether the pie chart
-    # above used real data.
+    # _eval_sympathetic_tripping now evaluates all 3 fault types this
+    # codebase actually models ("1ph"/Line-to-Ground, "LL"/Line-to-Line,
+    # "3ph"/3-Phase — there is no fault-impedance model anywhere for a
+    # "High-Z" category, so it's intentionally not shown).
     ax = axes[1]
-    scenarios = ["Line-to-Ground", "Line-to-Line", "3-Phase", "High-Z"]
-    prevented_by_type = [4, 5, 3, 3]
-    not_prevented_by_type = [1, 0, 1, 1]
+    by_type = real.get("by_fault_type") if not is_synthetic else None
+    fault_type_labels = {"1ph": "Line-to-Ground", "LL": "Line-to-Line", "3ph": "3-Phase"}
+    if by_type:
+        scenarios = [fault_type_labels[ft] for ft in fault_type_labels if ft in by_type]
+        prevented_by_type = []
+        not_prevented_by_type = []
+        for ft in fault_type_labels:
+            if ft not in by_type: continue
+            t = max(by_type[ft]["traditional"], by_type[ft]["marl"], 1)
+            p = max(t - by_type[ft]["marl"], 0)
+            prevented_by_type.append(p)
+            not_prevented_by_type.append(t - p)
+    else:
+        scenarios = ["Line-to-Ground", "Line-to-Line", "3-Phase"]
+        prevented_by_type = [4, 5, 3]
+        not_prevented_by_type = [1, 0, 1]
     x = np.arange(len(scenarios))
     width = 0.35
     ax.bar(x - width/2, prevented_by_type, width, label="Prevented", color="#39d353", alpha=0.8, edgecolor="white")
@@ -2464,7 +2534,8 @@ def fig_47_sympathetic_tripping():
     ax.set_title("By Fault Type", fontsize=12)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3, axis="y")
-    _annotate_panel_synthetic(ax, "no per-fault-type breakdown in _eval_sympathetic_tripping")
+    if not by_type:
+        _annotate_panel_synthetic(ax, "no per-fault-type breakdown in core_eval_fig47.json cache")
 
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
@@ -2670,12 +2741,12 @@ def fig_53_model_compression():
                               "pruning": {"size_mb": 22, "performance": 0.83}, "distillation": {"size_mb": 18, "performance": 0.82}}}
 
     comp = data.get("compression", {})
-    # The real evaluator (core_eval_bridge.py's fig-53 extractor) only
-    # ever measures ONE compression config per run — {"of", "size_kb",
-    # "drop"} — not a per-method {"size_mb", "performance"} comparison
-    # across original/int8/pruning/distillation. Rather than inventing a
-    # method breakdown that was never actually measured, fall back to
-    # the labeled placeholder when the shape doesn't match.
+    # Core I now runs _eval_compression once per method (original/int8/
+    # pruning — see run_core_training.py:run_core_I) and reports each as
+    # real {"size_mb", "performance"}. "distillation" is intentionally
+    # absent: no student-network training exists anywhere in this
+    # codebase, so it's not part of the real comparison. Still fall back
+    # to the labeled placeholder if an older cache predates this shape.
     if not comp or not all(isinstance(v, dict) and "size_mb" in v and "performance" in v for v in comp.values()):
         logger.warning(f"Fig 53: 'compression' data not in per-method {{size_mb, performance}} form ({comp}) — "
                         "using hardcoded placeholder compression numbers, NOT a real measurement.")
@@ -2700,8 +2771,12 @@ def fig_53_model_compression():
     bars2 = ax2.bar(x + width/2, perfs, width, label="Performance", color="#39d353", alpha=0.8, edgecolor="white")
     ax2.set_ylabel("Performance", color="#39d353", fontsize=12)
     ax2.tick_params(axis='y', labelcolor="#39d353")
-    ax2.set_ylim(0.75, 0.9)
-    
+    if is_synthetic:
+        # Fixed range the hardcoded placeholder above was authored for;
+        # real performance ratios (base_of / compressed_of) aren't
+        # guaranteed to fall in this window.
+        ax2.set_ylim(0.75, 0.9)
+
     ax1.set_title("Figure 53 — Model Compression & Quantization Impact", fontsize=13)
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
@@ -2766,24 +2841,33 @@ def fig_55_comparison_table():
     fig, ax = plt.subplots(figsize=(14, 6))
     ax.axis('off')
 
-    # core_C_baselines only stores each method's per-episode POST-TRAINING
-    # evaluation returns (see run_core_training._core_C_job) — no CTI-
-    # satisfaction tracking and no training curve (so no real "episode
-    # training converged at" value can be derived even from real data).
-    # The last two columns were always np.random.uniform/randint, drawn
-    # unconditionally (even on a real cache hit) and never disclosed since
-    # is_synthetic only reflects whether the CACHE itself was found.
-    # Seeded so the illustrative values are at least reproducible, and the
-    # table always footnotes them regardless of is_synthetic.
+    # core_C_metrics_8bus (run_core_training.py's _run_baseline_single) now
+    # carries a real per-method CTI satisfaction rate and convergence
+    # episode — previously these two columns were always
+    # np.random.uniform/randint, unconditionally, and only footnoted as
+    # illustrative. Fall back to that footnoted placeholder per-cell only
+    # for a method genuinely missing real metrics.
+    real_metrics = load_cache("core_C_metrics_8bus") if not is_synthetic else None
     rng = np.random.default_rng(55)
+    any_illustrative = False
     table_data = []
     for method in methods:
         vals = data[method]
         if hasattr(vals, '__len__') and len(vals) > 0:
             mean_val = np.mean(vals[-100:] if len(vals) > 100 else vals)
             std_val = np.std(vals[-100:] if len(vals) > 100 else vals)
-            table_data.append([method, f"{mean_val:.3f}", f"{std_val:.3f}",
-                             f"{rng.uniform(0.7, 0.95):.2f}*", f"{rng.integers(500, 5000)}*"])
+            m = real_metrics.get(method) if real_metrics else None
+            if m and m.get("cti_satisfaction_rate") is not None:
+                cti_cell = f"{m['cti_satisfaction_rate']*100:.0f}"
+            else:
+                any_illustrative = True
+                cti_cell = f"{rng.uniform(0.7, 0.95)*100:.0f}*"
+            if m and m.get("convergence_ep") is not None:
+                conv_cell = f"{m['convergence_ep']}"
+            else:
+                any_illustrative = True
+                conv_cell = f"{rng.integers(500, 5000)}*"
+            table_data.append([method, f"{mean_val:.3f}", f"{std_val:.3f}", cti_cell, conv_cell])
         else:
             table_data.append([method, "N/A", "N/A", "N/A", "N/A"])
 
@@ -2798,9 +2882,10 @@ def fig_55_comparison_table():
         table[(0, i)].set_facecolor("#2563eb")
         table[(0, i)].set_text_props(weight='bold', color='white')
 
-    ax.text(0.5, 0.02, "* illustrative — core_C_baselines_8bus tracks neither CTI "
-            "satisfaction nor a training convergence curve", transform=ax.transAxes,
-            ha="center", fontsize=8, style="italic", color="#555")
+    if any_illustrative:
+        ax.text(0.5, 0.02, "* illustrative — core_C_metrics_8bus cache missing for this "
+                "method's CTI satisfaction / convergence episode", transform=ax.transAxes,
+                ha="center", fontsize=8, style="italic", color="#555")
     ax.set_title("Figure 55 — Comprehensive Method Comparison Table (8-Bus, 60% PV)", fontsize=13, pad=20)
     if is_synthetic:
         from evaluation.experiments._synthetic_label import mark_synthetic
@@ -2822,46 +2907,70 @@ def fig_56_pareto_front():
         methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
         data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
     
-    # core_C_baselines stores only each method's per-episode returns — no
-    # per-relay "operating speed" vs "selectivity" trade-off is measured
-    # anywhere in Core C, so `data` (real or synthetic fallback) was never
-    # actually read below; this whole scatter + the 5 named method_points
-    # were fabricated unconditionally. Because is_synthetic only reflects
-    # whether the cache FILE was found (not whether its contents were
-    # used), a real cache hit still produced this identical fabricated
-    # plot with no disclosure. Seeded explicitly and always watermarked —
-    # there is no code path, real or synthetic, that measures this
-    # trade-off.
-    rng = np.random.default_rng(56)
-    n_points = 100
-    speed = rng.uniform(0.1, 0.9, n_points)
-    selectivity = 1 - speed + rng.normal(0, 0.05, n_points)
-    selectivity = np.clip(selectivity, 0, 1)
+    # core_C_metrics_8bus (run_core_training.py's _run_baseline_single) now
+    # carries each method's real final-state mean primary operating time
+    # ("speed": lower is faster) and mean CTI margin ("selectivity":
+    # higher is safer/more selective) — 5 real points, one per method,
+    # rather than a fabricated 100-point cloud + fixed method positions.
+    real_metrics = load_cache("core_C_metrics_8bus") if not is_synthetic else None
+    method_points = {}
+    if real_metrics:
+        for method, m in real_metrics.items():
+            if m.get("top_pri_mean") is not None and m.get("delta_cti_mean") is not None:
+                method_points[method] = (m["top_pri_mean"], m["delta_cti_mean"])
+    has_real = len(method_points) >= 2
 
     fig, ax = plt.subplots(figsize=(10, 8))
-    scatter = ax.scatter(speed, selectivity, c=speed + selectivity, cmap="RdYlGn", s=100, alpha=0.6, edgecolors="white")
-    
-    pareto_x = np.linspace(0.2, 0.8, 50)
-    pareto_y = 1 - pareto_x * 0.8
-    ax.plot(pareto_x, pareto_y, 'r--', lw=2, label="Pareto Front")
-    
-    method_points = {"MAPPO-Safe-EWC": (0.75, 0.85), "MAPPO-Safe": (0.65, 0.75), 
-                     "MAPPO": (0.55, 0.65), "IPPO": (0.45, 0.55), "Traditional": (0.3, 0.4)}
-    for method, (x, y) in method_points.items():
-        ax.scatter([x], [y], s=200, marker='*', edgecolors='black', linewidths=1.5, zorder=5)
-        ax.annotate(method, (x, y), textcoords="offset points", xytext=(10, 10), fontsize=9, fontweight='bold')
-    
-    ax.set_xlabel("Operating Speed (normalized)", fontsize=12)
-    ax.set_ylabel("Selectivity (normalized)", fontsize=12)
+    if has_real:
+        xs = np.array([p[0] for p in method_points.values()])
+        ys = np.array([p[1] for p in method_points.values()])
+        # Non-dominated subset (lower operating time AND higher CTI
+        # margin both better) of these 5 real points, rather than a
+        # smooth fabricated curve implying far more measured points than
+        # actually exist.
+        names = list(method_points.keys())
+        pareto_mask = [
+            not any((xs[j] <= xs[i] and ys[j] >= ys[i]) and (xs[j] < xs[i] or ys[j] > ys[i])
+                    for j in range(len(names)))
+            for i in range(len(names))
+        ]
+        order = np.argsort(xs[pareto_mask])
+        px = xs[pareto_mask][order]
+        py = ys[pareto_mask][order]
+        ax.plot(px, py, 'r--', lw=2, marker='o', label="Pareto Front (non-dominated methods)")
+        for method, (x, y) in method_points.items():
+            ax.scatter([x], [y], s=200, marker='*', edgecolors='black', linewidths=1.5, zorder=5,
+                      c="#39d353" if method in names and pareto_mask[names.index(method)] else "#ff6b35")
+            ax.annotate(method, (x, y), textcoords="offset points", xytext=(10, 10), fontsize=9, fontweight='bold')
+        ax.set_xlabel("Mean Primary Operating Time (s) — lower is faster", fontsize=12)
+        ax.set_ylabel("Mean CTI Margin (s) — higher is more selective", fontsize=12)
+    else:
+        rng = np.random.default_rng(56)
+        n_points = 100
+        speed = rng.uniform(0.1, 0.9, n_points)
+        selectivity = 1 - speed + rng.normal(0, 0.05, n_points)
+        selectivity = np.clip(selectivity, 0, 1)
+        scatter = ax.scatter(speed, selectivity, c=speed + selectivity, cmap="RdYlGn", s=100, alpha=0.6, edgecolors="white")
+        pareto_x = np.linspace(0.2, 0.8, 50)
+        pareto_y = 1 - pareto_x * 0.8
+        ax.plot(pareto_x, pareto_y, 'r--', lw=2, label="Pareto Front")
+        fallback_points = {"MAPPO-Safe-EWC": (0.75, 0.85), "MAPPO-Safe": (0.65, 0.75),
+                         "MAPPO": (0.55, 0.65), "IPPO": (0.45, 0.55), "Traditional": (0.3, 0.4)}
+        for method, (x, y) in fallback_points.items():
+            ax.scatter([x], [y], s=200, marker='*', edgecolors='black', linewidths=1.5, zorder=5)
+            ax.annotate(method, (x, y), textcoords="offset points", xytext=(10, 10), fontsize=9, fontweight='bold')
+        plt.colorbar(scatter, ax=ax, label="Combined Score")
+        ax.set_xlabel("Operating Speed (normalized)", fontsize=12)
+        ax.set_ylabel("Selectivity (normalized)", fontsize=12)
+
     ax.set_title("Figure 56 — Multi-Objective Pareto Front (Speed vs. Selectivity)", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    plt.colorbar(scatter, ax=ax, label="Combined Score")
-    from evaluation.experiments._synthetic_label import mark_synthetic
-    note = ("core_C_baselines_8bus cache missing" if is_synthetic else
-            "core_C_baselines_8bus has no speed/selectivity trade-off data — "
-            "entire plot is illustrative")
-    mark_synthetic(fig, note=note)
+    if not has_real:
+        from evaluation.experiments._synthetic_label import mark_synthetic
+        note = ("core_C_baselines_8bus cache missing" if is_synthetic else
+                "core_C_metrics_8bus cache missing — entire plot is illustrative")
+        mark_synthetic(fig, note=note)
     save_fig(fig, get_fig_path(56, "figs_51_58"))
 
 
@@ -2921,12 +3030,12 @@ def fig_58_seasonal():
         data = {"spring": {"performance": 0.83, "pv_variability": 0.3}, "summer": {"performance": 0.80, "pv_variability": 0.5},
                 "autumn": {"performance": 0.84, "pv_variability": 0.25}, "winter": {"performance": 0.82, "pv_variability": 0.15}}
 
-    # The real evaluator (core_eval_bridge.py's fig-58 extractor) only
-    # measures {"of", "cti_ok"} per season — it has no notion of a 0-1
-    # "performance" score or a "pv_variability" constant (that's
-    # descriptive per-season metadata, not something the evaluation
-    # measures). Rather than inventing a performance conversion that was
-    # never actually validated, fall back to the labeled placeholder.
+    # core_eval_bridge.py's fig-58 extractor now also reports
+    # "pv_variability" (std of the season's real intra-day PV level,
+    # training_pipeline.py's _eval_seasonal) and Core K adds "performance"
+    # (base_of / seasonal_of, the same relative-performance ratio Core
+    # G/H use elsewhere) alongside the original "of"/"cti_ok". Older
+    # caches predating this won't have these keys — fall back honestly.
     if not data or not all(isinstance(v, dict) and "performance" in v and "pv_variability" in v for v in data.values()):
         logger.warning(f"Fig 58: season data missing 'performance'/'pv_variability' ({data}) — "
                         "using synthetic/hardcoded fallback data, NOT a real measurement.")

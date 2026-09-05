@@ -1,4 +1,13 @@
-numpy==1.26.0
+# Was pinned exactly to 1.26.0, but every environment this pipeline has
+# actually been run in (this repo's own Runpod validation runs; the shap
+# comment below) uses numpy 2.x -- installing this file's OLD pin
+# literally forces pip to downgrade an already-working numpy 2.x down to
+# 1.26.0, which then has no compatible prebuilt scipy wheel and falls
+# back to a source build that fails outright (scipy 1.11.1 needs an
+# older Cython than what's available). pandapower/mealpy/stat-analysis
+# each declare their own numpy<2.x upper bound but have been verified
+# working against numpy 2.x in practice throughout this project.
+numpy>=2.0,<2.6
 scipy>=1.11
 matplotlib>=3.7
 pyyaml>=6.0

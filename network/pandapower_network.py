@@ -58,8 +58,19 @@ class PandapowerNetwork:
                 name=f"Bus {i+1}"
             )
 
-        # Add external grid (slack bus) at bus 0
-        pp.create_ext_grid(net, bus=bus_map[0], vm_pu=1.0, va_degree=0.0)
+        # Add external grid (slack bus) at bus 0. s_sc_max_mva/rx_max are
+        # required by pandapower's short-circuit module (sc.calc_sc) for
+        # both case="max" and case="min" studies -- without them, any SC
+        # study (Fig 44's fault-contribution analysis, run_short_circuit()
+        # below) fails with "short circuit apparent power s_sc_max_mva
+        # needs to be specified for external grid". 1000 MVA (10x this
+        # system's base_mva=100.0) is a typical utility-substation
+        # short-circuit strength for a distribution-class system, matching
+        # the value already used for case="min" in the unwired
+        # experiments/exp_fig44_fault_contribution.py.
+        pp.create_ext_grid(net, bus=bus_map[0], vm_pu=1.0, va_degree=0.0,
+                            s_sc_max_mva=1000.0, rx_max=0.1,
+                            s_sc_min_mva=1000.0, rx_min=0.1)
 
         # Derive the pandapower line topology from this network's own
         # relay-pair bus data (RelayPair.bus_pri/bus_bkp, 1-indexed) instead
@@ -140,13 +151,34 @@ class PandapowerNetwork:
             # `dg.bus_idx < n_buses` is False exactly when dg.bus_idx==n_buses.
             dg_bus0 = dg.bus_idx - 1
             if 0 <= dg_bus0 < self.net_data.n_buses:
+                # sn_mva (rated apparent power) is required by
+                # pandapower's short-circuit module (sc.calc_sc) for every
+                # sgen, same category of gap as the ext_grid's
+                # s_sc_max_mva above -- without it, Fig 44's fault-
+                # contribution study fails with "sn_mva needs to be
+                # specified for all sgens in net.sgen.sn_mva". Use the
+                # DG's rated (unscaled) capacity, not its current
+                # pv_penetration-scaled output -- a generator's nameplate
+                # rating doesn't shrink just because it's dispatched below
+                # full output.
                 pp.create_sgen(
                     net,
                     bus=bus_map[dg_bus0],
                     p_mw=dg.p_mw * dg.pv_penetration,
                     q_mvar=dg.q_mvar * dg.pv_penetration,
+                    sn_mva=float(np.hypot(dg.p_mw, dg.q_mvar)) or 1.0,
                     name=f"PV_Bus{dg.bus_idx}",
-                    type="PV"
+                    type="PV",
+                    # Short-circuit-specific fields the sc.calc_sc()
+                    # module needs for any sgen: modeled as a full-size
+                    # converter (IEC 60909-0:2016 "current_source" type,
+                    # the standard model for grid-following PV
+                    # inverters), with k=1.0 (short-circuit current
+                    # limited to rated current -- the conservative,
+                    # standard assumption for inverter-based generation
+                    # without manufacturer-specific overcurrent data).
+                    generator_type="current_source",
+                    k=1.0,
                 )
 
         self.pp_net = net

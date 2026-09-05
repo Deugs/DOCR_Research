@@ -657,7 +657,7 @@ def run_phase5_experiments(args):
     configs = create_experiment_matrix(
         systems=args.systems,
         methods=args.methods,
-        pv_levels=args.pv_levels if args.pv_levels else [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+        pv_levels=args.pv_levels if args.pv_levels else [0.0, 0.2, 0.4, 0.6],
         fault_types=args.fault_types if args.fault_types else ["3ph"],
         n_runs=args.n_runs,
         fast=args.fast,
@@ -722,7 +722,7 @@ def run_pv_sweep_analysis(args):
     configs = []
     for system in args.systems:
         for method in args.methods:
-            for pv_level in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]:
+            for pv_level in [0.0, 0.2, 0.4, 0.6]:
                 for run in range(args.n_runs):
                     configs.append(TrainingConfig(
                         method=method,
@@ -766,7 +766,7 @@ def run_curriculum_evaluation(args):
 
     configs = []
     for system in args.systems:
-        for stage, pv_level in enumerate([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]):
+        for stage, pv_level in enumerate([0.0, 0.2, 0.4, 0.6]):
             for run in range(args.n_runs):
                 configs.append(TrainingConfig(
                     method="MAPPO-Safe-EWC",
@@ -856,7 +856,10 @@ def main():
     parser = argparse.ArgumentParser(description="DOCR-MARL Phase 4 Experiments")
     parser.add_argument("--systems", nargs="+",
                         default=["8bus"],
-                        choices=["3bus", "8bus", "30bus", "39bus"],
+                        # Active thesis scope is 8/14/39-bus (see
+                        # EXPERIMENT_GUIDE.md's Reproducibility Checklist);
+                        # 3bus stays available as a fast smoke-test system.
+                        choices=["3bus", "8bus", "14bus", "39bus"],
                         help="Test systems to evaluate")
     parser.add_argument("--fast", action="store_true",
                         help="Reduced iterations for quick smoke test")

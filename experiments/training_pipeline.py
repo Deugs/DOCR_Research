@@ -278,6 +278,7 @@ class TrainingResult:
     # ── Fig 47: Sympathetic Tripping ──
     sympathetic_trips: Optional[int] = None          # Count of unnecessary trips
     traditional_trips: Optional[int] = None          # Count with traditional settings
+    sympathetic_by_fault_type: Optional[Dict[str, Dict[str, int]]] = None  # {fault_type: {"marl":, "traditional":}}
 
     # ── Fig 48: SHAP ──
     shap_values: Optional[np.ndarray] = None        # (n_features, n_actions)
@@ -304,6 +305,7 @@ class TrainingResult:
     # ── Fig 58: Seasonal ──
     seasonal_of: Optional[float] = None            # OF under seasonal conditions
     seasonal_cti_ok: Optional[bool] = None         # CTI under seasonal conditions
+    seasonal_pv_variability: Optional[float] = None  # std of the season's real intra-day PV level
 
     def to_dict(self) -> Dict:
         """Serialize to dict, converting numpy arrays to lists."""
@@ -438,13 +440,13 @@ class TrainingPipeline:
             "fig44_fault_contrib": ["fault_contributions"],
             "fig45_daily_pv": ["daily_tms_trajectory", "daily_ps_trajectory", "daily_of_trajectory", "daily_irradiance"],
             "fig46_relay_curves": ["relay_curves"],
-            "fig47_sympathetic": ["sympathetic_trips", "traditional_trips"],
+            "fig47_sympathetic": ["sympathetic_trips", "traditional_trips", "sympathetic_by_fault_type"],
             "fig48_shap": ["shap_values", "shap_base_value"],
             "fig49_tsne": ["tsne_observations", "tsne_actions", "tsne_embeddings"],
             "fig50_critical_pairs": ["critical_pairs"],
             "fig53_compression": ["compressed_of", "compressed_size_kb", "compression_accuracy_drop"],
             "fig54_adversarial": ["adversarial_of", "adversarial_success_rate", "attack_perturbation_norm"],
-            "fig58_seasonal": ["seasonal_of", "seasonal_cti_ok"],
+            "fig58_seasonal": ["seasonal_of", "seasonal_cti_ok", "seasonal_pv_variability"],
         }
 
         for fig_name, fields in figure_fields.items():
@@ -1797,54 +1799,76 @@ class TrainingPipeline:
         """
         from marl.marl_env import DynamicDOCREnv
 
-        n_trips_marl = 0
-        n_trips_trad = 0
         n_episodes = 10
 
-        # With MARL (trained policy) settings — let the policy actually act.
-        env_marl = DynamicDOCREnv(net, action_scale=0.05, max_steps=50,
-                                  seed=config.seed_offset + 1300,
-                                  fault_type=config.fault_type)
-        act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env_marl, result, net=net)
-        rng = np.random.default_rng(config.seed_offset + 1300)
+        def _count_trips(fault_type: str):
+            # With MARL (trained policy) settings — let the policy actually act.
+            env_marl = DynamicDOCREnv(net, action_scale=0.05, max_steps=50,
+                                      seed=config.seed_offset + 1300,
+                                      fault_type=fault_type)
+            act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env_marl, result, net=net)
+            rng = np.random.default_rng(config.seed_offset + 1300)
 
-        for ep in range(n_episodes):
-            obs = env_marl.reset(seed=config.seed_offset + 1300 + ep)
-            done = False
-            steps = 0
-            while not done and steps < env_marl.max_steps:
-                actions = np.zeros((env_marl.n_agents, env_marl.ACT_DIM))
-                for i in range(env_marl.n_agents):
-                    a, _ = act_fn(obs, i, rng)
-                    actions[i] = a
-                obs, _, done, info = env_marl.step(actions)
-                steps += 1
-            TMS, PS = env_marl.get_state()
-            c = check_constraints(net, TMS, PS, fault_type=config.fault_type)
-            n_trips_marl += c["cti_violations"]
+            n_marl = 0
+            for ep in range(n_episodes):
+                obs = env_marl.reset(seed=config.seed_offset + 1300 + ep)
+                done = False
+                steps = 0
+                while not done and steps < env_marl.max_steps:
+                    actions = np.zeros((env_marl.n_agents, env_marl.ACT_DIM))
+                    for i in range(env_marl.n_agents):
+                        a, _ = act_fn(obs, i, rng)
+                        actions[i] = a
+                    obs, _, done, info = env_marl.step(actions)
+                    steps += 1
+                TMS, PS = env_marl.get_state()
+                c = check_constraints(net, TMS, PS, fault_type=fault_type)
+                n_marl += c["cti_violations"]
 
-        # With traditional (fixed, non-adaptive) settings — zero action
-        # every step is the correct way to represent "no adaptation",
-        # since DynamicDOCREnv actions are deltas, not absolute settings.
-        env_trad = DynamicDOCREnv(net, action_scale=0.05, max_steps=50,
-                                  seed=config.seed_offset + 1300,
-                                  fault_type=config.fault_type)
+            # With traditional (fixed, non-adaptive) settings — zero action
+            # every step is the correct way to represent "no adaptation",
+            # since DynamicDOCREnv actions are deltas, not absolute settings.
+            env_trad = DynamicDOCREnv(net, action_scale=0.05, max_steps=50,
+                                      seed=config.seed_offset + 1300,
+                                      fault_type=fault_type)
 
-        for ep in range(n_episodes):
-            obs = env_trad.reset(seed=config.seed_offset + 1300 + ep)
-            env_trad.TMS = np.ones(env_trad.n_agents)
-            env_trad.PS = np.ones(env_trad.n_agents) * 2.0
-            done = False
-            steps = 0
-            while not done and steps < env_trad.max_steps:
-                obs, _, done, info = env_trad.step(np.zeros((env_trad.n_agents, env_trad.ACT_DIM)))
-                steps += 1
-            TMS, PS = env_trad.get_state()
-            c = check_constraints(net, TMS, PS, fault_type=config.fault_type)
-            n_trips_trad += c["cti_violations"]
+            n_trad = 0
+            for ep in range(n_episodes):
+                obs = env_trad.reset(seed=config.seed_offset + 1300 + ep)
+                env_trad.TMS = np.ones(env_trad.n_agents)
+                env_trad.PS = np.ones(env_trad.n_agents) * 2.0
+                done = False
+                steps = 0
+                while not done and steps < env_trad.max_steps:
+                    obs, _, done, info = env_trad.step(np.zeros((env_trad.n_agents, env_trad.ACT_DIM)))
+                    steps += 1
+                TMS, PS = env_trad.get_state()
+                c = check_constraints(net, TMS, PS, fault_type=fault_type)
+                n_trad += c["cti_violations"]
 
-        result.sympathetic_trips = n_trips_marl
-        result.traditional_trips = n_trips_trad
+            return n_marl, n_trad
+
+        # Real per-fault-type breakdown (Fig 47b) — the trained policy was
+        # previously only ever evaluated against config.fault_type, so
+        # there was no real per-fault-type signal to plot (only "3ph",
+        # "LL", "1ph" exist in this codebase; there is no "High-Z"/
+        # fault-impedance model anywhere in relay_physics.py or
+        # DynamicDOCREnv, so it's intentionally not included here).
+        fault_types = ["1ph", "LL", "3ph"]
+        by_fault_type = {}
+        for ft in fault_types:
+            n_marl, n_trad = _count_trips(ft)
+            by_fault_type[ft] = {"marl": n_marl, "traditional": n_trad}
+        result.sympathetic_by_fault_type = by_fault_type
+
+        # Keep the headline pie chart (panel a) keyed to config.fault_type,
+        # reusing the per-type counts just computed instead of a redundant
+        # extra pass when config.fault_type is one of the 3 real types.
+        if config.fault_type in by_fault_type:
+            result.sympathetic_trips = by_fault_type[config.fault_type]["marl"]
+            result.traditional_trips = by_fault_type[config.fault_type]["traditional"]
+        else:
+            result.sympathetic_trips, result.traditional_trips = _count_trips(config.fault_type)
 
         return result
 
@@ -2314,6 +2338,17 @@ class TrainingPipeline:
             result.seasonal_cti_ok = constraints["cti_satisfied"]
         except Exception as e:
             warnings.warn(f"Seasonal eval failed: {e}")
+
+        # Real intra-day PV variability for this season: the same
+        # sine-based hourly irradiance curve _eval_daily_response uses
+        # (see its "Simulate 24-hour operation" docstring above), scaled
+        # by this season's irradiance_factor -- a property of the
+        # season's generation profile itself, not of the policy's
+        # behaviour, so no extra rollouts are needed to measure it.
+        hours = np.arange(24)
+        seasonal_irradiance = np.maximum(0, np.sin(np.pi * hours / 12) * 1000) * profile["irradiance_factor"]
+        hour_pv_levels = np.clip(config.pv_level * seasonal_irradiance / 1000.0, 0.0, 1.0)
+        result.seasonal_pv_variability = float(np.std(hour_pv_levels))
 
         return result
 
