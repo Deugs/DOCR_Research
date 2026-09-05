@@ -1012,6 +1012,7 @@ def run_phase2(progress: ExperimentProgress):
                     pop_size=20 if config.experiment.fast_mode else 30,
                     seed_base=config.experiment.seed,
                     verbose=False,
+                    n_workers=config.experiment.n_workers,
                 )
                 suite = BenchmarkSuite(config=bc)
                 suite.run_all()
