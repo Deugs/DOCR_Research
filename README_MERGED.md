@@ -7,7 +7,7 @@ This is a **merged, cache-efficient** version of the DOCR-MARL thesis experiment
 ### Original Problem
 - **58 figures** requiring training
 - **~30+ redundant training sessions** (same configs re-trained for each figure)
-- Figures 9, 10, 21, 37, 38 all trained MAPPO-Safe-EWC separately on 8-bus, 100% PV
+- Figures 9, 10, 21, 37, 38 all trained MAPPO-Safe-EWC separately on 8-bus, 60% PV
 
 ### Merged Solution
 - **11 core training runs (A–K)** that cache all results — Cores A–F do
@@ -268,10 +268,10 @@ The cache uses **content-addressable storage**:
 ```python
 # Cache key = SHA256(config_dict)
 config = {
-    "name": "core_A_mappo_safe_ewc_8bus_100pv",
+    "name": "core_A_mappo_safe_ewc_8bus_60pv",
     "method": "MAPPO-Safe-EWC",
     "system": "8bus",
-    "pv": 1.0,
+    "pv": 0.6,
     "n_runs": 50,
     "n_episodes": 5000,
     "seed": 42,
@@ -301,10 +301,9 @@ Core A Training → UnifiedTrainingLogger
 ```
 Core B Curriculum Training
     ├── task_evaluations[0.0]  ──┐
-    ├── task_evaluations[0.25] ──┼──► Fig 5 (objective vs PV)
-    ├── task_evaluations[0.5]  ──┤    Fig 6 (CTI vs PV)
-    ├── task_evaluations[0.75] ──┤
-    └── task_evaluations[1.0]  ──┘
+    ├── task_evaluations[0.2]  ──┼──► Fig 5 (objective vs PV)
+    ├── task_evaluations[0.4]  ──┤    Fig 6 (CTI vs PV)
+    └── task_evaluations[0.6]  ──┘
 ```
 
 ---
@@ -371,7 +370,7 @@ If you have existing experiment scripts (`exp_fig*.py`), they remain compatible.
 ```python
 # In run_post_processing.py
 def fig_99_new_figure():
-    data = load_cache("core_A_mappo_safe_ewc_8bus_100pv")
+    data = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
     # ... generate figure from cached data ...
     save_fig(fig, FIGURES_DIR / "figs_51_58" / "fig_99_new_figure.pdf")
 

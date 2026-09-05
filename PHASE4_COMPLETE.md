@@ -392,9 +392,9 @@ All **18 unit tests pass** successfully:
 ## Next Steps (Phase 5)
 
 1. **Large-Scale Training**: 10,000+ scenarios across all test systems
-2. **PV Penetration Sweep**: Systematic analysis 0-100% PV
+2. **PV Penetration Sweep**: Systematic analysis 0-60% PV
 3. **Topology Robustness**: N-1 contingency impact assessment
-4. **Curriculum Learning**: 6-stage progression evaluation
+4. **Curriculum Learning**: 4-stage progression evaluation
 5. **Generalization Testing**: Unseen fault types (LL, 1ph, 2ph-g)
 
 ## References

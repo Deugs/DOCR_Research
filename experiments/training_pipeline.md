@@ -52,7 +52,7 @@ from experiments.training_pipeline import TrainingConfig
 
 config = TrainingConfig(
     method="MAPPO-Comm",      # Algorithm
-    system="30bus",           # Test system
+    system="14bus",           # Test system
     pv_level=0.5,             # PV penetration (0.0–1.0)
     fault_type="3ph",         # Fault type
     n_runs=10,                # Independent runs
@@ -71,8 +71,8 @@ config = TrainingConfig(
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `method` | `str` | — | Algorithm: `GA-SQP`, `MAPPO`, `MAPPO-Comm`, `MAPPO-Safe`, `MAPPO-Safe-EWC`, `HWOA`, `HHO`, `JAYA`, `EEO`, `Single-PPO` |
-| `system` | `str` | — | Test system: `8bus`, `30bus`, `39bus` |
-| `pv_level` | `float` | — | PV penetration: `0.0`, `0.2`, `0.4`, `0.6`, `0.8`, `1.0` |
+| `system` | `str` | — | Test system: `8bus`, `14bus`, `39bus` |
+| `pv_level` | `float` | — | PV penetration: `0.0`, `0.2`, `0.4`, `0.6` |
 | `fault_type` | `str` | — | Fault: `3ph`, `LL`, `1ph`, `2ph-g` |
 | `n_runs` | `int` | `10` | Independent runs for statistical significance |
 | `ga_pop` | `int` | `100` | GA population size |
@@ -218,9 +218,9 @@ Each figure has a dedicated `_eval_*` method that runs **only when the correspon
 from experiments.training_pipeline import create_experiment_matrix
 
 configs = create_experiment_matrix(
-    systems=["8bus", "30bus"],
+    systems=["8bus", "14bus"],
     methods=["GA-SQP", "MAPPO", "MAPPO-Comm", "MAPPO-Safe"],
-    pv_levels=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+    pv_levels=[0.0, 0.2, 0.4, 0.6],
     fault_types=["3ph"],
     n_runs=10,
     fast=False,  # True = reduced params for quick testing
@@ -255,7 +255,7 @@ fig14_configs = create_fig14_n1_contingency_matrix(
 fig25_configs = create_fig25_zero_shot_matrix(
     base_configs=base_configs,
     train_systems=["8bus"],
-    eval_systems=["30bus", "39bus"],
+    eval_systems=["14bus", "39bus"],
 )
 ```
 
@@ -265,9 +265,9 @@ fig25_configs = create_fig25_zero_shot_matrix(
 from experiments.training_pipeline import create_full_experiment_suite
 
 suite = create_full_experiment_suite(
-    systems=["8bus", "30bus"],
+    systems=["8bus", "14bus"],
     methods=["MAPPO", "MAPPO-Comm", "MAPPO-Safe"],
-    pv_levels=[0.0, 0.5, 1.0],
+    pv_levels=[0.0, 0.3, 0.6],
     fault_types=["3ph"],
     n_runs=10,
     fast=False,
@@ -296,7 +296,7 @@ best = analyzer.get_best_result()
 print(f"Best OF: {best.best_of:.4f}")
 
 # Best by method/system
-best_mappo = analyzer.get_best_result(method="MAPPO", system="30bus")
+best_mappo = analyzer.get_best_result(method="MAPPO", system="14bus")
 
 # Pareto front (multi-objective)
 pareto = analyzer.get_pareto_front(
@@ -378,7 +378,7 @@ from experiments.training_pipeline import (
 configs = create_experiment_matrix(
     systems=["8bus"],
     methods=["GA-SQP", "JAYA"],
-    pv_levels=[0.0, 1.0],
+    pv_levels=[0.0, 0.6],
     n_runs=2,
     fast=True,
 )
@@ -396,9 +396,9 @@ from experiments.training_pipeline import (
 )
 
 suite = create_full_experiment_suite(
-    systems=["8bus", "30bus"],
+    systems=["8bus", "14bus"],
     methods=["MAPPO", "MAPPO-Comm", "MAPPO-Safe"],
-    pv_levels=[0.0, 0.5, 1.0],
+    pv_levels=[0.0, 0.3, 0.6],
     figures=["base", "13", "14", "22", "24", "25"],
     fast=True,
 )

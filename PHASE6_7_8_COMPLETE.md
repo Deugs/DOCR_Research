@@ -440,7 +440,7 @@ docr_marl_thesis/
 ## Next Steps
 
 1. **Run all tests**: `python tests/test_phase7.py && python tests/test_phase8.py`
-2. **Full pipeline**: `python main.py --phase7 --phase8 --systems 8bus 30bus`
+2. **Full pipeline**: `python main.py --phase7 --phase8 --systems 8bus 14bus`
 3. **Thesis writing**: Use generated LaTeX tables and validation reports
 4. **Docker deployment**: `docker build -t docr-marl . && docker run docr-marl`
 5. **GitHub CI**: Push to repository with `.github/workflows/ci.yml`

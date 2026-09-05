@@ -102,7 +102,7 @@ Expected output:
 ```
 Setup OK — all imports resolved
   8bus:  14 relays, 20 pairs, 15 lines
-  14bus: 20 relays, 26 pairs, 15 lines
+  14bus: 40 relays, 52 pairs, 33 lines
   39bus: 46 relays, 42 pairs, 32 lines
 ```
 
@@ -255,6 +255,33 @@ repaired `baselines/experiments/unified_exp_fig05.py` (Fig 5, now including
 GA-SQP/HWOA/HHO/JAYA/EEO with real Wilcoxon/Mann-Whitney + Cliff's delta
 testing) are genuine — they train/evaluate real models when their Core cache
 is present.
+
+**Update (2026-09-05): 4 of the 8 previously-listed synthetic figures fixed
+to use real data**, each by capturing/wiring data the pipeline already
+computed but discarded, or a small new eval reusing an already-trained
+policy (no new training runs): Fig 44 (a real bug — the pandapower
+external grid was missing `s_sc_max_mva`, now set); Fig 12b, 29a, and 38
+(Core A/C's real per-episode returns, per-parameter Fisher diagonal, and
+per-step attention snapshots were already computed and then discarded
+before reaching the cache); Fig 58 (Core K now also reports a real
+`performance`/`pv_variability` pair per season); Fig 47b (per-fault-type
+sympathetic-tripping breakdown, looped over the 3 real fault types this
+codebase models — there is no "High-Z" fault-impedance model anywhere,
+so that category is dropped rather than fabricated); Fig 14 (Core G now
+sweeps the already-implemented, previously-unused
+`_eval_n1_contingency` over every line); Fig 36 (a new
+`action_projection_samples` capture in Core A's eval loop, using the
+same `ActionProjector` the trained policy is actually subject to); and
+Fig 53 (Core I now runs its already-implemented int8/pruning compression
+once per method instead of once total — "distillation" is dropped, since
+no student-network training exists anywhere in this codebase). Figs 33
+and 56 gained 3 of their axes for real (CTI satisfaction rate,
+convergence episode, and — for 56 — real per-relay operating time/CTI
+margin) via new per-run metrics on Core C, but keep a smaller illustrative
+"Robustness" component pending a dedicated eval. Figs 18, 33/56 (partial),
+38 (unconditionally-illustrative sub-panel), 53, and 58 remain
+architecturally bounded per the reasons above; see each figure function's
+code comment in `run_post_processing.py` for specifics.
 
 ### 2.2.2 Training efficiency (2026-08-07)
 
@@ -617,6 +644,56 @@ print("Saved: results/tables/stat_significance.txt")
 EOF
 ```
 
+### 5.4 Formal novelty-claim validation (C1–C5)
+
+`evaluation/thesis_validation.py`'s `ThesisValidator` is the formal
+statistical validator for the thesis's 5 novelty claims (C1: MAPPO-Comm
+beats baselines, C2: Safe RL achieves zero CTI violations, C3: EWC
+prevents forgetting, C4: curriculum reduces sample complexity, C5:
+scales to 39-bus with sub-100ms inference). It reads a flat JSON list of
+per-run results from `outputs/phase5/phase5_results.json` — historically
+only ever written by the separate, legacy `mains/main5.py --phase5`
+entry point (never actually run in this project), **not** by
+`run_thesis_experiments.py`'s Core A–K pipeline described in §2 above.
+
+`experiments/core_to_phase5_bridge.py` bridges the two: it reads the
+real results Core A–K + the Objective-4 benchmark comparison already
+produce (`results/benchmark_pv*.pkl`, `results/core_cache/*.pkl`) and
+writes them into `outputs/phase5/phase5_results.json` in the exact
+shape `ThesisValidator` expects, so the claims can be validated from the
+same run that produced the 58 figures — no separate, redundant
+large-scale training pass required.
+
+```bash
+python -m experiments.core_to_phase5_bridge
+# Writes outputs/phase5/phase5_results.json, then immediately runs
+# ThesisValidator against it and prints which of C1-C5 pass/fail with
+# the bridged data.
+```
+
+**This bridge does not fabricate data to fill coverage gaps** — the
+Reproducibility Checklist's data-provenance standard (§2.2.1 above)
+applies here too. Known structural gaps, left honestly absent rather
+than invented:
+
+- **Single-PPO** (needed by C1): not trained anywhere in the active
+  pipeline.
+- **C5's 39-bus inference latency / bandwidth**: Core I's latency
+  measurement and Core G's bandwidth sweep are both 8-bus only; no Core
+  measures either quantity on 39-bus.
+- **C4's sample-efficiency ratio**: needs a per-checkpoint `history`
+  array with a comparable logging cadence between a curriculum-trained
+  and non-curriculum run; Core B (the only `curriculum=True` path) logs
+  per-PV-stage, not per-episode like the other Cores/benchmark suite do,
+  so this comparison is left unset rather than forced across mismatched
+  granularities.
+
+See the module's own docstring for the full method-name disambiguation
+note (the same method name, e.g. "MAPPO-Safe-EWC", trains WITH GNN
+communication in Core C but WITHOUT it in `benchmark_pv*.pkl` — the
+bridge treats these as genuinely different configurations, not
+interchangeable samples of "the same" method).
+
 ---
 
 ## 6. Standalone experiment scripts
@@ -660,11 +737,12 @@ Two figures have no generation script and must be created manually:
 | Figure | Description | Recommended tool |
 |--------|-------------|-----------------|
 | Fig 26a | System architecture block diagram | draw.io / LaTeX TikZ |
-| Fig 36 | Action-space geometry (hand-drawn illustration) | draw.io / Inkscape |
 
-Place the output PDFs in `results/figures/figs_21_30/fig_26a.pdf` and
-`results/figures/figs_31_40/fig_36.pdf` respectively before Phase 9
-compiles the final figure count.
+Place the output PDF in `results/figures/figs_21_30/fig_26a.pdf` before
+Phase 9 compiles the final figure count. (Fig 36 — action-space geometry
+— used to require a hand-drawn illustration here too, but as of the
+data-provenance update below it now reads real raw-vs-projected action
+samples from Core A's cache and no longer needs manual placement.)
 
 Phase 1 also runs scripts for Figs 1–4, 17, 19, 26–30, 34, 35, 51, 52
 from `phase1_scripts/`. These are standalone diagram-generation scripts
@@ -729,7 +807,8 @@ Before submitting results, verify:
 - [ ] `results/benchmark_pv*.pkl` exists for all four PV levels
 - [ ] `results/stat_comparison_pv*.txt` contains non-trivial Friedman p-values
 - [ ] `results/figures/` contains PDFs for all auto-generated figures
-- [ ] Figs 26a and 36 placed manually in the correct subdirectories
+- [ ] Fig 26a placed manually in the correct subdirectory (Fig 36 is now
+      auto-generated from real data — see §7)
 - [ ] Seed is fixed to 42 (default) for all runs, or varied and averaged
 - [ ] System scope is exactly 8bus, 14bus, 39bus (not 30bus)
 - [ ] PV sweep is exactly 0 %, 20 %, 40 %, 60 % (not 0–100 %)

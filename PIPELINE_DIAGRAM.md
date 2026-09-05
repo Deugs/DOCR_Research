@@ -3,17 +3,17 @@
 ## Before (Original) — ~40 GPU-days
 
 ```
-Fig 9  → train MAPPO-Safe 8bus 100% PV ──┐
-Fig 10 → train MAPPO-Safe 8bus 100% PV ──┼── 5 separate runs, SAME config
-Fig 21 → train MAPPO-Safe 8bus 100% PV ──┤
-Fig 37 → train MAPPO-Safe 8bus 100% PV ──┤
-Fig 38 → train MAPPO-Safe 8bus 100% PV ──┘
+Fig 9  → train MAPPO-Safe 8bus 60% PV ──┐
+Fig 10 → train MAPPO-Safe 8bus 60% PV ──┼── 5 separate runs, SAME config
+Fig 21 → train MAPPO-Safe 8bus 60% PV ──┤
+Fig 37 → train MAPPO-Safe 8bus 60% PV ──┤
+Fig 38 → train MAPPO-Safe 8bus 60% PV ──┘
 
-Fig 5  → train MAPPO-Safe-EWC 8bus 0-100% PV ──┐
-Fig 6  → train MAPPO-Safe-EWC 8bus 0-100% PV ──┤
-Fig 7  → train MAPPO-Safe-EWC 8bus 0-100% PV ──┤── 4 separate runs, SAME config
-Fig 16 → train MAPPO-Safe-EWC 8bus 0-100% PV ──┤
-Fig 29 → train MAPPO-Safe-EWC 8bus 0-100% PV ──┘
+Fig 5  → train MAPPO-Safe-EWC 8bus 0-60% PV ──┐
+Fig 6  → train MAPPO-Safe-EWC 8bus 0-60% PV ──┤
+Fig 7  → train MAPPO-Safe-EWC 8bus 0-60% PV ──┤── 4 separate runs, SAME config
+Fig 16 → train MAPPO-Safe-EWC 8bus 0-60% PV ──┤
+Fig 29 → train MAPPO-Safe-EWC 8bus 0-60% PV ──┘
 
 Fig 12 → train all baselines 50 runs ──┐
 Fig 11 → train all baselines 50 runs ──┼── 3 separate runs
@@ -29,10 +29,10 @@ Fig 31 → train all baselines 50 runs ──┘
 │                           CORE TRAINING (6 runs)                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  Core A: MAPPO-Safe-EWC, 8-bus, 100% PV, 50 seeds, 5000 episodes          │
+│  Core A: MAPPO-Safe-EWC, 8-bus, 60% PV, 50 seeds, 5000 episodes           │
 │     └── captures: returns, CTI, lagrange, safety, per-agent, attention     │
 │                                                                             │
-│  Core B: Curriculum 0%→100% PV, 10 seeds                                   │
+│  Core B: Curriculum 0%→60% PV, 10 seeds                                    │
 │     └── captures: task transitions, forgetting curves, PV sweep evals      │
 │                                                                             │
 │  Core C: Baselines (4 methods), 50 seeds                                   │
@@ -100,7 +100,7 @@ Fig 31 → train all baselines 50 runs ──┘
 │    ├── Fig 22  → Core A checkpoint + GNN depth variation                  │
 │    ├── Fig 23  → Core A checkpoint + unseen faults                         │
 │    ├── Fig 24  → Core A checkpoint + sensor noise                          │
-│    ├── Fig 25  → Core A checkpoint + 30-bus transfer                       │
+│    ├── Fig 25  → Core A checkpoint + 14-bus transfer                       │
 │    ├── Fig 43-47 → Core A checkpoint + protection analysis                 │
 │    ├── Fig 53  → Core A checkpoint + compression                           │
 │    └── Fig 54  → Core A checkpoint + adversarial attacks                   │
@@ -113,8 +113,8 @@ Fig 31 → train all baselines 50 runs ──┘
 ```mermaid
 flowchart TB
     subgraph CoreTraining["Core Training (6 runs, ~8-10 GPU-days)"]
-        A["Core A<br/>MAPPO-Safe-EWC<br/>8-bus 100% PV<br/>50 seeds"]
-        B["Core B<br/>Curriculum 0%→100%<br/>10 seeds"]
+        A["Core A<br/>MAPPO-Safe-EWC<br/>8-bus 60% PV<br/>50 seeds"]
+        B["Core B<br/>Curriculum 0%→60%<br/>10 seeds"]
         C["Core C<br/>Baselines<br/>4 methods × 50 seeds"]
         D["Core D<br/>Ablation<br/>5 configs × 10 seeds"]
         E["Core E<br/>Hyperparameter Grid<br/>80 configs × 3 seeds"]
@@ -171,9 +171,9 @@ def cache_key(config: dict) -> str:
     return hashlib.sha256(config_str.encode()).hexdigest()[:16]
 
 # Example keys:
-# Core A:  {"name":"core_A", "method":"MAPPO-Safe-EWC", "system":"8bus", "pv":1.0, "n_runs":50, ...}
+# Core A:  {"name":"core_A", "method":"MAPPO-Safe-EWC", "system":"8bus", "pv":0.6, "n_runs":50, ...}
 #          → "a3f7e2d9b8c1..." → results/core_cache/a3f7e2d9b8c1.pkl
 #
-# Core B:  {"name":"core_B", "tasks":[0.0,0.25,0.5,0.75,1.0], "n_runs":10, ...}
+# Core B:  {"name":"core_B", "tasks":[0.0,0.2,0.4,0.6], "n_runs":10, ...}
 #          → "b8e1c4f2a5d3..." → results/core_cache/b8e1c4f2a5d3.pkl
 ```
