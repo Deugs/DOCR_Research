@@ -2,12 +2,12 @@
   "fig_num": 53,
   "data": {
     "of": 133.57411874541745,
-    "size_kb": 0.0185546875,
+    "size_kb": 0.07421875,
     "drop": 78.4912455433315
   },
   "metadata": {
     "method": "_eval_compression",
-    "duration": 0.9577863216400146,
+    "duration": 0.3465278148651123,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -71,7 +71,7 @@
       "tsne_eval": false,
       "tsne_n_samples": 500,
       "critical_pair_eval": false,
-      "quantize_bits": 8,
+      "quantize_bits": null,
       "prune_ratio": 0.3,
       "compression_eval": true,
       "adversarial_attack": null,
@@ -82,5 +82,5 @@
     },
     "base_of": 55.08287320208595
   },
-  "timestamp": 1788038268.1472037
+  "timestamp": 1788635453.5863833
 }

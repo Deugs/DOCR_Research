@@ -7,7 +7,7 @@
   },
   "metadata": {
     "method": "_eval_bandwidth",
-    "duration": 1.0143706798553467,
+    "duration": 0.35951852798461914,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -82,5 +82,5 @@
     },
     "base_of": 55.08287320208595
   },
-  "timestamp": 1788038119.9208987
+  "timestamp": 1788633547.05532
 }

@@ -1,0 +1,175 @@
+2026-09-04 15:39:44,712 | INFO     | [FAST MODE] Using reduced iterations for testing.
+2026-09-04 15:39:44,712 | INFO     | 
+2026-09-04 15:39:44,712 | INFO     | ======================================================================
+2026-09-04 15:39:44,712 | INFO     | DOCR-MARL THESIS: COMPLETE EXPERIMENT SUITE
+2026-09-04 15:39:44,712 | INFO     | Strategy: 11 core training runs + unified post-processing
+2026-09-04 15:39:44,712 | INFO     | System: 8BUS | PV: 60% | Fault: 3ph
+2026-09-04 15:39:44,712 | INFO     | Runs: 2 | Episodes: 500
+2026-09-04 15:39:44,712 | INFO     | Estimated: ~8-10 GPU-days (full) / ~1-2 hours (fast)
+2026-09-04 15:39:44,712 | INFO     | ======================================================================
+2026-09-04 15:39:44,712 | INFO     | 
+2026-09-04 15:39:44,712 | INFO     | ======================================================================
+2026-09-04 15:39:44,712 | INFO     | PHASE 1: Manual Diagrams & Architecture
+2026-09-04 15:39:44,712 | INFO     | ======================================================================
+2026-09-04 15:39:44,712 | INFO     | Phase 1: 14 auto-generatable + 1 truly manual figures
+2026-09-04 15:39:44,712 | INFO     | Output directory: results/figures/figs_01_10
+2026-09-04 15:39:45,275 | INFO     |   [Fig 01] ✓ Generated in 0.56s
+2026-09-04 15:39:45,519 | INFO     |   [Fig 02] ✓ Generated in 0.24s
+2026-09-04 15:39:45,728 | INFO     |   [Fig 03] ✓ Generated in 0.21s
+2026-09-04 15:39:45,954 | INFO     |   [Fig 04] ✓ Generated in 0.23s
+2026-09-04 15:39:46,440 | INFO     |   [Fig 17] ✓ Generated in 0.49s
+2026-09-04 15:39:46,667 | INFO     |   [Fig 19] ✓ Generated in 0.23s
+2026-09-04 15:39:47,026 | INFO     |   [Fig 26] ✓ Generated in 0.36s
+2026-09-04 15:39:47,230 | INFO     |   [Fig 27] ✓ Generated in 0.20s
+2026-09-04 15:39:47,450 | INFO     |   [Fig 28] ✓ Generated in 0.22s
+2026-09-04 15:39:47,998 | INFO     |   [Fig 30] ✓ Generated in 0.55s
+2026-09-04 15:39:48,470 | INFO     |   [Fig 34] ✓ Generated in 0.47s
+2026-09-04 15:39:49,066 | INFO     |   [Fig 35] ✓ Generated in 0.60s
+2026-09-04 15:39:49,801 | INFO     |   [Fig 51] ✓ Generated in 0.73s
+2026-09-04 15:39:50,159 | INFO     |   [Fig 52] ✓ Generated in 0.36s
+2026-09-04 15:39:50,159 | INFO     |   [Fig 26a] ○ Truly manual - create in docs/diagrams/ or LaTeX
+2026-09-04 15:39:50,159 | INFO     | Phase 1 complete: 14 generated, 0 failed, 1 manual
+2026-09-04 15:39:50,159 | INFO     | ✓ Phase 1 Manual Diagrams & Architecture: COMPLETE (0:00:05)
+2026-09-04 15:39:50,159 | INFO     | 
+2026-09-04 15:39:50,160 | INFO     | ======================================================================
+2026-09-04 15:39:50,160 | INFO     | PHASE 2: Core Training Runs (A-K with Real Evals)
+2026-09-04 15:39:50,160 | INFO     | ======================================================================
+2026-09-04 15:39:50,160 | INFO     | Running unified core training via run_core_training.py...
+2026-09-04 15:39:50,160 | INFO     |   System: 8BUS | PV: 60% | Fault: 3ph
+2026-09-04 15:39:50,160 | INFO     |   Runs: 2 | Episodes: 500
+2026-09-04 15:39:50,160 | INFO     |   Features: each of the 11 core runs (A-K) fixes/sweeps its own GNN/Safe-RL/EWC combination - see run_core_training.py per-core docs.
+2026-09-04 15:39:50,160 | INFO     | 
+2026-09-04 15:39:50,160 | INFO     | ──────────────────────────────────────────────────────────────────────
+2026-09-04 15:39:50,160 | INFO     | ▶ Phase 2: Unified Core Training (all 11 cores A-K)
+2026-09-04 15:39:50,160 | INFO     |   CMD: python run_core_training.py --all --fast --system 8bus --pv 0.6 --n-runs 2 --episodes 500 --n-workers 32 --fault-type 3ph
+2026-09-04 16:39:22,421 | INFO     |   ✓ SUCCESS in 3572.3s
+2026-09-04 16:39:22,421 | INFO     | 
+[Phase 2] Running Objective 4 benchmark comparison (GA-SQP/HWOA/HHO/JAYA/EEO vs MARL)...
+2026-09-04 16:39:22,761 | INFO     |   PV level: 0% - already computed, loading results/benchmark_pv000.pkl
+2026-09-04 16:39:22,765 | INFO     |   PV level: 20% - already computed, loading results/benchmark_pv020.pkl
+2026-09-04 16:39:22,767 | INFO     |   PV level: 40% - already computed, loading results/benchmark_pv040.pkl
+2026-09-04 16:39:22,770 | INFO     |   PV level: 60% - already computed, loading results/benchmark_pv060.pkl
+2026-09-04 16:39:22,774 | INFO     | [Phase 2] Objective 4 benchmark comparison complete.
+2026-09-04 16:39:22,774 | INFO     | ✓ Phase 2 Core Training Runs (A-K with Real Evals): COMPLETE (0:59:32)
+2026-09-04 16:39:22,776 | INFO     | 
+2026-09-04 16:39:22,776 | INFO     | ======================================================================
+2026-09-04 16:39:22,776 | INFO     | PHASE 3: Training Dynamics
+2026-09-04 16:39:22,776 | INFO     | ======================================================================
+2026-09-04 16:39:22,776 | INFO     | Generating 14 figures from Core A/B cached data: [5, 6, 7, 8, 9, 10, 12, 16, 21, 29, 36, 37, 38, 41]
+2026-09-04 16:39:22,870 | INFO     |   [Fig 05] ✓ Generated in 0.08s
+2026-09-04 16:39:22,904 | INFO     |   [Fig 06] ✓ Generated in 0.03s
+2026-09-04 16:39:23,004 | INFO     |   [Fig 07] ✓ Generated in 0.10s
+2026-09-04 16:39:23,123 | INFO     |   [Fig 08] ✓ Generated in 0.12s
+2026-09-04 16:39:23,281 | INFO     |   [Fig 09] ✓ Generated in 0.16s
+2026-09-04 16:39:23,328 | INFO     |   [Fig 10] ✓ Generated in 0.05s
+2026-09-04 16:39:23,463 | INFO     |   [Fig 12] ✓ Generated in 0.13s
+2026-09-04 16:39:23,624 | INFO     |   [Fig 16] ✓ Generated in 0.16s
+2026-09-04 16:39:23,669 | INFO     |   [Fig 21] ✓ Generated in 0.04s
+2026-09-04 16:39:23,834 | INFO     |   [Fig 29] ✓ Generated in 0.17s
+2026-09-04 16:39:23,921 | INFO     |   [Fig 36] ✓ Generated in 0.09s
+2026-09-04 16:39:24,052 | INFO     |   [Fig 37] ✓ Generated in 0.13s
+2026-09-04 16:39:24,522 | INFO     |   [Fig 38] ✓ Generated in 0.47s
+2026-09-04 16:39:24,569 | INFO     |   [Fig 41] ✓ Generated in 0.05s
+2026-09-04 16:39:24,569 | INFO     | Phase 3 complete: 14 generated, 0 failed
+2026-09-04 16:39:24,569 | INFO     | ✓ Phase 3 Training Dynamics: COMPLETE (0:00:01)
+2026-09-04 16:39:24,569 | INFO     | 
+2026-09-04 16:39:24,569 | INFO     | ======================================================================
+2026-09-04 16:39:24,569 | INFO     | PHASE 4: Robustness & Resilience
+2026-09-04 16:39:24,569 | INFO     | ======================================================================
+2026-09-04 16:39:24,569 | INFO     | Generating 6 figures from Core G cached data: [13, 14, 20, 22, 24, 54]
+2026-09-04 16:39:24,644 | INFO     |   [Fig 13] ✓ Generated in 0.07s
+2026-09-04 16:39:24,704 | INFO     |   [Fig 14] ✓ Generated in 0.06s
+2026-09-04 16:39:24,740 | INFO     |   [Fig 20] ✓ Generated in 0.04s
+2026-09-04 16:39:24,809 | INFO     |   [Fig 22] ✓ Generated in 0.07s
+2026-09-04 16:39:24,903 | INFO     |   [Fig 24] ✓ Generated in 0.09s
+2026-09-04 16:39:24,950 | INFO     |   [Fig 54] ✓ Generated in 0.05s
+2026-09-04 16:39:24,950 | INFO     | Phase 4 complete: 6 generated, 0 failed
+2026-09-04 16:39:24,950 | INFO     | ✓ Phase 4 Robustness & Resilience: COMPLETE (0:00:00)
+2026-09-04 16:39:24,950 | INFO     | 
+2026-09-04 16:39:24,950 | INFO     | ======================================================================
+2026-09-04 16:39:24,950 | INFO     | PHASE 5: Scalability & Transfer Learning
+2026-09-04 16:39:24,950 | INFO     | ======================================================================
+2026-09-04 16:39:24,950 | INFO     | Generating 3 figures from Core F/H cached data: [15, 23, 25]
+2026-09-04 16:39:25,037 | INFO     |   [Fig 15] ✓ Generated in 0.09s
+2026-09-04 16:39:25,071 | INFO     |   [Fig 23] ✓ Generated in 0.03s
+2026-09-04 16:39:25,107 | INFO     |   [Fig 25] ✓ Generated in 0.04s
+2026-09-04 16:39:25,107 | INFO     | Phase 5 complete: 3 generated, 0 failed
+2026-09-04 16:39:25,107 | INFO     | ✓ Phase 5 Scalability & Transfer Learning: COMPLETE (0:00:00)
+2026-09-04 16:39:25,107 | INFO     | 
+2026-09-04 16:39:25,107 | INFO     | ======================================================================
+2026-09-04 16:39:25,107 | INFO     | PHASE 6: Deployment & Hardware
+2026-09-04 16:39:25,107 | INFO     | ======================================================================
+2026-09-04 16:39:25,107 | INFO     | Generating 2 figures from Core I cached data: [18, 53]
+2026-09-04 16:39:25,274 | INFO     |   [Fig 18] ✓ Generated in 0.17s
+2026-09-04 16:39:25,337 | INFO     |   [Fig 53] ✓ Generated in 0.06s
+2026-09-04 16:39:25,337 | INFO     | Phase 6 complete: 2 generated, 0 failed
+2026-09-04 16:39:25,338 | INFO     | ✓ Phase 6 Deployment & Hardware: COMPLETE (0:00:00)
+2026-09-04 16:39:25,338 | INFO     | 
+2026-09-04 16:39:25,338 | INFO     | ======================================================================
+2026-09-04 16:39:25,338 | INFO     | PHASE 7: Protection Engineering & Interpretability
+2026-09-04 16:39:25,338 | INFO     | ======================================================================
+2026-09-04 16:39:25,338 | INFO     | Generating 9 figures from Core J/A cached data: [43, 44, 45, 46, 47, 48, 49, 50, 58]
+2026-09-04 16:39:25,388 | INFO     |   [Fig 43] ✓ Generated in 0.05s
+2026-09-04 16:39:25,412 | INFO     |   [Fig 44] ✓ Generated in 0.02s
+2026-09-04 16:39:25,475 | INFO     |   [Fig 45] ✓ Generated in 0.06s
+2026-09-04 16:39:25,518 | INFO     |   [Fig 46] ✓ Generated in 0.04s
+2026-09-04 16:39:25,578 | INFO     |   [Fig 47] ✓ Generated in 0.06s
+2026-09-04 16:39:25,632 | INFO     |   [Fig 48] ✓ Generated in 0.05s
+2026-09-04 16:39:25,722 | INFO     |   [Fig 49] ✓ Generated in 0.09s
+2026-09-04 16:39:25,788 | INFO     |   [Fig 50] ✓ Generated in 0.07s
+2026-09-04 16:39:25,858 | INFO     |   [Fig 58] ✓ Generated in 0.07s
+2026-09-04 16:39:25,858 | INFO     | Phase 7 complete: 9 generated, 0 failed
+2026-09-04 16:39:25,858 | INFO     | ✓ Phase 7 Protection Engineering & Interpretability: COMPLETE (0:00:00)
+2026-09-04 16:39:25,858 | INFO     | 
+2026-09-04 16:39:25,858 | INFO     | ======================================================================
+2026-09-04 16:39:25,858 | INFO     | PHASE 8: Statistical Aggregation
+2026-09-04 16:39:25,858 | INFO     | ======================================================================
+2026-09-04 16:39:25,858 | INFO     | Generating 10 figures from Core C cached data: [11, 31, 32, 33, 55, 56, 57, 39, 40, 42]
+2026-09-04 16:39:25,888 | INFO     |   [Fig 11] ✓ Generated in 0.03s
+2026-09-04 16:39:25,917 | INFO     |   [Fig 31] ✓ Generated in 0.03s
+2026-09-04 16:39:25,958 | INFO     |   [Fig 32] ✓ Generated in 0.04s
+2026-09-04 16:39:26,022 | INFO     |   [Fig 33] ✓ Generated in 0.06s
+2026-09-04 16:39:26,128 | INFO     |   [Fig 55] ✓ Generated in 0.11s
+2026-09-04 16:39:26,225 | INFO     |   [Fig 56] ✓ Generated in 0.10s
+2026-09-04 16:39:26,314 | INFO     |   [Fig 57] ✓ Generated in 0.09s
+2026-09-04 16:39:26,421 | INFO     |   [Fig 39] ✓ Generated in 0.11s
+2026-09-04 16:39:26,767 | INFO     |   [Fig 40] ✓ Generated in 0.35s
+2026-09-04 16:39:26,810 | INFO     |   [Fig 42] ✓ Generated in 0.04s
+2026-09-04 16:39:26,810 | INFO     | Phase 8 complete: 10 generated, 0 failed
+2026-09-04 16:39:26,810 | INFO     | ✓ Phase 8 Statistical Aggregation: COMPLETE (0:00:00)
+2026-09-04 16:39:26,810 | INFO     | 
+2026-09-04 16:39:26,810 | INFO     | ======================================================================
+2026-09-04 16:39:26,810 | INFO     | PHASE 9: Final Compilation
+2026-09-04 16:39:26,810 | INFO     | ======================================================================
+2026-09-04 16:39:26,810 | INFO     |   -> Compilation report saved to results/reports/compilation_report.json
+2026-09-04 16:39:26,810 | INFO     |   -> Figures generated: 44/58 (29 auto + 15 manual)
+2026-09-04 16:39:26,810 | INFO     |   -> Cache entries: 11
+2026-09-04 16:39:26,810 | INFO     |   -> Cached cores: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K']
+2026-09-04 16:39:26,810 | INFO     | ✓ Phase 9 Final Compilation: COMPLETE (0:00:00)
+2026-09-04 16:39:26,810 | INFO     | 
+2026-09-04 16:39:26,810 | INFO     | ======================================================================
+2026-09-04 16:39:26,810 | INFO     | EXPERIMENT SUITE SUMMARY
+2026-09-04 16:39:26,810 | INFO     | ======================================================================
+2026-09-04 16:39:26,810 | INFO     | Total elapsed: 0:59:42
+2026-09-04 16:39:26,810 | INFO     | Mode: FAST
+2026-09-04 16:39:26,811 | INFO     | ETA: 0:00:00
+2026-09-04 16:39:26,811 | INFO     | ----------------------------------------------------------------------
+2026-09-04 16:39:26,811 | INFO     |   ✓ Phase 1: Manual Diagrams & Architecture COMPLETE   0:00:05
+2026-09-04 16:39:26,811 | INFO     |   ✓ Phase 2: Core Training Runs (A-K with Real Evals) COMPLETE   0:59:32
+2026-09-04 16:39:26,811 | INFO     |   ✓ Phase 3: Training Dynamics              COMPLETE   0:00:01
+2026-09-04 16:39:26,811 | INFO     |   ✓ Phase 4: Robustness & Resilience        COMPLETE   0:00:00
+2026-09-04 16:39:26,811 | INFO     |   ✓ Phase 5: Scalability & Transfer Learning COMPLETE   0:00:00
+2026-09-04 16:39:26,811 | INFO     |   ✓ Phase 6: Deployment & Hardware          COMPLETE   0:00:00
+2026-09-04 16:39:26,811 | INFO     |   ✓ Phase 7: Protection Engineering & Interpretability COMPLETE   0:00:00
+2026-09-04 16:39:26,811 | INFO     |   ✓ Phase 8: Statistical Aggregation        COMPLETE   0:00:00
+2026-09-04 16:39:26,811 | INFO     |   ✓ Phase 9: Final Compilation              COMPLETE   0:00:00
+2026-09-04 16:39:26,811 | INFO     | ----------------------------------------------------------------------
+2026-09-04 16:39:26,811 | INFO     | Figures: 58 generated, 0 failed, 0 pending
+2026-09-04 16:39:26,811 | INFO     | ======================================================================
+2026-09-04 16:39:26,811 | INFO     | Report saved to: /workspace/DOCR_Research/results/reports/experiment_report_20260904_153944.json
+2026-09-04 16:39:26,811 | INFO     | 
+2026-09-04 16:39:26,811 | INFO     | ======================================================================
+2026-09-04 16:39:26,811 | INFO     | ALL PHASES COMPLETE
+2026-09-04 16:39:26,811 | INFO     | Total time: 0:59:42
+2026-09-04 16:39:26,811 | INFO     | Report: /workspace/DOCR_Research/results/reports/experiment_report_20260904_153944.json
+2026-09-04 16:39:26,811 | INFO     | ======================================================================

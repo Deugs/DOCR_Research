@@ -2916,7 +2916,7 @@
   },
   "metadata": {
     "method": "_eval_relay_curves",
-    "duration": 0.0006768703460693359,
+    "duration": 0.0003714561462402344,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -2991,5 +2991,5 @@
     },
     "base_of": 55.08287320208595
   },
-  "timestamp": 1788038334.596913
+  "timestamp": 1788639716.269087
 }

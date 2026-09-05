@@ -1,15 +1,15 @@
 {
-  "timestamp": "2026-08-15T09:08:44.158493",
+  "timestamp": "2026-09-04T16:39:26.810667",
   "fast_mode": true,
   "output_dir": "results",
   "figures_expected": 58,
-  "figures_generated": 33,
-  "figures_manual": 17,
+  "figures_generated": 44,
+  "figures_manual": 15,
   "training_strategy": "11 core runs (A-K) + post-processing",
   "estimated_gpu_days": "~1-2 (fast)",
   "cache_status": {
     "exists": true,
-    "entries": 12,
+    "entries": 11,
     "cores_present": [
       "A",
       "B",

@@ -1,11 +1,18 @@
 {
   "fig_num": 44,
   "data": {
-    "error": "short circuit apparent power s_sc_max_mva needs to be specified for external grid \n Try: net.ext_grid['s_sc_max_mva'] = 1000"
+    "Bus 1": 20.441245424963515,
+    "Bus 2": 9.604654652341289,
+    "Bus 3": 9.993659448043104,
+    "Bus 4": 11.430136454812603,
+    "Bus 5": 11.692394855276785,
+    "Bus 6": 12.776931983876437,
+    "Bus 7": 12.92949839319976,
+    "Bus 8": 11.13147878748652
   },
   "metadata": {
     "method": "_eval_fault_contributions",
-    "duration": 0.25594663619995117,
+    "duration": 1.598895788192749,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -80,5 +87,5 @@
     },
     "base_of": 55.08287320208595
   },
-  "timestamp": 1788038330.5979538
+  "timestamp": 1788639714.811694
 }

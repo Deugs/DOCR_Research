@@ -2,11 +2,12 @@
   "fig_num": 58,
   "data": {
     "of": 147.31486228613196,
-    "cti_ok": false
+    "cti_ok": false,
+    "pv_variability": 0.06967516931855865
   },
   "metadata": {
     "method": "_eval_seasonal",
-    "duration": 0.9983429908752441,
+    "duration": 0.36120033264160156,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -81,5 +82,5 @@
     },
     "base_of": 55.08287320208595
   },
-  "timestamp": 1788038403.8951356
+  "timestamp": 1788639744.88317
 }

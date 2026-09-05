@@ -7,7 +7,7 @@
   },
   "metadata": {
     "method": "_eval_comm_stress",
-    "duration": 1.007883071899414,
+    "duration": 0.3616757392883301,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -82,5 +82,5 @@
     },
     "base_of": 55.08287320208595
   },
-  "timestamp": 1788038112.8331459
+  "timestamp": 1788633544.5247154
 }

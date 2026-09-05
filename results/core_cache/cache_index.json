@@ -1,23 +1,7 @@
 {
-  "fca7f6b89fa4cbcf": {
-    "name": "core_A_mappo_safe_ewc_8bus_60pv",
-    "created": "2026-08-29T11:37:19.858997",
-    "config_keys": [
-      "name",
-      "method",
-      "system",
-      "pv",
-      "n_runs",
-      "n_episodes",
-      "seed",
-      "fault_type",
-      "real_safety_ewc"
-    ],
-    "size_mb": 0.12524795532226562
-  },
   "6c47c1b99292a7e1": {
     "name": "core_B_curriculum",
-    "created": "2026-08-29T13:06:12.536258",
+    "created": "2026-09-04T16:08:33.974690",
     "config_keys": [
       "name",
       "tasks",
@@ -28,11 +12,11 @@
       "real_safety",
       "real_pv_eval"
     ],
-    "size_mb": 0.001468658447265625
+    "size_mb": 0.00157928466796875
   },
   "2b9d1b388f32dc87": {
     "name": "core_C_baselines_8bus",
-    "created": "2026-08-29T16:26:12.062524",
+    "created": "2026-09-04T16:20:13.243298",
     "config_keys": [
       "name",
       "system",
@@ -48,7 +32,7 @@
   },
   "64353ed3bb63ad9e": {
     "name": "core_D_ablation",
-    "created": "2026-08-29T20:12:05.434836",
+    "created": "2026-09-04T16:30:46.659857",
     "config_keys": [
       "name",
       "configs",
@@ -58,11 +42,11 @@
       "fault_type",
       "real_safety_ewc"
     ],
-    "size_mb": 0.00036907196044921875
+    "size_mb": 0.0004291534423828125
   },
   "28b14fe96ef27938": {
     "name": "core_E_hparam",
-    "created": "2026-08-29T20:42:57.333033",
+    "created": "2026-09-04T16:31:45.255515",
     "config_keys": [
       "name",
       "lambda_ewc",
@@ -74,22 +58,22 @@
       "fault_type",
       "real_hparam_effect"
     ],
-    "size_mb": 0.004332542419433594
+    "size_mb": 0.00787353515625
   },
   "86ef40a3dd756e02": {
     "name": "core_F_scalability",
-    "created": "2026-08-29T21:13:58.044438",
+    "created": "2026-09-04T16:36:50.674455",
     "config_keys": [
       "name",
       "systems",
       "seed",
       "fault_type"
     ],
-    "size_mb": 0.00015926361083984375
+    "size_mb": 0.00023174285888671875
   },
   "7bb89fe9ec97ec3a": {
     "name": "core_G_robustness",
-    "created": "2026-08-29T21:15:32.022897",
+    "created": "2026-09-04T16:37:29.887109",
     "config_keys": [
       "name",
       "stress_types",
@@ -103,7 +87,7 @@
   },
   "a5a346edb4c75c2f": {
     "name": "core_H_transfer",
-    "created": "2026-08-29T21:16:44.150346",
+    "created": "2026-09-04T16:37:58.590322",
     "config_keys": [
       "name",
       "evaluations",
@@ -118,7 +102,7 @@
   },
   "d5163a43d5271ee6": {
     "name": "core_I_deployment",
-    "created": "2026-08-29T21:17:48.147967",
+    "created": "2026-09-04T16:38:24.547817",
     "config_keys": [
       "name",
       "benchmarks",
@@ -132,7 +116,7 @@
   },
   "aad3e854030d6219": {
     "name": "core_J_protection",
-    "created": "2026-08-29T21:18:56.720009",
+    "created": "2026-09-04T16:38:54.352493",
     "config_keys": [
       "name",
       "analyses",
@@ -146,7 +130,7 @@
   },
   "31027c769c1483fb": {
     "name": "core_K_seasonal",
-    "created": "2026-08-29T21:20:03.895649",
+    "created": "2026-09-04T16:39:21.539575",
     "config_keys": [
       "name",
       "seasons",
@@ -156,5 +140,147 @@
       "real_safety_ewc"
     ],
     "size_mb": 0.0001277923583984375
+  },
+  "5aed9335c913a54e": {
+    "name": "core_C_metrics_8bus",
+    "created": "2026-09-05T18:38:33.039955",
+    "config_keys": [
+      "name",
+      "system",
+      "methods",
+      "n_runs",
+      "n_episodes",
+      "seed",
+      "fault_type",
+      "real_safety_ewc",
+      "real_multi_system",
+      "real_fig33_55_56_metrics_v1"
+    ],
+    "size_mb": 0.0022344589233398438
+  },
+  "afb19bf184188ab1": {
+    "name": "core_C_baselines_8bus",
+    "created": "2026-09-05T18:38:33.040452",
+    "config_keys": [
+      "name",
+      "system",
+      "methods",
+      "n_runs",
+      "n_episodes",
+      "seed",
+      "fault_type",
+      "real_safety_ewc",
+      "real_multi_system",
+      "real_fig33_55_56_metrics_v1"
+    ],
+    "size_mb": 0.02017688751220703
+  },
+  "a169efedeed3321e": {
+    "name": "core_G_robustness",
+    "created": "2026-09-05T18:39:18.743410",
+    "config_keys": [
+      "name",
+      "stress_types",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_sweep_v2",
+      "real_sweep_v3_n1"
+    ],
+    "size_mb": 0.0013494491577148438
+  },
+  "da650fefb72ddb23": {
+    "name": "core_H_transfer",
+    "created": "2026-09-05T19:10:28.680062",
+    "config_keys": [
+      "name",
+      "evaluations",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_unseen_sweep_v2",
+      "real_14bus_transfer",
+      "real_cold_start_v1"
+    ],
+    "size_mb": 0.0003070831298828125
+  },
+  "63b7cd5b25425cc1": {
+    "name": "core_I_deployment",
+    "created": "2026-09-05T19:10:53.586662",
+    "config_keys": [
+      "name",
+      "benchmarks",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_inference_timing",
+      "real_compression_per_method_v1"
+    ],
+    "size_mb": 0.00116729736328125
+  },
+  "13793b51f1cd7b32": {
+    "name": "core_A_mappo_safe_ewc_8bus_60pv",
+    "created": "2026-09-05T20:02:39.983715",
+    "config_keys": [
+      "name",
+      "method",
+      "system",
+      "pv",
+      "n_runs",
+      "n_episodes",
+      "seed",
+      "fault_type",
+      "real_safety_ewc",
+      "real_fig36_fig38_v1"
+    ],
+    "size_mb": 0.15384292602539062
+  },
+  "2329f17ced6f4ca4": {
+    "name": "core_J_protection",
+    "created": "2026-09-05T20:21:58.721652",
+    "config_keys": [
+      "name",
+      "analyses",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "seeded_jitter",
+      "real_fig44_sc_and_fig47_fault_sweep_v1"
+    ],
+    "size_mb": 0.031355857849121094
+  },
+  "27fcb5776467d3c8": {
+    "name": "core_K_seasonal",
+    "created": "2026-09-05T20:22:24.883418",
+    "config_keys": [
+      "name",
+      "seasons",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_performance_pv_variability_v1"
+    ],
+    "size_mb": 0.00023746490478515625
+  },
+  "0f1ba4e2d21a40b9": {
+    "name": "core_B_curriculum",
+    "created": "2026-09-05T20:40:48.946286",
+    "config_keys": [
+      "name",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed",
+      "fault_type",
+      "real_safety",
+      "real_pv_eval",
+      "real_fisher_capture_v1"
+    ],
+    "size_mb": 0.08572101593017578
   }
 }

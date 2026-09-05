@@ -2,11 +2,25 @@
   "fig_num": 47,
   "data": {
     "sympathetic": 145,
-    "traditional": 0
+    "traditional": 0,
+    "by_fault_type": {
+      "1ph": {
+        "marl": 66,
+        "traditional": 0
+      },
+      "LL": {
+        "marl": 136,
+        "traditional": 0
+      },
+      "3ph": {
+        "marl": 145,
+        "traditional": 0
+      }
+    }
   },
   "metadata": {
     "method": "_eval_sympathetic_tripping",
-    "duration": 2.1195406913757324,
+    "duration": 2.450711250305176,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -81,5 +95,5 @@
     },
     "base_of": 55.08287320208595
   },
-  "timestamp": 1788038336.719151
+  "timestamp": 1788639718.7212162
 }

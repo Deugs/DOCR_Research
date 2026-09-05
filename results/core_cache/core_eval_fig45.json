@@ -828,7 +828,7 @@
   },
   "metadata": {
     "method": "_eval_daily_pv",
-    "duration": 3.996098518371582,
+    "duration": 1.4560656547546387,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -903,5 +903,5 @@
     },
     "base_of": 55.08287320208595
   },
-  "timestamp": 1788038334.5947218
+  "timestamp": 1788639716.2681215
 }

@@ -1,0 +1,251 @@
+2026-08-31 17:45:31,805 | INFO     | [93m[FAST MODE] Using reduced iterations for testing.[0m
+2026-08-31 17:45:31,805 | INFO     | 
+2026-08-31 17:45:31,808 | INFO     | ======================================================================
+2026-08-31 17:45:31,810 | INFO     | [1m[95mDOCR-MARL THESIS: COMPLETE EXPERIMENT SUITE[0m
+2026-08-31 17:45:31,810 | INFO     | Strategy: 11 core training runs + unified post-processing
+2026-08-31 17:45:31,810 | INFO     | System: 8BUS | PV: 60% | Fault: 3ph
+2026-08-31 17:45:31,811 | INFO     | Runs: 2 | Episodes: 500
+2026-08-31 17:45:31,811 | INFO     | Estimated: ~8-10 GPU-days (full) / ~1-2 hours (fast)
+2026-08-31 17:45:31,812 | INFO     | ======================================================================
+2026-08-31 17:45:31,812 | INFO     | 
+2026-08-31 17:45:31,812 | INFO     | ======================================================================
+2026-08-31 17:45:31,813 | INFO     | [1m[96mPHASE 1: Manual Diagrams & Architecture[0m
+2026-08-31 17:45:31,813 | INFO     | ======================================================================
+2026-08-31 17:45:31,814 | INFO     | Phase 1: 14 auto-generatable + 1 truly manual figures
+2026-08-31 17:45:31,814 | INFO     | Output directory: results\figures\figs_01_10
+2026-08-31 17:45:36,179 | INFO     | [92m  [Fig 01] ✓ Generated in 4.36s[0m
+2026-08-31 17:45:36,928 | INFO     | [92m  [Fig 02] ✓ Generated in 0.75s[0m
+2026-08-31 17:45:37,777 | INFO     | [92m  [Fig 03] ✓ Generated in 0.85s[0m
+2026-08-31 17:45:38,424 | INFO     | [92m  [Fig 04] ✓ Generated in 0.65s[0m
+2026-08-31 17:45:39,724 | INFO     | [92m  [Fig 17] ✓ Generated in 1.30s[0m
+2026-08-31 17:45:40,724 | INFO     | [92m  [Fig 19] ✓ Generated in 1.00s[0m
+2026-08-31 17:45:41,940 | INFO     | [92m  [Fig 26] ✓ Generated in 1.22s[0m
+2026-08-31 17:45:42,711 | INFO     | [92m  [Fig 27] ✓ Generated in 0.77s[0m
+2026-08-31 17:45:43,371 | INFO     | [92m  [Fig 28] ✓ Generated in 0.66s[0m
+2026-08-31 17:45:44,338 | INFO     | [92m  [Fig 30] ✓ Generated in 0.97s[0m
+2026-08-31 17:45:45,586 | INFO     | [92m  [Fig 34] ✓ Generated in 1.25s[0m
+2026-08-31 17:45:47,018 | INFO     | [92m  [Fig 35] ✓ Generated in 1.43s[0m
+2026-08-31 17:45:48,388 | INFO     | [92m  [Fig 51] ✓ Generated in 1.37s[0m
+2026-08-31 17:45:49,252 | INFO     | [92m  [Fig 52] ✓ Generated in 0.85s[0m
+2026-08-31 17:45:49,252 | INFO     |   [Fig 26a] ○ Truly manual - create in docs/diagrams/ or LaTeX
+2026-08-31 17:45:49,252 | INFO     | Phase 1 complete: 14 generated, 0 failed, 1 manual
+2026-08-31 17:45:49,265 | INFO     | [92m✓ Phase 1 Manual Diagrams & Architecture: COMPLETE (0:00:17)[0m
+2026-08-31 17:45:49,265 | INFO     | 
+2026-08-31 17:45:49,265 | INFO     | ======================================================================
+2026-08-31 17:45:49,266 | INFO     | [1m[96mPHASE 2: Core Training Runs (A-K with Real Evals)[0m
+2026-08-31 17:45:49,266 | INFO     | ======================================================================
+2026-08-31 17:45:49,266 | INFO     | Running unified core training via run_core_training.py...
+2026-08-31 17:45:49,267 | INFO     |   System: 8BUS | PV: 60% | Fault: 3ph
+2026-08-31 17:45:49,267 | INFO     |   Runs: 2 | Episodes: 500
+2026-08-31 17:45:49,267 | INFO     |   Features: each of the 11 core runs (A-K) fixes/sweeps its own GNN/Safe-RL/EWC combination - see run_core_training.py per-core docs.
+2026-08-31 17:45:49,267 | INFO     | 
+2026-08-31 17:45:49,267 | INFO     | [96m──────────────────────────────────────────────────────────────────────[0m
+2026-08-31 17:45:49,267 | INFO     | [1m[94m▶ Phase 2: Unified Core Training (all 11 cores A-K)[0m
+2026-08-31 17:45:49,269 | INFO     |   CMD: python run_core_training.py --all --fast --system 8bus --pv 0.6 --n-runs 2 --episodes 500 --fault-type 3ph
+2026-08-31 17:45:50,060 | ERROR    | [91m  ✗ FAILED after 0.8s (exit 1)[0m
+2026-08-31 17:45:50,060 | WARNING  | [93m  ⚠ Continuing despite error (missing optional module)[0m
+2026-08-31 17:45:50,061 | INFO     | 
+[Phase 2] Running Objective 4 benchmark comparison (GA-SQP/HWOA/HHO/JAYA/EEO vs MARL)...
+2026-08-31 17:45:52,629 | INFO     |   PV level: 0% - already computed, loading results\benchmark_pv000.pkl
+2026-08-31 17:45:52,629 | INFO     |     Warning: cached results\benchmark_pv000.pkl is corrupted/unreadable (No module named 'numpy._core'); re-running this PV level.
+2026-08-31 17:45:52,629 | INFO     |   PV level: 0%
+2026-08-31 18:58:41,810 | INFO     |     Saved: results\benchmark_pv000.pkl
+2026-08-31 18:58:41,964 | INFO     |     Statistical report saved: results\stat_comparison_pv000.txt
+2026-08-31 18:58:41,966 | INFO     |   PV level: 20% - already computed, loading results\benchmark_pv020.pkl
+2026-08-31 18:58:41,970 | INFO     |     Warning: cached results\benchmark_pv020.pkl is corrupted/unreadable (No module named 'numpy._core'); re-running this PV level.
+2026-08-31 18:58:41,971 | INFO     |   PV level: 20%
+2026-08-31 20:16:16,174 | INFO     |     Saved: results\benchmark_pv020.pkl
+2026-08-31 20:16:16,290 | INFO     |     Statistical report saved: results\stat_comparison_pv020.txt
+2026-08-31 20:16:16,291 | INFO     |   PV level: 40% - already computed, loading results\benchmark_pv040.pkl
+2026-08-31 20:16:16,298 | INFO     |     Warning: cached results\benchmark_pv040.pkl is corrupted/unreadable (No module named 'numpy._core'); re-running this PV level.
+2026-08-31 20:16:16,298 | INFO     |   PV level: 40%
+2026-08-31 21:31:27,185 | INFO     |     Saved: results\benchmark_pv040.pkl
+2026-08-31 21:31:27,378 | INFO     |     Statistical report saved: results\stat_comparison_pv040.txt
+2026-08-31 21:31:27,383 | INFO     |   PV level: 60% - already computed, loading results\benchmark_pv060.pkl
+2026-08-31 21:31:27,388 | INFO     |     Warning: cached results\benchmark_pv060.pkl is corrupted/unreadable (No module named 'numpy._core'); re-running this PV level.
+2026-08-31 21:31:27,388 | INFO     |   PV level: 60%
+2026-08-31 22:40:54,282 | INFO     |     Saved: results\benchmark_pv060.pkl
+2026-08-31 22:40:54,355 | INFO     |     Statistical report saved: results\stat_comparison_pv060.txt
+2026-08-31 22:40:54,356 | INFO     | [Phase 2] Objective 4 benchmark comparison complete.
+2026-08-31 22:40:54,365 | INFO     | [92m✓ Phase 2 Core Training Runs (A-K with Real Evals): COMPLETE (4:55:05)[0m
+2026-08-31 22:40:54,425 | INFO     | 
+2026-08-31 22:40:54,425 | INFO     | ======================================================================
+2026-08-31 22:40:54,426 | INFO     | [1m[96mPHASE 3: Training Dynamics[0m
+2026-08-31 22:40:54,426 | INFO     | ======================================================================
+2026-08-31 22:40:54,426 | INFO     | Generating 14 figures from Core A/B cached data: [5, 6, 7, 8, 9, 10, 12, 16, 21, 29, 36, 37, 38, 41]
+2026-08-31 22:40:54,787 | ERROR    | [91m  [Fig 05] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,788 | ERROR    | [91mFig 5 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,793 | ERROR    | [91m  [Fig 06] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,793 | ERROR    | [91mFig 6 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,795 | ERROR    | [91m  [Fig 07] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,795 | ERROR    | [91mFig 7 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,800 | ERROR    | [91m  [Fig 08] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,800 | ERROR    | [91mFig 8 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,802 | ERROR    | [91m  [Fig 09] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,802 | ERROR    | [91mFig 9 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,806 | ERROR    | [91m  [Fig 10] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,806 | ERROR    | [91mFig 10 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,808 | ERROR    | [91m  [Fig 12] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,808 | ERROR    | [91mFig 12 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,810 | ERROR    | [91m  [Fig 16] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,811 | ERROR    | [91mFig 16 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,813 | ERROR    | [91m  [Fig 21] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,814 | ERROR    | [91mFig 21 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,816 | ERROR    | [91m  [Fig 29] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:54,816 | ERROR    | [91mFig 29 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:56,977 | INFO     | [92m  [Fig 36] ✓ Generated in 2.16s[0m
+2026-08-31 22:40:56,978 | ERROR    | [91m  [Fig 37] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:56,978 | ERROR    | [91mFig 37 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:56,980 | ERROR    | [91m  [Fig 38] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:56,980 | ERROR    | [91mFig 38 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:56,983 | ERROR    | [91m  [Fig 41] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:56,984 | ERROR    | [91mFig 41 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:56,984 | INFO     | Phase 3 complete: 1 generated, 13 failed
+2026-08-31 22:40:56,984 | INFO     | [92m✓ Phase 3 Training Dynamics: COMPLETE (0:00:02)[0m
+2026-08-31 22:40:56,985 | INFO     | 
+2026-08-31 22:40:56,985 | INFO     | ======================================================================
+2026-08-31 22:40:56,985 | INFO     | [1m[96mPHASE 4: Robustness & Resilience[0m
+2026-08-31 22:40:56,985 | INFO     | ======================================================================
+2026-08-31 22:40:56,985 | INFO     | Generating 6 figures from Core G cached data: [13, 14, 20, 22, 24, 54]
+2026-08-31 22:40:57,340 | INFO     | [92m  [Fig 13] ✓ Generated in 0.35s[0m
+2026-08-31 22:40:57,653 | INFO     | [92m  [Fig 14] ✓ Generated in 0.31s[0m
+2026-08-31 22:40:57,912 | INFO     | [92m  [Fig 20] ✓ Generated in 0.26s[0m
+2026-08-31 22:40:58,297 | INFO     | [92m  [Fig 22] ✓ Generated in 0.39s[0m
+2026-08-31 22:40:58,709 | INFO     | [92m  [Fig 24] ✓ Generated in 0.41s[0m
+2026-08-31 22:40:58,919 | INFO     | [92m  [Fig 54] ✓ Generated in 0.21s[0m
+2026-08-31 22:40:58,919 | INFO     | Phase 4 complete: 6 generated, 0 failed
+2026-08-31 22:40:58,920 | INFO     | [92m✓ Phase 4 Robustness & Resilience: COMPLETE (0:00:01)[0m
+2026-08-31 22:40:58,920 | INFO     | 
+2026-08-31 22:40:58,920 | INFO     | ======================================================================
+2026-08-31 22:40:58,921 | INFO     | [1m[96mPHASE 5: Scalability & Transfer Learning[0m
+2026-08-31 22:40:58,921 | INFO     | ======================================================================
+2026-08-31 22:40:58,921 | INFO     | Generating 3 figures from Core F/H cached data: [15, 23, 25]
+2026-08-31 22:40:59,334 | INFO     | [92m  [Fig 15] ✓ Generated in 0.41s[0m
+2026-08-31 22:40:59,338 | ERROR    | [91m  [Fig 23] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,338 | ERROR    | [91mFig 23 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,340 | ERROR    | [91m  [Fig 25] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,341 | ERROR    | [91mFig 25 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,341 | INFO     | Phase 5 complete: 1 generated, 2 failed
+2026-08-31 22:40:59,342 | INFO     | [92m✓ Phase 5 Scalability & Transfer Learning: COMPLETE (0:00:00)[0m
+2026-08-31 22:40:59,342 | INFO     | 
+2026-08-31 22:40:59,342 | INFO     | ======================================================================
+2026-08-31 22:40:59,343 | INFO     | [1m[96mPHASE 6: Deployment & Hardware[0m
+2026-08-31 22:40:59,343 | INFO     | ======================================================================
+2026-08-31 22:40:59,343 | INFO     | Generating 2 figures from Core I cached data: [18, 53]
+2026-08-31 22:40:59,349 | ERROR    | [91m  [Fig 18] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,349 | ERROR    | [91mFig 18 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,351 | ERROR    | [91m  [Fig 53] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,352 | ERROR    | [91mFig 53 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,352 | INFO     | Phase 6 complete: 0 generated, 2 failed
+2026-08-31 22:40:59,353 | INFO     | [92m✓ Phase 6 Deployment & Hardware: COMPLETE (0:00:00)[0m
+2026-08-31 22:40:59,353 | INFO     | 
+2026-08-31 22:40:59,353 | INFO     | ======================================================================
+2026-08-31 22:40:59,354 | INFO     | [1m[96mPHASE 7: Protection Engineering & Interpretability[0m
+2026-08-31 22:40:59,354 | INFO     | ======================================================================
+2026-08-31 22:40:59,354 | INFO     | Generating 9 figures from Core J/A cached data: [43, 44, 45, 46, 47, 48, 49, 50, 58]
+2026-08-31 22:40:59,361 | ERROR    | [91m  [Fig 43] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,361 | ERROR    | [91mFig 43 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,364 | ERROR    | [91m  [Fig 44] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,364 | ERROR    | [91mFig 44 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,368 | ERROR    | [91m  [Fig 45] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,368 | ERROR    | [91mFig 45 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,371 | ERROR    | [91m  [Fig 46] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,372 | ERROR    | [91mFig 46 error: No module named 'numpy._core'[0m
+2026-08-31 22:40:59,676 | INFO     | [92m  [Fig 47] ✓ Generated in 0.30s[0m
+2026-08-31 22:40:59,949 | INFO     | [92m  [Fig 48] ✓ Generated in 0.27s[0m
+2026-08-31 22:41:01,328 | INFO     | [92m  [Fig 49] ✓ Generated in 1.38s[0m
+2026-08-31 22:41:01,616 | INFO     | [92m  [Fig 50] ✓ Generated in 0.29s[0m
+2026-08-31 22:41:02,125 | INFO     | [92m  [Fig 58] ✓ Generated in 0.51s[0m
+2026-08-31 22:41:02,126 | INFO     | Phase 7 complete: 5 generated, 4 failed
+2026-08-31 22:41:02,126 | INFO     | [92m✓ Phase 7 Protection Engineering & Interpretability: COMPLETE (0:00:02)[0m
+2026-08-31 22:41:02,126 | INFO     | 
+2026-08-31 22:41:02,126 | INFO     | ======================================================================
+2026-08-31 22:41:02,126 | INFO     | [1m[96mPHASE 8: Statistical Aggregation[0m
+2026-08-31 22:41:02,127 | INFO     | ======================================================================
+2026-08-31 22:41:02,127 | INFO     | Generating 10 figures from Core C cached data: [11, 31, 32, 33, 55, 56, 57, 39, 40, 42]
+2026-08-31 22:41:02,131 | ERROR    | [91m  [Fig 11] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,131 | ERROR    | [91mFig 11 error: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,133 | ERROR    | [91m  [Fig 31] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,133 | ERROR    | [91mFig 31 error: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,136 | ERROR    | [91m  [Fig 32] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,136 | ERROR    | [91mFig 32 error: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,138 | ERROR    | [91m  [Fig 33] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,138 | ERROR    | [91mFig 33 error: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,140 | ERROR    | [91m  [Fig 55] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,140 | ERROR    | [91mFig 55 error: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,142 | ERROR    | [91m  [Fig 56] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,142 | ERROR    | [91mFig 56 error: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,144 | ERROR    | [91m  [Fig 57] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,144 | ERROR    | [91mFig 57 error: No module named 'numpy._core'[0m
+2026-08-31 22:41:02,656 | INFO     | [92m  [Fig 39] ✓ Generated in 0.51s[0m
+2026-08-31 22:41:04,202 | INFO     | [92m  [Fig 40] ✓ Generated in 1.55s[0m
+2026-08-31 22:41:04,204 | ERROR    | [91m  [Fig 42] ✗ Failed: No module named 'numpy._core'[0m
+2026-08-31 22:41:04,205 | ERROR    | [91mFig 42 error: No module named 'numpy._core'[0m
+2026-08-31 22:41:04,205 | INFO     | Phase 8 complete: 2 generated, 8 failed
+2026-08-31 22:41:04,205 | INFO     | [92m✓ Phase 8 Statistical Aggregation: COMPLETE (0:00:02)[0m
+2026-08-31 22:41:04,206 | INFO     | 
+2026-08-31 22:41:04,206 | INFO     | ======================================================================
+2026-08-31 22:41:04,206 | INFO     | [1m[96mPHASE 9: Final Compilation[0m
+2026-08-31 22:41:04,206 | INFO     | ======================================================================
+2026-08-31 22:41:04,212 | INFO     |   -> Compilation report saved to results\reports\compilation_report.json
+2026-08-31 22:41:04,213 | INFO     |   -> Figures generated: 50/58 (35 auto + 15 manual)
+2026-08-31 22:41:04,213 | INFO     |   -> Cache entries: 11
+2026-08-31 22:41:04,213 | INFO     |   -> Cached cores: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K']
+2026-08-31 22:41:04,213 | INFO     | [92m✓ Phase 9 Final Compilation: COMPLETE (0:00:00)[0m
+2026-08-31 22:41:04,214 | INFO     | 
+2026-08-31 22:41:04,214 | INFO     | ======================================================================
+2026-08-31 22:41:04,214 | INFO     | [1m[95mEXPERIMENT SUITE SUMMARY[0m
+2026-08-31 22:41:04,215 | INFO     | ======================================================================
+2026-08-31 22:41:04,215 | INFO     | Total elapsed: 4:55:32
+2026-08-31 22:41:04,215 | INFO     | Mode: FAST
+2026-08-31 22:41:04,216 | INFO     | ETA: 1:12:01
+2026-08-31 22:41:04,216 | INFO     | ----------------------------------------------------------------------
+2026-08-31 22:41:04,216 | INFO     | [92m  ✓ Phase 1: Manual Diagrams & Architecture COMPLETE   0:00:17[0m
+2026-08-31 22:41:04,217 | INFO     | [92m  ✓ Phase 2: Core Training Runs (A-K with Real Evals) COMPLETE   4:55:05[0m
+2026-08-31 22:41:04,218 | INFO     | [92m  ✓ Phase 3: Training Dynamics              COMPLETE   0:00:02 [13 failed][0m
+2026-08-31 22:41:04,218 | INFO     | [92m  ✓ Phase 4: Robustness & Resilience        COMPLETE   0:00:01[0m
+2026-08-31 22:41:04,218 | INFO     | [92m  ✓ Phase 5: Scalability & Transfer Learning COMPLETE   0:00:00 [2 failed][0m
+2026-08-31 22:41:04,219 | INFO     | [92m  ✓ Phase 6: Deployment & Hardware          COMPLETE   0:00:00 [2 failed][0m
+2026-08-31 22:41:04,219 | INFO     | [92m  ✓ Phase 7: Protection Engineering & Interpretability COMPLETE   0:00:02 [4 failed][0m
+2026-08-31 22:41:04,219 | INFO     | [92m  ✓ Phase 8: Statistical Aggregation        COMPLETE   0:00:02 [8 failed][0m
+2026-08-31 22:41:04,220 | INFO     | [92m  ✓ Phase 9: Final Compilation              COMPLETE   0:00:00[0m
+2026-08-31 22:41:04,220 | INFO     | ----------------------------------------------------------------------
+2026-08-31 22:41:04,220 | INFO     | Figures: 29 generated, 29 failed, 0 pending
+2026-08-31 22:41:04,220 | INFO     | Failed figures:
+2026-08-31 22:41:04,221 | ERROR    |   Fig 05: No module named 'numpy._core'
+2026-08-31 22:41:04,221 | ERROR    |   Fig 06: No module named 'numpy._core'
+2026-08-31 22:41:04,221 | ERROR    |   Fig 07: No module named 'numpy._core'
+2026-08-31 22:41:04,222 | ERROR    |   Fig 08: No module named 'numpy._core'
+2026-08-31 22:41:04,222 | ERROR    |   Fig 09: No module named 'numpy._core'
+2026-08-31 22:41:04,222 | ERROR    |   Fig 10: No module named 'numpy._core'
+2026-08-31 22:41:04,223 | ERROR    |   Fig 12: No module named 'numpy._core'
+2026-08-31 22:41:04,223 | ERROR    |   Fig 16: No module named 'numpy._core'
+2026-08-31 22:41:04,223 | ERROR    |   Fig 21: No module named 'numpy._core'
+2026-08-31 22:41:04,224 | ERROR    |   Fig 29: No module named 'numpy._core'
+2026-08-31 22:41:04,224 | ERROR    |   Fig 37: No module named 'numpy._core'
+2026-08-31 22:41:04,224 | ERROR    |   Fig 38: No module named 'numpy._core'
+2026-08-31 22:41:04,224 | ERROR    |   Fig 41: No module named 'numpy._core'
+2026-08-31 22:41:04,225 | ERROR    |   Fig 23: No module named 'numpy._core'
+2026-08-31 22:41:04,225 | ERROR    |   Fig 25: No module named 'numpy._core'
+2026-08-31 22:41:04,225 | ERROR    |   Fig 18: No module named 'numpy._core'
+2026-08-31 22:41:04,226 | ERROR    |   Fig 53: No module named 'numpy._core'
+2026-08-31 22:41:04,226 | ERROR    |   Fig 43: No module named 'numpy._core'
+2026-08-31 22:41:04,226 | ERROR    |   Fig 44: No module named 'numpy._core'
+2026-08-31 22:41:04,226 | ERROR    |   Fig 45: No module named 'numpy._core'
+2026-08-31 22:41:04,227 | ERROR    |   Fig 46: No module named 'numpy._core'
+2026-08-31 22:41:04,227 | ERROR    |   Fig 11: No module named 'numpy._core'
+2026-08-31 22:41:04,227 | ERROR    |   Fig 31: No module named 'numpy._core'
+2026-08-31 22:41:04,228 | ERROR    |   Fig 32: No module named 'numpy._core'
+2026-08-31 22:41:04,228 | ERROR    |   Fig 33: No module named 'numpy._core'
+2026-08-31 22:41:04,228 | ERROR    |   Fig 55: No module named 'numpy._core'
+2026-08-31 22:41:04,229 | ERROR    |   Fig 56: No module named 'numpy._core'
+2026-08-31 22:41:04,229 | ERROR    |   Fig 57: No module named 'numpy._core'
+2026-08-31 22:41:04,229 | ERROR    |   Fig 42: No module named 'numpy._core'
+2026-08-31 22:41:04,230 | INFO     | ======================================================================
+2026-08-31 22:41:04,237 | INFO     | Report saved to: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\reports\experiment_report_20260831_174531.json
+2026-08-31 22:41:04,238 | INFO     | 
+2026-08-31 22:41:04,238 | INFO     | ======================================================================
+2026-08-31 22:41:04,238 | INFO     | [1m[92mALL PHASES COMPLETE[0m
+2026-08-31 22:41:04,239 | INFO     | Total time: 4:55:32
+2026-08-31 22:41:04,240 | INFO     | Report: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\reports\experiment_report_20260831_174531.json
+2026-08-31 22:41:04,240 | INFO     | ======================================================================

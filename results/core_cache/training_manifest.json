@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-08-29T21:20:03.896929",
+  "timestamp": "2026-09-05T20:40:48.947810",
   "fast_mode": true,
   "use_synthetic": false,
   "config_used": true,
-  "elapsed_seconds": 38447.55163049698,
+  "elapsed_seconds": 1008.9866688251495,
   "cores": {
     "A": {
       "feeds": "Figs 9,10,12,21,37,38,41,48-50,55-57",
@@ -50,12 +50,12 @@
       "status": "complete"
     }
   },
-  "cache_dir": "/home/user/DOCR_Research/results/core_cache",
+  "cache_dir": "/workspace/DOCR_Research/results/core_cache",
   "estimated_gpu_days": "~1-2 hours (fast)",
   "cache_stats": {
-    "hits": 0,
-    "misses": 11,
-    "stores": 11
+    "hits": 10,
+    "misses": 1,
+    "stores": 1
   },
-  "progress_report": "/home/user/DOCR_Research/results/progress/training_progress_20260829_212003.json"
+  "progress_report": "/workspace/DOCR_Research/results/progress/training_progress_20260905_204048.json"
 }

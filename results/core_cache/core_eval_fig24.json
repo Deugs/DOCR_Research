@@ -7,7 +7,7 @@
   },
   "metadata": {
     "method": "_eval_sensor_robustness",
-    "duration": 1.0097362995147705,
+    "duration": 0.37009477615356445,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -82,5 +82,5 @@
     },
     "base_of": 55.08287320208595
   },
-  "timestamp": 1788038131.2521312
+  "timestamp": 1788633551.0972664
 }

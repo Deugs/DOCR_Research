@@ -7,7 +7,7 @@
   },
   "metadata": {
     "method": "_eval_adversarial",
-    "duration": 0.12855887413024902,
+    "duration": 0.05881381034851074,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -82,5 +82,5 @@
     },
     "base_of": 55.08287320208595
   },
-  "timestamp": 1788038132.0222802
+  "timestamp": 1788633551.4387977
 }
