@@ -194,7 +194,15 @@ def test_claim_c4_validation():
     validator.results = {
         "results": [
             {"method": "MAPPO", "system": "8bus", "best_of": mappo_history[-1], "history": mappo_history},
-            {"method": "MAPPO-Safe-EWC", "system": "8bus", "best_of": ewc_history[-1], "history": ewc_history},
+            # curriculum=True: the real bridge (core_to_phase5_bridge.py's
+            # _from_core_b_curriculum) tags only genuinely curriculum-
+            # trained "MAPPO-Safe-EWC" entries this way, since
+            # benchmark_pv/Core C also produce non-curriculum entries
+            # under the same method name -- thesis_validation.py's C4
+            # block filters the curriculum side to curriculum=True
+            # specifically to avoid averaging the two together.
+            {"method": "MAPPO-Safe-EWC", "system": "8bus", "best_of": ewc_history[-1],
+             "history": ewc_history, "curriculum": True},
         ]
     }
 

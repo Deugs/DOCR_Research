@@ -426,9 +426,15 @@ class ThesisValidator:
             if f"{primary_cti}_cti_satisfied_rate" in metrics:
                 metrics["cti_satisfied_rate"] = metrics[f"{primary_cti}_cti_satisfied_rate"]
 
-        # Forgetting measure (for EWC)
+        # Forgetting measure (for EWC). Excludes curriculum=True entries
+        # (Core B's curriculum-trained runs, see core_to_phase5_bridge.py's
+        # _from_core_b_curriculum) -- this claim measures the EWC-ablation
+        # methodology (single-task training with/without EWC via Core C),
+        # not curriculum learning; mixing the two under the same
+        # "MAPPO-Safe-EWC" label would conflate different training setups
+        # into one average, same issue Claim C4's block guards against.
         if "forgetting_measure" in claim.metrics:
-            ewc_results = by_method.get("MAPPO-Safe-EWC", [])
+            ewc_results = [r for r in by_method.get("MAPPO-Safe-EWC", []) if not r.get("curriculum")]
             baseline_results = by_method.get("MAPPO-Safe", [])
             if ewc_results and baseline_results:
                 ewc_of = np.mean([r.get("best_of", 0) for r in ewc_results])
@@ -457,7 +463,8 @@ class ThesisValidator:
         # better in this codebase) is scored as positive transfer, above
         # it as forgetting. A documented proxy, not a formal per-task BWT.
         if "backward_transfer" in claim.metrics:
-            ewc_results = by_method.get("MAPPO-Safe-EWC", [])
+            # Same curriculum exclusion as forgetting_measure above.
+            ewc_results = [r for r in by_method.get("MAPPO-Safe-EWC", []) if not r.get("curriculum")]
             baseline_results = by_method.get("MAPPO-Safe", [])
             if ewc_results and baseline_results:
                 ewc_of = np.mean([r.get("best_of", 0) for r in ewc_results])

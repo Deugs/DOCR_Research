@@ -1,19 +1,4 @@
 {
-  "6c47c1b99292a7e1": {
-    "name": "core_B_curriculum",
-    "created": "2026-09-04T16:08:33.974690",
-    "config_keys": [
-      "name",
-      "tasks",
-      "episodes_per_task",
-      "n_runs",
-      "seed",
-      "fault_type",
-      "real_safety",
-      "real_pv_eval"
-    ],
-    "size_mb": 0.00157928466796875
-  },
   "2b9d1b388f32dc87": {
     "name": "core_C_baselines_8bus",
     "created": "2026-09-04T16:20:13.243298",
@@ -71,20 +56,6 @@
     ],
     "size_mb": 0.00023174285888671875
   },
-  "7bb89fe9ec97ec3a": {
-    "name": "core_G_robustness",
-    "created": "2026-09-04T16:37:29.887109",
-    "config_keys": [
-      "name",
-      "stress_types",
-      "seed",
-      "fault_type",
-      "real_eval",
-      "real_safety_ewc",
-      "real_sweep_v2"
-    ],
-    "size_mb": 0.0008592605590820312
-  },
   "a5a346edb4c75c2f": {
     "name": "core_H_transfer",
     "created": "2026-09-04T16:37:58.590322",
@@ -99,20 +70,6 @@
       "real_14bus_transfer"
     ],
     "size_mb": 0.00025081634521484375
-  },
-  "d5163a43d5271ee6": {
-    "name": "core_I_deployment",
-    "created": "2026-09-04T16:38:24.547817",
-    "config_keys": [
-      "name",
-      "benchmarks",
-      "seed",
-      "fault_type",
-      "real_eval",
-      "real_safety_ewc",
-      "real_inference_timing"
-    ],
-    "size_mb": 0.0010938644409179688
   },
   "aad3e854030d6219": {
     "name": "core_J_protection",
@@ -175,21 +132,6 @@
     ],
     "size_mb": 0.02017688751220703
   },
-  "a169efedeed3321e": {
-    "name": "core_G_robustness",
-    "created": "2026-09-05T18:39:18.743410",
-    "config_keys": [
-      "name",
-      "stress_types",
-      "seed",
-      "fault_type",
-      "real_eval",
-      "real_safety_ewc",
-      "real_sweep_v2",
-      "real_sweep_v3_n1"
-    ],
-    "size_mb": 0.0013494491577148438
-  },
   "da650fefb72ddb23": {
     "name": "core_H_transfer",
     "created": "2026-09-05T19:10:28.680062",
@@ -205,21 +147,6 @@
       "real_cold_start_v1"
     ],
     "size_mb": 0.0003070831298828125
-  },
-  "63b7cd5b25425cc1": {
-    "name": "core_I_deployment",
-    "created": "2026-09-05T19:10:53.586662",
-    "config_keys": [
-      "name",
-      "benchmarks",
-      "seed",
-      "fault_type",
-      "real_eval",
-      "real_safety_ewc",
-      "real_inference_timing",
-      "real_compression_per_method_v1"
-    ],
-    "size_mb": 0.00116729736328125
   },
   "13793b51f1cd7b32": {
     "name": "core_A_mappo_safe_ewc_8bus_60pv",
@@ -267,11 +194,12 @@
     ],
     "size_mb": 0.00023746490478515625
   },
-  "0f1ba4e2d21a40b9": {
+  "b699af9f24c1920b": {
     "name": "core_B_curriculum",
-    "created": "2026-09-05T20:40:48.946286",
+    "created": "2026-09-07T18:21:13.145577",
     "config_keys": [
       "name",
+      "system",
       "tasks",
       "episodes_per_task",
       "n_runs",
@@ -279,8 +207,59 @@
       "fault_type",
       "real_safety",
       "real_pv_eval",
-      "real_fisher_capture_v1"
+      "real_fisher_capture_v1",
+      "real_curriculum_history_v1"
     ],
-    "size_mb": 0.08572101593017578
+    "size_mb": 0.15400123596191406
+  },
+  "92a6ece9e780942a": {
+    "name": "core_B_curriculum_14bus",
+    "created": "2026-09-07T19:24:39.340512",
+    "config_keys": [
+      "name",
+      "system",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed",
+      "fault_type",
+      "real_safety",
+      "real_pv_eval",
+      "real_fisher_capture_v1",
+      "real_curriculum_history_v1"
+    ],
+    "size_mb": 0.15400123596191406
+  },
+  "24e52166b1bad516": {
+    "name": "core_I_deployment",
+    "created": "2026-09-07T19:26:19.065471",
+    "config_keys": [
+      "name",
+      "benchmarks",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_inference_timing",
+      "real_compression_per_method_v1",
+      "real_39bus_latency_v1"
+    ],
+    "size_mb": 0.0020427703857421875
+  },
+  "b10487b566b2b4af": {
+    "name": "core_G_robustness",
+    "created": "2026-09-07T19:28:24.649888",
+    "config_keys": [
+      "name",
+      "stress_types",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_sweep_v2",
+      "real_sweep_v3_n1",
+      "real_39bus_bandwidth_v1"
+    ],
+    "size_mb": 0.0014772415161132812
   }
 }
