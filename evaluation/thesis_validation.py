@@ -493,8 +493,23 @@ class ThesisValidator:
                 not_within = np.where(~within)[0]
                 return int(not_within[-1] + 1) if len(not_within) > 0 else 0
 
+            curriculum_method = claim.required_methods[-1]   # e.g. "MAPPO-Safe-EWC"
+            baseline_method = claim.required_methods[0]       # e.g. "MAPPO"
+
             for method in claim.required_methods:
                 method_results = by_method.get(method, [])
+                # The curriculum side's method name (e.g. "MAPPO-Safe-EWC")
+                # also has non-curriculum entries under it -- benchmark_pv/
+                # Core C train that same-named method directly at one PV
+                # level, with no curriculum stages at all. Averaging those
+                # in with Core B's genuinely curriculum-trained runs would
+                # conflate two different training methodologies into one
+                # number, defeating the point of this specific comparison.
+                # Core B's bridge entries set curriculum=True explicitly
+                # (see core_to_phase5_bridge.py's _from_core_b_curriculum);
+                # every other source leaves the field absent.
+                if method == curriculum_method:
+                    method_results = [r for r in method_results if r.get("curriculum")]
                 conv_points = [
                     _convergence_point(r.get("history", []))
                     for r in method_results if r.get("history")
@@ -506,8 +521,6 @@ class ThesisValidator:
                 if final_ofs:
                     metrics[f"{method}_final_of"] = float(np.mean(final_ofs))
 
-            curriculum_method = claim.required_methods[-1]   # e.g. "MAPPO-Safe-EWC"
-            baseline_method = claim.required_methods[0]       # e.g. "MAPPO"
             curr_key = f"{curriculum_method}_samples_to_convergence"
             base_key = f"{baseline_method}_samples_to_convergence"
             if curr_key in metrics and base_key in metrics and metrics[base_key] > 0:

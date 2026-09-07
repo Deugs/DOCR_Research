@@ -977,11 +977,11 @@ def _aggregate_runs(runs_data: List[Dict]) -> Dict:
 # comment on _run_curriculum_single's TASKS definition)
 # ═════════════════════════════════════════════════════════════════
 def _core_B_job(args):
-    run_idx, run_seed, episodes_per_task, tasks = args
+    run_idx, run_seed, episodes_per_task, tasks, system = args
     result_ewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
-                                  True, run_seed, episodes_per_task)
+                                  True, run_seed, episodes_per_task, system=system)
     result_noewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
-                                    False, run_seed + 10000, episodes_per_task)
+                                    False, run_seed + 10000, episodes_per_task, system=system)
     # Figs 5/6 are labeled "MAPPO-Safe-EWC" (see fig_05_objective_vs_pv's
     # legend), so use the EWC run's real per-PV evaluation. Only the
     # synthetic fallback path (_generate_synthetic_curriculum, taken
@@ -993,14 +993,15 @@ def _core_B_job(args):
 
 
 def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = None,
-               progress: ExperimentProgress = None, n_workers: int = None):
+               progress: ExperimentProgress = None, n_workers: int = None, system: str = "8bus"):
     n_runs = n_runs if n_runs is not None else (N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE)
     episodes_per_task = episodes_per_task if episodes_per_task is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT) // 10
     seed = seed if seed is not None else SEED
     n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
-    
+
     config = {
-        "name": "core_B_curriculum",
+        "name": "core_B_curriculum" if system == "8bus" else f"core_B_curriculum_{system}",
+        "system": system,
         "tasks": [0.0, 0.20, 0.40, 0.60],  # active sweep (was 0/25/50/75/100%)
         "episodes_per_task": episodes_per_task,
         "n_runs": n_runs,
@@ -1023,23 +1024,29 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
         # back to its illustrative placeholder even though real data now
         # exists.
         "real_fisher_capture_v1": True,
+        # Bumped: with_ewc/without_ewc runs now also return a concatenated
+        # per-rollout "history" (Claim C4's curriculum-side sample-
+        # efficiency data) -- previously train()'s return value was
+        # discarded entirely, so no curriculum run ever had this key. Also
+        # newly parametrized by `system` (was hardcoded to 8bus).
+        "real_curriculum_history_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
         logger.info("[Core B] Using cached results")
         return cached
-        
+
     run_name = "Core B"
     if progress:
         progress.start_run(run_name, total_steps=n_runs * 2,
                           desc=f"Curriculum 0%->60% PV — {n_runs} runs (with/without EWC)")
-        
+
     logger.info("=" * 70)
-    logger.info("CORE RUN B: Curriculum Training (0% -> 60% PV)")
+    logger.info(f"CORE RUN B: Curriculum Training (0% -> 60% PV) [{system}]")
     logger.info(f"  Tasks: {config['tasks']}, Episodes/task: {episodes_per_task}")
-    logger.info("  Feeds: Figs 5, 6, 7, 16, 29, 39")
+    logger.info("  Feeds: Figs 5, 6, 7, 16, 29, 39; Claim C4 (system=8bus/14bus)")
     logger.info("=" * 70)
-    
+
     TASKS = config["tasks"]
     # Pre-allocated by run_idx rather than appended in completion order —
     # required for reproducible aggregation regardless of which worker
@@ -1047,7 +1054,7 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
     with_ewc = [None] * n_runs
     without_ewc = [None] * n_runs
     task_evaluations = [None] * n_runs
-    jobs = [(run_idx, seed + run_idx, episodes_per_task, TASKS) for run_idx in range(n_runs)]
+    jobs = [(run_idx, seed + run_idx, episodes_per_task, TASKS, system) for run_idx in range(n_runs)]
 
     with ProgressTracker(total=n_runs, desc="[Core B] Curriculum runs", unit="run") as pbar:
         for run_idx, (result_ewc, result_noewc, eval_results) in _run_pool(jobs, _core_B_job, n_workers):
@@ -1071,19 +1078,19 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
     return all_results
 
 
-def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
+def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int, system: str = "8bus"):
     # Updated to 0/20/40/60% PV — the active thesis sweep.
     # Was [0.0, 0.25, 0.5, 0.75, 1.0] which included 100% PV (outside
     # the new scope) and used 0.25/0.75 (not multiples of 0.2).
     TASKS = [0.0, 0.20, 0.40, 0.60]
 
-    from network.network_data import get_8bus
+    from network.network_data import NETWORKS
     from marl.marl_env import DynamicDOCREnv
     from marl.marl_agents import MAPPOMARLTrainer
     from marl.safe_rl import create_safe_rl_env, SafeRLConfig
     from marl.continual_trainer import create_ewc_trainer, EWCConfig, TaskSimilarityEstimator
 
-    net = get_8bus()
+    net = NETWORKS[system]()
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE, curriculum_stage=0)
     # Safe RL was previously a dead post-hoc attribute set (use_safety is
     # not a real MAPPOMARLTrainer attribute) — it's a real env wrapper and
@@ -1112,6 +1119,7 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
     steps_per_task = episodes_per_task * 300
 
     task_performances = []
+    curriculum_history = []
     prev_task_name = None
     prev_fisher = None
     prev_conditions = None
@@ -1128,7 +1136,17 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
                 base_trainer.actor.set_all_params(cur - 0.01 * ewc_grad)
 
             # ── ACTUAL TRAINING ───────────────────────────────────────────
-            base_trainer.train(total_steps=steps_per_task, verbose=False)
+            # Capture and concatenate each stage's per-rollout OF history
+            # (the same "history" list format/cadence benchmark_pv's and
+            # Core C's single-call, non-curriculum MAPPO runs already
+            # produce from this identical trainer.train() method) into one
+            # continuous curriculum-wide trajectory. Claim C4's
+            # sample-efficiency comparison needs a real `history` on the
+            # curriculum side; this was previously discarded (train()'s
+            # return value was never assigned) so no curriculum run ever
+            # had one.
+            stage_result = base_trainer.train(total_steps=steps_per_task, verbose=False)
+            curriculum_history.extend(stage_result.get("history", []))
             task_name = f"PV{int(pv*100):03d}"
 
             if use_ewc and ewc_wrapper is not None:
@@ -1277,10 +1295,16 @@ def _run_curriculum_single(use_ewc: bool, seed: int, episodes_per_task: int):
         # sampled indices are nonzero (see the finite-difference loop
         # above); None when use_ewc=False since it's never computed there.
         "fisher": prev_fisher if use_ewc else None,
+        # Concatenated across all 4 curriculum stages -- feeds Claim C4's
+        # samples_to_convergence comparison (see core_to_phase5_bridge.py's
+        # _from_core_b_curriculum, tagged curriculum=True there so it's
+        # never averaged together with a non-curriculum "MAPPO-Safe-EWC"
+        # run under the same method label).
+        "history": curriculum_history,
     }
 
 
-def _generate_synthetic_curriculum(use_ewc: bool, seed: int, episodes_per_task: int, n_agents: int = 14):
+def _generate_synthetic_curriculum(use_ewc: bool, seed: int, episodes_per_task: int, system: str = "8bus", n_agents: int = 14):
     rng = np.random.default_rng(seed)
     n_tasks = 5
     task_performances = []
@@ -2322,6 +2346,9 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # this identical config would be returned as-is, silently missing
         # the new "n1_contingency" key.
         "real_sweep_v3_n1": True,
+        # Bumped: added a 39bus bandwidth sweep (Claim C5) below,
+        # previously only ever measured on 8bus.
+        "real_39bus_bandwidth_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2441,6 +2468,28 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
                     "recovery_performance": _rel_perf(recovery_of) if recovery_of is not None else None,
                 }
             results["n1_contingency"] = n1_sweep
+
+            # Claim C5: real bandwidth measurement on the 39-bus network.
+            # Claim C5 specifically requires system="39bus"; Fig 22's
+            # GNN-depth sweep above only ever ran on 8bus before. Trains a
+            # SEPARATE MAPPO-Safe-EWC base policy on 39bus via its own
+            # CoreEvalBridge instance (same real _eval_bandwidth method:
+            # message size x agent count x compression, not a fabricated
+            # scale).
+            logger.info("[Core G] 39bus Bandwidth (REAL, Claim C5)")
+            bridge_39 = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE, system="39bus")
+            base_of_39 = bridge_39._get_base_result().best_of
+            def _rel_perf_39(of_value):
+                return float(base_of_39 / max(of_value, 1e-9))
+            bandwidth_sweep_39 = {}
+            for depth in [1, 2, 3, 4]:
+                compression = min(1.0, depth / 4.0)
+                r = bridge_39.run_evaluation(22, gnn_depth=depth, compression=compression, message_dim=8)
+                bandwidth_sweep_39[depth] = {
+                    "performance": _rel_perf_39(r.raw_data["of"]),
+                    "bandwidth_kbps": float(r.raw_data["bandwidth"]),
+                }
+            results["bandwidth_39bus"] = bandwidth_sweep_39
 
             is_synthetic = False
         except Exception as e:
@@ -2663,60 +2712,74 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # would silently keep the old single-config shape Fig 53 no
         # longer expects.
         "real_compression_per_method_v1": True,
+        # Bumped: latency is now also measured on 39bus (Claim C5 requires
+        # this specific system; only 8bus was ever measured before) via a
+        # second, separately-trained CoreEvalBridge.
+        "real_39bus_latency_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
         logger.info("[Core I] Using cached results")
         return cached
-        
+
     run_name = "Core I"
     if progress:
         progress.start_run(run_name, total_steps=2,
                           desc="Deployment benchmark — latency + compression (REAL)")
-        
+
     logger.info("=" * 70)
     logger.info("CORE RUN I: Deployment Benchmark (REAL via training_pipeline)")
-    logger.info("  Feeds: Figs 18, 53")
+    logger.info("  Feeds: Figs 18, 53; Claim C5 (39bus latency)")
     logger.info("=" * 70)
-    
+
     results = {}
-    
+
+    def _measure_latency(eval_bridge, net_obj, base_result_obj):
+        """Real per-decision inference latency: reconstructs the actual
+        trained actor (GNN comm module included, if trained with
+        use_comm=True) and times its deterministic forward pass, rather
+        than env.reset() + RNG overhead. Shared between the 8bus (Fig 18)
+        and 39bus (Claim C5) measurements below -- same method, different
+        trained policy."""
+        import time
+        from marl.marl_env import DynamicDOCREnv
+        env = DynamicDOCREnv(net_obj, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE)
+        _, mean_fn, _, _ = eval_bridge._get_pipeline()._get_actor_for_eval(env, base_result_obj, net=net_obj)
+        latencies = []
+        obs = env.reset(seed=seed)
+        for _ in range(100):
+            t0 = time.perf_counter()
+            for i in range(env.n_agents):
+                _ = mean_fn(obs[i])
+            latencies.append((time.perf_counter() - t0) * 1000)
+        return {
+            "latencies_ms": np.array(latencies),
+            "mean_ms": np.mean(latencies),
+            "p50_ms": np.percentile(latencies, 50),
+            "p99_ms": np.percentile(latencies, 99),
+        }
+
     if BRIDGE_AVAILABLE:
         try:
             bridge = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE)
-            
+
             # Fig 18: Inference Latency (from base policy evaluation)
             logger.info("\n[Core I] Fig 18: Inference Latency (REAL)")
-            # Latency is measured during base policy inference
             base_result = bridge._get_base_result()
             base_of = base_result.best_of
-            import time
             from network.network_data import get_8bus
-            from marl.marl_env import DynamicDOCREnv
-            net = get_8bus()
-            env = DynamicDOCREnv(net, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE)
-            # Reconstruct the ACTUAL trained actor (and its GNN comm
-            # module, if trained with use_comm=True) rather than timing
-            # env.reset() + an unseeded np.random.randn() call ("simulate
-            # inference") — that measured reset overhead and RNG cost,
-            # not the policy. mean_fn is the deterministic per-agent
-            # forward pass a real deployment would call every step.
-            _, mean_fn, _, _ = bridge._get_pipeline()._get_actor_for_eval(env, base_result, net=net)
-            latencies = []
-            obs = env.reset(seed=seed)
-            for _ in range(100):
-                t0 = time.perf_counter()
-                for i in range(env.n_agents):
-                    _ = mean_fn(obs[i])
-                latencies.append((time.perf_counter() - t0) * 1000)
-            
-            results["latency"] = {
-                "latencies_ms": np.array(latencies),
-                "mean_ms": np.mean(latencies),
-                "p50_ms": np.percentile(latencies, 50),
-                "p99_ms": np.percentile(latencies, 99),
-            }
-            
+            results["latency"] = _measure_latency(bridge, get_8bus(), base_result)
+
+            # Claim C5: same real measurement, on the 39-bus network. This
+            # trains a SEPARATE MAPPO-Safe-EWC base policy on 39bus (via
+            # its own CoreEvalBridge instance) -- Claim C5 specifically
+            # requires this system, and no Core measured it there before.
+            logger.info("\n[Core I] 39bus Inference Latency (REAL, Claim C5)")
+            from network.network_data import get_39bus
+            bridge_39 = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE, system="39bus")
+            base_result_39 = bridge_39._get_base_result()
+            results["latency_39bus"] = _measure_latency(bridge_39, get_39bus(), base_result_39)
+
             # Fig 53: Model Compression — one real evaluation per method.
             # int8 quantization and magnitude pruning are already fully
             # implemented in _eval_compression (genuinely quantizes/prunes

@@ -59,18 +59,22 @@ missing and why:
   - "Single-PPO" (C1's required_methods): not run anywhere in the active
     pipeline (benchmark_pv's obj4_methods list omits it; Core C doesn't
     train it either).
-  - Claim C5 (39bus inference latency + bandwidth): Core I's latency
-    measurement and Core G's bandwidth sweep are both 8bus-only. No Core
-    measures either quantity on 39bus.
-  - Claim C4's "samples_to_convergence" needs a per-checkpoint `history`
-    array with a comparable logging cadence between the curriculum and
-    non-curriculum method. Core B (the only curriculum=True path) logs
-    per-PV-stage task performance, not a per-episode timeline comparable
-    to benchmark_pv's/Core C's per-episode returns -- forcing a
-    comparison across those mismatched granularities would be
-    methodologically misleading, so `history` is intentionally left
-    unset here. ThesisValidator will correctly report this criterion as
-    unevaluated rather than silently fabricating a ratio.
+
+Resolved (previously listed here as gaps; kept for context):
+  - Claim C5 (39bus inference latency + bandwidth): Core I and Core G
+    each now train a separate 39bus base policy and measure both
+    quantities there directly, in addition to their existing 8bus
+    measurements (see run_core_training.py's real_39bus_latency_v1 /
+    real_39bus_bandwidth_v1 cache bumps).
+  - Claim C4's "samples_to_convergence": _from_benchmark_pv() now passes
+    through the real per-rollout `history` array its MARL results
+    already contained (same trainer.train() checkpoint cadence as every
+    other MARL method here); Core B's curriculum run now captures and
+    concatenates its own per-stage history into one continuous
+    curriculum-wide `history` (previously discarded entirely). Tagged
+    curriculum=True in _from_core_b_curriculum() so ThesisValidator
+    compares it only against non-curriculum runs, not averaged in with
+    them under the same "MAPPO-Safe-EWC" label.
 
 Usage
 -----
@@ -166,6 +170,12 @@ def _from_benchmark_pv() -> List[Dict]:
                         cti_satisfied=c.get("cti_satisfied"),
                         cti_violations=c.get("cti_violations"),
                         elapsed_seconds=result.get("elapsed"),
+                        # Real per-rollout OF checkpoints from this run's
+                        # single trainer.train() call -- already on disk,
+                        # just never extracted before. Feeds Claim C4's
+                        # non-curriculum "MAPPO" baseline side (see
+                        # _from_core_b_curriculum for the curriculum side).
+                        history=result.get("history"),
                     ))
     return out
 
@@ -216,14 +226,11 @@ def _from_core_c(system: str = "8bus") -> List[Dict]:
 
 def _from_core_i_and_g(system: str = "8bus") -> List[Dict]:
     """Core I's real inference-latency measurement and Core G's real
-    bandwidth sweep, both {system}-only -- feeds Claim C5's
-    inference_latency_ms/comm_bandwidth. C5 formally requires
-    system="39bus" specifically; neither Core measures either quantity
-    on 39bus, so this cannot make C5 pass on its own system requirement
-    -- included anyway (labeled with whatever system was actually
-    measured) since it's the only real data available, and
-    ThesisValidator's own system-match check will correctly still report
-    the 39bus requirement as unmet.
+    bandwidth sweep on `system`, plus (unconditionally) their genuine
+    39bus measurements -- feeds Claim C5's inference_latency_ms/
+    comm_bandwidth on both the 8bus data (informational only; C5 formally
+    requires system="39bus") and the real 39bus data that now actually
+    satisfies C5's system requirement.
     """
     out = []
 
@@ -233,6 +240,14 @@ def _from_core_i_and_g(system: str = "8bus") -> List[Dict]:
         out.append(_entry(
             "MAPPO-Safe-EWC", system, 0.6, run_id=0,
             inference_latency_ms=latency["mean_ms"],
+        ))
+    # Real 39bus latency (Core I, separately-trained base policy) -- was
+    # entirely absent before; Claim C5 specifically requires this system.
+    latency_39 = (deployment or {}).get("latency_39bus", {})
+    if latency_39.get("mean_ms") is not None:
+        out.append(_entry(
+            "MAPPO-Safe-EWC", "39bus", 0.6, run_id=0,
+            inference_latency_ms=latency_39["mean_ms"],
         ))
 
     robustness = _load_core_cache("core_G_robustness")
@@ -244,6 +259,51 @@ def _from_core_i_and_g(system: str = "8bus") -> List[Dict]:
             "MAPPO-Comm", system, 0.6,
             run_id=int(depth) if str(depth).isdigit() else 0,
             comm_bandwidth=point["bandwidth_kbps"],
+        ))
+    # Real 39bus bandwidth (Core G, separately-trained base policy) --
+    # was entirely absent before; Claim C5 specifically requires it.
+    bandwidth_39 = (robustness or {}).get("bandwidth_39bus", {})
+    for depth, point in bandwidth_39.items():
+        if not isinstance(point, dict) or point.get("bandwidth_kbps") is None:
+            continue
+        out.append(_entry(
+            "MAPPO-Comm", "39bus", 0.6,
+            run_id=int(depth) if str(depth).isdigit() else 0,
+            comm_bandwidth=point["bandwidth_kbps"],
+        ))
+    return out
+
+
+def _from_core_b_curriculum(system: str = "8bus") -> List[Dict]:
+    """run_core_training.py's Core B (core_B_curriculum[_{system}]) --
+    the only genuinely curriculum-trained policy in this codebase. Feeds
+    Claim C4's curriculum side with a real, per-rollout `history`
+    (concatenated across all 4 PV stages).
+
+    Tagged curriculum=True: benchmark_pv/Core C also produce
+    "MAPPO-Safe-EWC" entries for this system, but those are trained
+    directly at one fixed PV level, not via curriculum -- averaging them
+    together with Core B's runs under the same method label would
+    conflate two different training methodologies into one number.
+    evaluation/thesis_validation.py's C4 metric block filters on this
+    flag specifically for that reason.
+    """
+    cache_name = "core_B_curriculum" if system == "8bus" else f"core_B_curriculum_{system}"
+    data = _load_core_cache(cache_name)
+    if not data:
+        return []
+
+    out = []
+    for run_idx, result in enumerate(data.get("with_ewc", [])):
+        if not result or not result.get("history"):
+            continue
+        pv_eval = result.get("pv_evaluation") or {}
+        final_of = (pv_eval.get(0.6) or {}).get("objective")
+        out.append(_entry(
+            "MAPPO-Safe-EWC", system, 0.6, run_id=run_idx,
+            history=result["history"],
+            best_of=final_of, OF=final_of,
+            curriculum=True,
         ))
     return out
 
@@ -257,15 +317,19 @@ def _known_gaps() -> List[str]:
         "(benchmark_pv's obj4_methods omits it; Core C doesn't run it "
         "either) -- Claim C1's comparison against it is structurally "
         "unavailable, not just under-sampled.",
-        "Claim C5 (39bus inference latency < 100ms, bandwidth < 1kbps): "
-        "Core I/Core G only measure these on 8bus. No Core measures "
-        "either quantity on 39bus.",
-        "Claim C4 (samples_to_convergence / sample_efficiency_ratio): "
-        "no comparable per-episode `history` exists between a "
-        "curriculum-trained (Core B, per-stage logging) and non-"
-        "curriculum (benchmark_pv/Core C, per-episode logging) run -- "
-        "left unset rather than compared across mismatched granularities.",
     ]
+    # Resolved gaps, kept here for history:
+    # - Claim C5 (39bus inference latency/bandwidth): Core I and Core G
+    #   now each train a separate 39bus base policy and measure both
+    #   quantities there directly (run_core_training.py's
+    #   real_39bus_latency_v1 / real_39bus_bandwidth_v1).
+    # - Claim C4 (samples_to_convergence/sample_efficiency_ratio):
+    #   _from_benchmark_pv() now passes through the real per-rollout
+    #   `history` its MARL results already contained, and Core B's
+    #   curriculum run now captures + returns its own concatenated
+    #   history (real_curriculum_history_v1), tagged curriculum=True so
+    #   it's compared against the non-curriculum baseline separately
+    #   rather than averaged together under one "MAPPO-Safe-EWC" label.
 
 
 def build_phase5_results() -> List[Dict]:
@@ -275,9 +339,11 @@ def build_phase5_results() -> List[Dict]:
     results: List[Dict] = []
     results += _from_benchmark_pv()
     results += _from_core_c("8bus")
-    results += _from_core_i_and_g("8bus")
+    results += _from_core_i_and_g("8bus")  # also includes real 39bus data
+    results += _from_core_b_curriculum("8bus")
+    results += _from_core_b_curriculum("14bus")
     logger.info(f"Bridge: assembled {len(results)} result entries "
-                f"(benchmark_pv + core_C_metrics + core_I/core_G)")
+                f"(benchmark_pv + core_C_metrics + core_I/core_G + core_B_curriculum)")
     return results
 
 
