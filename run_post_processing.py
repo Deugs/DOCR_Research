@@ -1573,9 +1573,22 @@ def fig_29_ewc_continual():
     # across runs when there's more than one, then show the top 100 by
     # magnitude (sorted descending, matching this panel's original x-range).
     real_fisher = [r["fisher"] for r in data.get("with_ewc", []) if r.get("fisher") is not None] if not is_synthetic else []
-    if real_fisher:
+    # `real_fisher` being non-empty only means the cache carries a
+    # "fisher" key, not that the values are meaningful -- an upstream
+    # finite-difference bug in run_core_training.py's Fisher estimation
+    # can (and has) produced an all-zero diagonal, which would otherwise
+    # sail through the `if real_fisher:` check, plot a degenerate
+    # all-zero bar chart, and blow up ax.set_yscale("log") ("Data has no
+    # positive values, and therefore cannot be log-scaled") -- all with
+    # no synthetic watermark, since presence was the only thing checked.
+    if real_fisher and np.any(np.mean(real_fisher, axis=0) > 0):
         fisher = np.sort(np.mean(real_fisher, axis=0))[::-1][:100]
     else:
+        if real_fisher:
+            logger.warning("Fig 29: 'core_B_curriculum' Fisher diagonal is all-zero "
+                            "(upstream estimation bug) — using synthetic/hardcoded "
+                            "fallback data, NOT a real measurement.")
+        real_fisher = []
         fisher = np.sort(np.random.default_rng(29).exponential(1.0, 100))[::-1]
     ax.bar(range(len(fisher)), fisher, color="#2563eb", edgecolor="white", alpha=0.8)
     ax.set_xlabel("Parameter Index (sorted)", fontsize=11)
@@ -1584,7 +1597,7 @@ def fig_29_ewc_continual():
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3, axis="y")
     if not real_fisher:
-        _annotate_panel_synthetic(ax, "no per-parameter Fisher diagonal in core_B_curriculum cache")
+        _annotate_panel_synthetic(ax, "no valid (nonzero) per-parameter Fisher diagonal in core_B_curriculum cache")
     
     ax = axes[1]
     x = np.arange(n_tasks)
@@ -1721,7 +1734,15 @@ def fig_33_radar_chart():
     # which iterates its keys expecting only method names, is unaffected).
     real_metrics = load_cache("core_C_metrics_8bus") if not is_synthetic else None
     rng = np.random.default_rng(33)
-    any_real = False
+    # Tracks whether ANY method fell back to illustrative jitter, not just
+    # whether ANY method got real metrics -- `is_synthetic or not any_real`
+    # only suppressed the watermark when EVERY method lacked real metrics,
+    # so a mix (some methods with core_C_metrics_8bus entries, some
+    # without -- e.g. one method's Core C run failed) would fabricate the
+    # missing methods' 4 illustrative axes with zero disclosure, since one
+    # real method alone made the old `any_real` true. Mirrors Fig 55's
+    # `any_illustrative` pattern, which already gets this right.
+    any_illustrative = False
     for method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]:
         if method not in data:
             continue
@@ -1729,7 +1750,6 @@ def fig_33_radar_chart():
         obj = np.mean(vals[-100:] if hasattr(vals, '__len__') and len(vals) > 100 else vals)
         m = real_metrics.get(method) if real_metrics else None
         if m:
-            any_real = True
             # Normalize each real axis to roughly [0, 1] for the shared
             # radial scale: objective via a fixed reference range (same
             # convergence-band values used elsewhere for this system),
@@ -1745,6 +1765,7 @@ def fig_33_radar_chart():
                 float(np.clip(m["robustness"], 0, 1)) if m["robustness"] is not None else 0.0,
             ]
         else:
+            any_illustrative = True
             values = [obj / 5.0 + rng.uniform(-0.1, 0.1) for _ in range(N)]
         values += values[:1]
         ax.plot(angles, values, 'o-', color=colors.get(method, "#333"), lw=2, label=method, markersize=6)
@@ -1756,11 +1777,12 @@ def fig_33_radar_chart():
     ax.set_title("Figure 33 — Multi-Dimensional Method Comparison (8-Bus, 60% PV)", fontsize=13, y=1.08)
     ax.legend(fontsize=9, loc="upper right", bbox_to_anchor=(1.3, 1.1))
     ax.grid(True)
-    if is_synthetic or not any_real:
+    if is_synthetic or any_illustrative:
         from evaluation.experiments._synthetic_label import mark_synthetic
         note = ("core_C_baselines cache missing" if is_synthetic else
-                "core_C_metrics_8bus cache missing — 4 of 5 axes are "
-                "illustrative jitter around the one real scalar (mean objective)")
+                "core_C_metrics_8bus cache missing or incomplete for one or more "
+                "methods — those methods' 4 of 5 axes are illustrative jitter "
+                "around the one real scalar (mean objective)")
         mark_synthetic(fig, note=note)
     save_fig(fig, get_fig_path(33, "figs_31_40"))
 

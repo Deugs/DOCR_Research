@@ -3127,7 +3127,8 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
     
     # Run only the requested cores (all 11 by default) with progress tracking
     core_A = run_core_A(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers) if "A" in all_cores else None
-    core_B = run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_episodes // 10, seed=SEED, progress=progress, n_workers=n_workers) if "B" in all_cores else None
+    core_B = run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_episodes // 10, seed=SEED, progress=progress, n_workers=n_workers,
+                        system=CONFIG.system.name if CONFIG is not None else "8bus") if "B" in all_cores else None
     core_C = run_core_C(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers,
                         system=CONFIG.system.name if CONFIG is not None else "8bus") if "C" in all_cores else None
     core_D = run_core_D(n_runs=n_runs_baseline, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers) if "D" in all_cores else None
@@ -3321,7 +3322,8 @@ def main():
         logger.info(f"[CONFIG] Synthetic fallback: {'ENABLED' if use_synthetic else 'DISABLED'}")
 
         if args.core_A: run_core_A(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
-        if args.core_B: run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_eps // 10, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_B: run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_eps // 10, seed=SEED, progress=progress, n_workers=args.n_workers,
+                                   system=config.system.name if config is not None else "8bus")
         if args.core_C: run_core_C(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers,
                                    system=config.system.name if config is not None else "8bus")
         if args.core_D: run_core_D(n_runs=n_runs_baseline, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
