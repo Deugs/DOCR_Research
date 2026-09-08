@@ -475,28 +475,71 @@ class ThesisValidator:
 
         # Samples to convergence / sample efficiency (curriculum vs.
         # non-curriculum). "Convergence" = first history index after
-        # which every later OF value stays within `tol` relative of the
-        # run's final OF (a standard settling-time definition), measured
-        # in units of logged history entries (checkpoints), not raw env
-        # steps — TrainingResult doesn't record the step count per
-        # checkpoint, but both methods share the same logging cadence
-        # from this pipeline, so the RATIO between them is still a valid
-        # comparison even though neither absolute count is in real steps.
+        # which training has settled, measured in units of logged history
+        # entries (checkpoints), not raw env steps — TrainingResult
+        # doesn't record the step count per checkpoint, but both methods
+        # share the same logging cadence from this pipeline, so the RATIO
+        # between them is still a valid comparison even though neither
+        # absolute count is in real steps.
         if "samples_to_convergence" in claim.metrics or "final_of" in claim.metrics:
             def _convergence_point(history, tol=0.05):
+                """Smoothed settling-time convergence point.
+
+                `history` entries are per-iteration objective-function
+                evaluations of an evolving, ES-perturbed policy, not
+                independent ground-truth scores of a fixed final policy
+                -- individual entries can differ from their neighbors by
+                2-10x purely from per-iteration ES perturbation noise,
+                persisting even long after the underlying policy has
+                genuinely settled. Verified against this pipeline's real
+                Core B / benchmark_pv histories: several runs' tails (the
+                clearly-converged final ~10%) show a raw-point
+                coefficient of variation above 1.0 -- individual points
+                routinely differ from their own local mean by MORE than
+                100%. A prior version of this function compared raw,
+                single history points against a single raw final point;
+                on data like this that's essentially guaranteed to report
+                "still converging" almost everywhere regardless of `tol`,
+                since raw per-iteration noise alone routinely swamps any
+                reasonable tolerance band -- it isn't measuring
+                convergence speed at all once the underlying series is
+                this noisy.
+
+                Fix: smooth first via a trailing moving average (window
+                sized proportionally to the series' own length, not a
+                fixed constant, so this scales sensibly for histories of
+                very different lengths), and anchor the "converged" level
+                to the MEAN of the smoothed series' own final window (a
+                robust, multi-point estimate) rather than a single last
+                raw data point, which can itself be an outlier. Same
+                "first index after which every later smoothed value
+                stays within tol of the target" criterion as before,
+                just applied to a noise-robust series and target instead
+                of raw data and a raw single-point anchor.
+                """
                 if not history:
                     return None
                 arr = np.asarray(history, dtype=float)
-                final = arr[-1]
-                if final == 0:
-                    return len(arr)
-                within = np.abs(arr - final) <= tol * abs(final)
-                # First index after which ALL remaining points stay within
-                # tol == one past the LAST index that is NOT within tol
-                # (0 if every point already is). Equivalent to the
-                # previous "for i: if all(within[i:]): return i" loop, but
-                # O(n) instead of O(n^2) (that loop re-scanned the
-                # remaining suffix from scratch at every i).
+                n = len(arr)
+                if n < 2:
+                    return 0
+
+                window = max(3, n // 10)
+                # Trailing moving average via cumulative sum -- O(n), not
+                # O(n * window).
+                cumsum = np.cumsum(np.insert(arr, 0, 0.0))
+                idx = np.arange(n)
+                lo = np.maximum(0, idx - window + 1)
+                smoothed = (cumsum[idx + 1] - cumsum[lo]) / (idx + 1 - lo)
+
+                target = float(np.mean(smoothed[-window:]))
+                if target == 0:
+                    return n
+
+                within = np.abs(smoothed - target) <= tol * abs(target)
+                # First index after which ALL remaining (smoothed) points
+                # stay within tol == one past the LAST index that is NOT
+                # within tol (0 if every point already is).
                 not_within = np.where(~within)[0]
                 return int(not_within[-1] + 1) if len(not_within) > 0 else 0
 

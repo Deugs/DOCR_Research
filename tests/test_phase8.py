@@ -187,7 +187,11 @@ def test_claim_c4_validation():
     # MAPPO (baseline) settles late in its logged history; MAPPO-Safe-EWC
     # (curriculum_method = required_methods[-1]) settles much earlier —
     # samples_to_convergence is the first index after which every later
-    # OF value stays within 5% of the run's final value.
+    # value of the SMOOTHED (trailing-moving-average) series stays within
+    # 5% of the smoothed series' own final-window mean. Expected values
+    # below (10, 5, 8) are computed against the real, current
+    # `_convergence_point` implementation, not the raw-point version this
+    # fixture originally targeted.
     mappo_history = [10, 9, 8, 7, 6, 5, 4, 3.5, 3.2, 3.1, 3.05, 3.02, 3.01,
                       3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
     ewc_history = [10, 6, 4, 3.2, 3.05, 3.0, 3.0, 3.0, 3.0, 3.0]
@@ -225,13 +229,13 @@ def test_claim_c4_validation():
     result = validator.validate_claim(claim)
 
     assert result.claim_id == "C4"
-    assert result.details["MAPPO_samples_to_convergence"] == 9
-    # Must reflect ONLY the curriculum=True entry (4), not the mean of
-    # both entries (4 and 9, averaging to 6.5) -- the latter is exactly
+    assert result.details["MAPPO_samples_to_convergence"] == 10
+    # Must reflect ONLY the curriculum=True entry (5), not the mean of
+    # both entries (5 and 8, averaging to 6.5) -- the latter is exactly
     # what the pre-fix, unfiltered lookup would have produced.
-    assert result.details["MAPPO-Safe-EWC_samples_to_convergence"] == 4
+    assert result.details["MAPPO-Safe-EWC_samples_to_convergence"] == 5
     assert "sample_efficiency_ratio" in result.details
-    assert abs(result.details["sample_efficiency_ratio"] - 4 / 9) < 1e-9
+    assert abs(result.details["sample_efficiency_ratio"] - 5 / 10) < 1e-9
     assert result.details["sample_efficiency_ratio"] < 0.60  # meets C4's pass criterion
     # Must reflect only the curriculum entry's best_of (3.0), not a mean
     # with the non-curriculum entry's 5.0.
@@ -239,6 +243,66 @@ def test_claim_c4_validation():
 
     print(f"    ✓ PASS: C4 validated (sample_efficiency_ratio={result.details['sample_efficiency_ratio']:.3f})")
 
+
+def test_convergence_point_robust_to_per_iteration_noise():
+    """
+    Regression test for _convergence_point()'s noise-robustness fix.
+
+    `history` entries are per-iteration objective-function evaluations of
+    an evolving, ES-perturbed policy -- real Core B / benchmark_pv
+    histories routinely show individual points differing from their own
+    local mean by well over 100% (raw-point coefficient of variation
+    above 1.0), even in a run's clearly-converged final stretch. The
+    previous implementation compared raw, single history points against
+    a single raw final point, which on data this noisy reports "still
+    converging" almost everywhere regardless of the tolerance.
+
+    This history: a decaying head (episodes 0-6) followed by a genuine
+    plateau around 100 that oscillates +-8% per iteration (episodes
+    7-46) -- an honest simulation of per-iteration ES noise around an
+    already-converged policy. The smoothed (fixed) algorithm should
+    detect the plateau starting right where the head ends; the old
+    raw-point algorithm effectively never detects convergence at all
+    (since some later oscillating point is always >5% off whichever
+    single point happens to be history[-1]).
+    """
+    print("  Test: convergence-point noise robustness...")
+
+    head = [500, 400, 300, 220, 160, 130, 110]
+    tail = [100.0, 107.71, 104.12, 94.5, 92.93, 101.72, 107.99, 102.55,
+            93.38, 93.9, 103.36, 107.89, 100.86, 92.57, 95.16, 104.84,
+            107.43, 99.13, 92.1, 96.65, 106.1, 106.62, 97.44, 92.01,
+            98.29, 107.07, 105.5, 95.87, 92.29, 100.01, 107.71, 104.12,
+            94.49, 92.94, 101.73, 107.99, 102.55, 93.37, 93.91, 103.37]
+    noisy_plateau_history = head + tail
+
+    validator = ThesisValidator()
+    validator.results = {
+        "results": [
+            {"method": "MAPPO", "system": "8bus", "best_of": noisy_plateau_history[-1],
+             "history": noisy_plateau_history},
+            {"method": "MAPPO-Safe-EWC", "system": "8bus", "best_of": 1.0,
+             "history": [1.0, 1.0], "curriculum": True},
+        ]
+    }
+
+    claim = ThesisValidator.CLAIMS[3]  # C4
+    result = validator.validate_claim(claim)
+
+    conv = result.details["MAPPO_samples_to_convergence"]
+    n = len(noisy_plateau_history)
+    assert conv <= 15, (
+        f"expected the smoothed plateau to be detected shortly after the "
+        f"decaying head ends (index 7), got samples_to_convergence={conv} "
+        f"out of {n} -- the noise-robustness fix may have regressed"
+    )
+    assert conv < n - 5, (
+        "convergence point is suspiciously close to the full history "
+        "length -- looks like the old raw-point-only behavior"
+    )
+
+    print(f"    ✓ PASS: noisy plateau (n={n}) detected as converged at index {conv}, "
+          f"not the near-full-length result the raw-point algorithm would give")
 
 
 def test_claim_c5_validation():
@@ -478,6 +542,7 @@ def run_all_tests():
         test_claim_c3_validation,
         test_forgetting_measure_large_improvement_is_not_forgetting,
         test_claim_c4_validation,
+        test_convergence_point_robust_to_per_iteration_noise,
         test_claim_c5_validation,
         test_validation_report,
         test_latex_table_generation,
