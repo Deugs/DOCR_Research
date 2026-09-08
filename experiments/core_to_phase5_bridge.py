@@ -49,16 +49,12 @@ Because of this, benchmark_pv is used as the PRIMARY source for
 only supplies "IPPO", "Traditional", and "MAPPO-Comm" (all absent from
 benchmark_pv), each 8bus-only.
 
-Honesty note: several claim/method/system combinations have no real data
-anywhere in the current pipeline. This bridge does not fabricate values
-to fill those gaps -- it leaves the field absent so ThesisValidator's own
-"insufficient data"/"Run Phase 5 experiments" disclosures fire honestly
-rather than silently passing on invented numbers. See
-_known_gaps() and each _from_* function's docstring for exactly what's
-missing and why:
-  - "Single-PPO" (C1's required_methods): not run anywhere in the active
-    pipeline (benchmark_pv's obj4_methods list omits it; Core C doesn't
-    train it either).
+Honesty note: this bridge does not fabricate values to fill coverage
+gaps -- where real data is genuinely unavailable it leaves the field
+absent so ThesisValidator's own "insufficient data"/"Run Phase 5
+experiments" disclosures fire honestly rather than silently passing on
+invented numbers. See _known_gaps() and each _from_* function's
+docstring for current status.
 
 Resolved (previously listed here as gaps; kept for context):
   - Claim C5 (39bus inference latency + bandwidth): Core I and Core G
@@ -331,12 +327,7 @@ def _known_gaps() -> List[str]:
     """Structural gaps in this bridge's coverage -- printed by __main__
     and returned by build_phase5_results()'s caller for visibility.
     Nothing here is fabricated to close these; see module docstring."""
-    return [
-        "Single-PPO: not trained anywhere in the active pipeline "
-        "(benchmark_pv's obj4_methods omits it; Core C doesn't run it "
-        "either) -- Claim C1's comparison against it is structurally "
-        "unavailable, not just under-sampled.",
-    ]
+    return []
     # Resolved gaps, kept here for history:
     # - Claim C5 (39bus inference latency/bandwidth): Core I and Core G
     #   now each train a separate 39bus base policy and measure both
@@ -349,6 +340,11 @@ def _known_gaps() -> List[str]:
     #   history (real_curriculum_history_v1), tagged curriculum=True so
     #   it's compared against the non-curriculum baseline separately
     #   rather than averaged together under one "MAPPO-Safe-EWC" label.
+    # - Single-PPO (C1's required_methods): run_thesis_experiments.py's
+    #   obj4_methods now includes "Single-PPO", and
+    #   evaluation/benchmark_suite.py routes it through its own
+    #   _run_single_ppo_impl() instead of silently mislabeling MAPPO's
+    #   output -- confirmed present in results/benchmark_pv*.pkl.
 
 
 def build_phase5_results() -> List[Dict]:
@@ -361,6 +357,7 @@ def build_phase5_results() -> List[Dict]:
     results += _from_core_i_and_g("8bus")  # also includes real 39bus data
     results += _from_core_b_curriculum("8bus")
     results += _from_core_b_curriculum("14bus")
+    results += _from_core_b_curriculum("39bus")
     logger.info(f"Bridge: assembled {len(results)} result entries "
                 f"(benchmark_pv + core_C_metrics + core_I/core_G + core_B_curriculum)")
     return results
