@@ -191,6 +191,19 @@ def test_claim_c4_validation():
     mappo_history = [10, 9, 8, 7, 6, 5, 4, 3.5, 3.2, 3.1, 3.05, 3.02, 3.01,
                       3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
     ewc_history = [10, 6, 4, 3.2, 3.05, 3.0, 3.0, 3.0, 3.0, 3.0]
+    # A second, non-curriculum "MAPPO-Safe-EWC" entry (no `curriculum`
+    # flag) with a slow-converging history and a distinctly different
+    # best_of -- the same shape benchmark_pv/Core C's EWC-ablation runs
+    # actually produce under this method name. Regression guard for the
+    # bug this fixture used to not catch at all: with only a single
+    # MAPPO-Safe-EWC entry (always curriculum=True), the C4 block's
+    # `if method == curriculum_method: method_results = [r for r in
+    # method_results if r.get("curriculum")]` filter had nothing to
+    # filter OUT, so reverting that filter left every assertion below
+    # unchanged. With two entries, the filtered (fixed) and unfiltered
+    # (buggy) results genuinely differ in both
+    # MAPPO-Safe-EWC_samples_to_convergence and final_of.
+    non_curriculum_ewc_history = [10, 9, 8, 7, 6.5, 6, 5.5, 5.2, 5.05, 5.0]
     validator.results = {
         "results": [
             {"method": "MAPPO", "system": "8bus", "best_of": mappo_history[-1], "history": mappo_history},
@@ -203,6 +216,8 @@ def test_claim_c4_validation():
             # specifically to avoid averaging the two together.
             {"method": "MAPPO-Safe-EWC", "system": "8bus", "best_of": ewc_history[-1],
              "history": ewc_history, "curriculum": True},
+            {"method": "MAPPO-Safe-EWC", "system": "8bus", "best_of": non_curriculum_ewc_history[-1],
+             "history": non_curriculum_ewc_history},
         ]
     }
 
@@ -211,13 +226,19 @@ def test_claim_c4_validation():
 
     assert result.claim_id == "C4"
     assert result.details["MAPPO_samples_to_convergence"] == 9
+    # Must reflect ONLY the curriculum=True entry (4), not the mean of
+    # both entries (4 and 9, averaging to 6.5) -- the latter is exactly
+    # what the pre-fix, unfiltered lookup would have produced.
     assert result.details["MAPPO-Safe-EWC_samples_to_convergence"] == 4
     assert "sample_efficiency_ratio" in result.details
     assert abs(result.details["sample_efficiency_ratio"] - 4 / 9) < 1e-9
     assert result.details["sample_efficiency_ratio"] < 0.60  # meets C4's pass criterion
+    # Must reflect only the curriculum entry's best_of (3.0), not a mean
+    # with the non-curriculum entry's 5.0.
     assert result.details["final_of"] == ewc_history[-1]
 
     print(f"    ✓ PASS: C4 validated (sample_efficiency_ratio={result.details['sample_efficiency_ratio']:.3f})")
+
 
 
 def test_claim_c5_validation():
