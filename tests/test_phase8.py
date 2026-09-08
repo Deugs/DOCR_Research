@@ -327,6 +327,73 @@ def test_claim_c5_validation():
     print(f"    ✓ PASS: C5 validated (latency={result.details['inference_latency_ms']:.1f}ms, BW={result.details['bandwidth_kbps']:.2f}kbps)")
 
 
+def test_bridge_bandwidth_uses_deployed_config_not_sweep_average():
+    """
+    Regression test: experiments/core_to_phase5_bridge.py's
+    _from_core_i_and_g() used to emit ALL 4 points of core_G_robustness's
+    gnn_depth=1..4 bandwidth SWEEP as separate "comm_bandwidth" entries
+    under one method/system -- 4 genuinely different deployment
+    configurations, not repeated measurements of one config.
+    thesis_validation.py's C5 metric averages every comm_bandwidth entry
+    it's given (a legitimate way to reduce noise across REPEATED runs of
+    the SAME config), so this made C5's bandwidth_kbps a meaningless
+    blend of 4 different configs (2.944/5.888/8.832/11.776 -> mean 7.36,
+    corresponding to no configuration ever actually deployed).
+
+    The fix emits only the gnn_depth=2 point -- the codebase's own
+    consistently-used default (TrainingConfig.gnn_depth,
+    CommConfig.n_gnn_layers, and CoreEvalBridge._build_config_fig22's own
+    kwarg default all default to 2).
+    """
+    print("  Test: bridge bandwidth uses deployed config, not sweep average...")
+
+    import experiments.core_to_phase5_bridge as bridge
+
+    fake_cache = {
+        "core_I_deployment": {
+            "latency": {"mean_ms": 10.0},
+            "latency_39bus": {"mean_ms": 20.0},
+        },
+        "core_G_robustness": {
+            "bandwidth": {
+                1: {"performance": 0.9, "bandwidth_kbps": 1.0},
+                2: {"performance": 0.8, "bandwidth_kbps": 2.0},
+                3: {"performance": 0.7, "bandwidth_kbps": 3.0},
+                4: {"performance": 0.6, "bandwidth_kbps": 4.0},
+            },
+            "bandwidth_39bus": {
+                1: {"performance": 0.5, "bandwidth_kbps": 5.0},
+                2: {"performance": 0.4, "bandwidth_kbps": 6.0},
+                3: {"performance": 0.3, "bandwidth_kbps": 7.0},
+                4: {"performance": 0.2, "bandwidth_kbps": 8.0},
+            },
+        },
+    }
+
+    original_load = bridge._load_core_cache
+    bridge._load_core_cache = lambda name: fake_cache.get(name)
+    try:
+        entries_8bus = bridge._from_core_i_and_g("8bus")
+    finally:
+        bridge._load_core_cache = original_load
+
+    comm_entries = [e for e in entries_8bus if e["method"] == "MAPPO-Comm"]
+    by_system = {e["system"]: e for e in comm_entries}
+
+    assert len(comm_entries) == 2, (
+        f"expected exactly one MAPPO-Comm entry per system (8bus, 39bus), "
+        f"got {len(comm_entries)}: {comm_entries} -- looks like the full "
+        f"sweep is being emitted again instead of just the deployed config"
+    )
+    # Must be the gnn_depth=2 point (2.0/6.0), not an average across the
+    # sweep (2.5/6.5) or any other single point.
+    assert by_system["8bus"]["comm_bandwidth"] == 2.0
+    assert by_system["39bus"]["comm_bandwidth"] == 6.0
+
+    print("    ✓ PASS: bridge emits exactly the gnn_depth=2 point per system, "
+          "not an average across the 4-config sweep")
+
+
 def test_validation_report():
     """Test 6: Generate validation report."""
     print("  Test 6: Validation report...")
@@ -544,6 +611,7 @@ def run_all_tests():
         test_claim_c4_validation,
         test_convergence_point_robust_to_per_iteration_noise,
         test_claim_c5_validation,
+        test_bridge_bandwidth_uses_deployed_config_not_sweep_average,
         test_validation_report,
         test_latex_table_generation,
         test_reproducibility_checklist,

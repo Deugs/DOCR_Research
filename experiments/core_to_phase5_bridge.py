@@ -250,26 +250,45 @@ def _from_core_i_and_g(system: str = "8bus") -> List[Dict]:
             inference_latency_ms=latency_39["mean_ms"],
         ))
 
+    # core_G_robustness's "bandwidth"/"bandwidth_39bus" dicts are a SWEEP
+    # over gnn_depth in {1,2,3,4} (run_core_training.py's Core G,
+    # `compression = min(1.0, depth / 4.0)`) -- 4 genuinely different
+    # deployment configurations, not repeated same-config measurements of
+    # one system. thesis_validation.py's C5 metric averages every
+    # "comm_bandwidth" entry it's given (a legitimate way to reduce
+    # measurement noise across REPEATED runs of the SAME config -- see
+    # inference_latency_ms's 100-sample average just above), so
+    # previously emitting all 4 sweep points here under one method/system
+    # made that average a meaningless blend of 4 different configs'
+    # bandwidth (2.944, 5.888, 8.832, 11.776 kbps -> mean 7.36 kbps,
+    # corresponding to no config that was ever actually deployed).
+    #
+    # Only emit the sweep point at gnn_depth=2 -- TrainingConfig.gnn_depth
+    # (experiments/training_pipeline.py) and CommConfig.n_gnn_layers
+    # (marl/comm_graph.py) both default to 2, and
+    # CoreEvalBridge._build_config_fig22's own `gnn_depth` kwarg default
+    # is 2 as well, so this is the codebase's own consistently-used
+    # default/deployed configuration, not an arbitrary pick among the 4.
+    # The full sweep remains available for Fig 22 (bandwidth vs.
+    # performance trade-off), which reads core_G_robustness directly and
+    # does not go through this bridge/phase5_results.json at all.
+    DEPLOYED_GNN_DEPTH = 2
     robustness = _load_core_cache("core_G_robustness")
     bandwidth = (robustness or {}).get("bandwidth", {})
-    for depth, point in bandwidth.items():
-        if not isinstance(point, dict) or point.get("bandwidth_kbps") is None:
-            continue
+    point = bandwidth.get(DEPLOYED_GNN_DEPTH) or bandwidth.get(str(DEPLOYED_GNN_DEPTH))
+    if isinstance(point, dict) and point.get("bandwidth_kbps") is not None:
         out.append(_entry(
-            "MAPPO-Comm", system, 0.6,
-            run_id=int(depth) if str(depth).isdigit() else 0,
+            "MAPPO-Comm", system, 0.6, run_id=0,
             comm_bandwidth=point["bandwidth_kbps"],
         ))
     # Real 39bus bandwidth (Core G, separately-trained base policy) --
     # was entirely absent before; Claim C5 specifically requires it.
     bandwidth_39 = (robustness or {}).get("bandwidth_39bus", {})
-    for depth, point in bandwidth_39.items():
-        if not isinstance(point, dict) or point.get("bandwidth_kbps") is None:
-            continue
+    point_39 = bandwidth_39.get(DEPLOYED_GNN_DEPTH) or bandwidth_39.get(str(DEPLOYED_GNN_DEPTH))
+    if isinstance(point_39, dict) and point_39.get("bandwidth_kbps") is not None:
         out.append(_entry(
-            "MAPPO-Comm", "39bus", 0.6,
-            run_id=int(depth) if str(depth).isdigit() else 0,
-            comm_bandwidth=point["bandwidth_kbps"],
+            "MAPPO-Comm", "39bus", 0.6, run_id=0,
+            comm_bandwidth=point_39["bandwidth_kbps"],
         ))
     return out
 

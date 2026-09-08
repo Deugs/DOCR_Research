@@ -27100,64 +27100,16 @@
     "system": "8bus",
     "pv_level": 0.6,
     "fault_type": "3ph",
-    "run_id": 1,
-    "comm_bandwidth": 0.896
-  },
-  {
-    "method": "MAPPO-Comm",
-    "system": "8bus",
-    "pv_level": 0.6,
-    "fault_type": "3ph",
-    "run_id": 2,
+    "run_id": 0,
     "comm_bandwidth": 1.792
   },
   {
     "method": "MAPPO-Comm",
-    "system": "8bus",
-    "pv_level": 0.6,
-    "fault_type": "3ph",
-    "run_id": 3,
-    "comm_bandwidth": 2.688
-  },
-  {
-    "method": "MAPPO-Comm",
-    "system": "8bus",
-    "pv_level": 0.6,
-    "fault_type": "3ph",
-    "run_id": 4,
-    "comm_bandwidth": 3.584
-  },
-  {
-    "method": "MAPPO-Comm",
     "system": "39bus",
     "pv_level": 0.6,
     "fault_type": "3ph",
-    "run_id": 1,
-    "comm_bandwidth": 2.944
-  },
-  {
-    "method": "MAPPO-Comm",
-    "system": "39bus",
-    "pv_level": 0.6,
-    "fault_type": "3ph",
-    "run_id": 2,
+    "run_id": 0,
     "comm_bandwidth": 5.888
-  },
-  {
-    "method": "MAPPO-Comm",
-    "system": "39bus",
-    "pv_level": 0.6,
-    "fault_type": "3ph",
-    "run_id": 3,
-    "comm_bandwidth": 8.832
-  },
-  {
-    "method": "MAPPO-Comm",
-    "system": "39bus",
-    "pv_level": 0.6,
-    "fault_type": "3ph",
-    "run_id": 4,
-    "comm_bandwidth": 11.776
   },
   {
     "method": "MAPPO-Safe-EWC",
