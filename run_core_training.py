@@ -2349,6 +2349,12 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # Bumped: added a 39bus bandwidth sweep (Claim C5) below,
         # previously only ever measured on 8bus.
         "real_39bus_bandwidth_v1": True,
+        # Bumped: Fig 13's packet-loss/latency sweeps now match
+        # Objective 5's stated 0-30%/10-500ms bounds (were 0-50%/0-500ms),
+        # and Fig 14's N-1 sweep now also runs on 14bus/39bus (was 8bus
+        # only) -- both against the newly-fixed real pandapower topology
+        # for those systems.
+        "real_sweep_v4_ranges_and_n1_14_39": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2387,13 +2393,18 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             # Fig 13: Communication Stress — sweep packet loss (latency
             # held at 0) and latency (packet loss held at 0) separately,
             # matching the two panels fig_13_communication_stress plots.
+            # Ranges match Objective 5's stated robustness-testing bounds
+            # (communication delays 10-500ms, packet loss 0-30%) --
+            # previously 0-500ms and 0-50%, exceeding what the thesis
+            # claims to have tested in both directions (missing the 10ms
+            # low point; testing up to 50% loss/500ms delay unclaimed).
             logger.info("\n[Core G] Fig 13: Communication Stress (REAL)")
             packet_loss_sweep = {}
-            for pl in [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]:
+            for pl in [0.0, 0.1, 0.2, 0.3]:
                 r = bridge.run_evaluation(13, stress_level=pl, packet_loss=pl, latency_ms=0)
                 packet_loss_sweep[pl] = _rel_perf(r.raw_data["packet_loss"])
             latency_sweep = {}
-            for lat in [0, 100, 200, 300, 400, 500]:
+            for lat in [10, 100, 200, 300, 400, 500]:
                 r = bridge.run_evaluation(13, stress_level=lat / 500.0, packet_loss=0.0, latency_ms=lat)
                 latency_sweep[lat] = _rel_perf(r.raw_data["packet_loss"])
             results["communication"] = {"packet_loss": packet_loss_sweep, "latency": latency_sweep}
@@ -2490,6 +2501,43 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
                     "bandwidth_kbps": float(r.raw_data["bandwidth"]),
                 }
             results["bandwidth_39bus"] = bandwidth_sweep_39
+
+            # Objective 1/5: N-1 contingency sweep on 14bus and 39bus too
+            # -- previously only ever ran on 8bus, despite the thesis
+            # claiming topology-variation robustness across the active
+            # scope's 3 systems. Reuses bridge_39 (already trained above
+            # for the bandwidth sweep) rather than training a second,
+            # redundant 39bus policy; 14bus needs its own bridge since no
+            # other Core G step trains one.
+            logger.info("[Core G] 14bus N-1 Contingency (REAL)")
+            from network.network_data import get_14bus
+            bridge_14 = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE, system="14bus")
+            base_of_14 = bridge_14._get_base_result().best_of
+            def _rel_perf_14(of_value):
+                return float(base_of_14 / max(of_value, 1e-9))
+            n1_sweep_14 = {}
+            for line_idx in range(get_14bus().n_lines):
+                r = bridge_14.run_evaluation(14, line_outage=line_idx, recovery=True)
+                recovery_of = r.raw_data.get("recovery_of")
+                n1_sweep_14[line_idx] = {
+                    "performance": _rel_perf_14(r.raw_data["n1_of"]),
+                    "cti_ok": bool(r.raw_data["n1_cti_ok"]),
+                    "recovery_performance": _rel_perf_14(recovery_of) if recovery_of is not None else None,
+                }
+            results["n1_contingency_14bus"] = n1_sweep_14
+
+            logger.info("[Core G] 39bus N-1 Contingency (REAL)")
+            from network.network_data import get_39bus
+            n1_sweep_39 = {}
+            for line_idx in range(get_39bus().n_lines):
+                r = bridge_39.run_evaluation(14, line_outage=line_idx, recovery=True)
+                recovery_of = r.raw_data.get("recovery_of")
+                n1_sweep_39[line_idx] = {
+                    "performance": _rel_perf_39(r.raw_data["n1_of"]),
+                    "cti_ok": bool(r.raw_data["n1_cti_ok"]),
+                    "recovery_performance": _rel_perf_39(recovery_of) if recovery_of is not None else None,
+                }
+            results["n1_contingency_39bus"] = n1_sweep_39
 
             is_synthetic = False
         except Exception as e:
