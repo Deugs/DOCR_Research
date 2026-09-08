@@ -726,7 +726,7 @@ def test_backward_compatibility_phase3():
     # Phase 1 compatibility: basic env works
     obs = env.reset(seed=42)
     assert obs.shape == (net.n_relays, env.OBS_DIM)
-    assert env.OBS_DIM == 10
+    assert env.OBS_DIM == 12  # Objective 2: 10 -> 12 (added real V, P_dir)
 
     # Phase 2 compatibility: MAPPO works
     trainer = MAPPOMARLTrainer(

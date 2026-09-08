@@ -540,7 +540,7 @@ def test_backward_compatibility():
 
     obs = env.reset(seed=42)
     assert obs.shape == (net.n_relays, env.OBS_DIM)
-    assert env.OBS_DIM == 10  # Same as Phase 1
+    assert env.OBS_DIM == 12  # Objective 2: 10 -> 12 (added real V, P_dir)
 
     actions = np.zeros((net.n_relays, env.ACT_DIM))
     next_obs, rewards, done, info = env.step(actions)

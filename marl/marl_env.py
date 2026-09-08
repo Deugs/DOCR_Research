@@ -18,7 +18,11 @@ Design (CTDE — Centralised Training, Decentralised Execution)
 - One agent per relay.
 - Agent i controls (TMS_i, PS_i) via continuous Delta-actions in [-1, 1].
 - Observation: [TMS_i, PS_i, If_norm, cti_slack_norm, viol_flag, top_norm, ps_norm,
-                pv_level, topology_flag, sensor_quality]  (10 features).
+                pv_level, topology_flag, sensor_quality, v_norm, p_dir]  (12 features).
+  v_norm/p_dir (Objective 2's local V/P_dir measurements) are real under
+  use_pandapower=True (genuine AC power-flow solve); an analytical proxy
+  otherwise -- see _get_obs()'s v_pu/p_dir computation for why (a real
+  per-step solve is ~28x slower, prohibitive for full-campaign training).
   An earlier "Phase 2 Enhanced" pass computed additional neighbor_TMS/PS/
   viol/slack statistics here intending to fold them into this vector, but
   never actually did — they were computed every step and discarded
@@ -44,7 +48,12 @@ from environment.dynamic_network import DistributionNetwork, DynamicState
 
 class DynamicDOCREnv:
 
-    OBS_DIM = 10   # Phase 1: expanded from 7 to 10 features
+    # Objective 2 (thesis) states each relay acts from local measurements
+    # (V, I, P_dir, I_fault). Only I_fault (If_norm below) was literally
+    # present before this -- expanded 10 -> 12 to add real per-agent
+    # voltage (V) and power-flow direction (P_dir). See _get_obs()'s
+    # v_pu/p_dir computation for how each is sourced.
+    OBS_DIM = 12   # Phase 1: expanded from 7 to 10; Objective 2: 10 to 12 (V, P_dir)
     ACT_DIM = 2    # [DeltaTMS, DeltaPS] normalised to [-1, 1]
 
     def __init__(
@@ -85,6 +94,11 @@ class DynamicDOCREnv:
         self.tms_range = TMS_MAX - TMS_MIN
 
         self._build_adjacency()
+        # 0-indexed set of buses hosting DG/PV (DGConfig.bus_idx is
+        # 1-indexed, matching RelayPair.bus_pri/bus_bkp's convention) --
+        # precomputed once rather than rebuilt every _get_obs() call.
+        # Used by the P_dir/voltage analytical proxies below.
+        self._dg_bus_set = {dg.bus_idx - 1 for dg in self.net.dg_buses}
         self.TMS = np.zeros(self.n_agents)
         self.PS  = np.zeros(self.n_agents)
         self.step_count = 0
@@ -211,6 +225,36 @@ class DynamicDOCREnv:
 
             pv_level_obs = self.current_pv_level
 
+            # Objective 2: real local voltage (V) and power-flow
+            # direction (P_dir) at this relay's bus. Under
+            # use_pandapower=True, V comes from a genuine AC power-flow
+            # solve (self.current_state.bus_voltages, populated by
+            # environment/dynamic_network.py's real PandapowerNetwork
+            # path). That solve is ~28x slower per step than the
+            # analytical fallback (measured directly: 84ms vs 3ms/step)
+            # -- prohibitive for the full training campaign (would turn
+            # hours of training into days) -- so use_pandapower=False
+            # (the vast majority of training) uses a fast analytical
+            # proxy instead, the same "real physics under pandapower,
+            # cheap approximation for training speed otherwise" pattern
+            # this codebase already uses for If_pri/If_bkp
+            # (network/pandapower_network.py's _analytical_fault_currents).
+            # P_dir has no real per-step signal available at all under
+            # the analytical path (no power-flow solve happens there),
+            # so it is always the analytical proxy: local DG injection
+            # (scaled by the current PV level) versus local load,
+            # bounded to [-1, 1] with -1 = normal substation-to-load
+            # flow, +1 = fully reversed by local generation.
+            is_dg_bus = 1.0 if self.net.get_relay_bus(i) in self._dg_bus_set else 0.0
+            if self.use_pandapower and self.current_state and self.current_state.bus_voltages:
+                v_pu = self.current_state.bus_voltages.get(self.net.get_relay_bus(i), 1.0)
+            else:
+                v_pu = np.clip(
+                    1.0 - 0.05 * If_norm + 0.05 * pv_level_obs * is_dg_bus, 0.85, 1.10
+                )
+            v_norm = np.clip((v_pu - 0.85) / 0.25, 0.0, 1.0)
+            p_dir = np.clip(2.0 * pv_level_obs * is_dg_bus - 1.0, -1.0, 1.0)
+
             obs[i] = [
                 tms_n,
                 ps_n,
@@ -222,6 +266,8 @@ class DynamicDOCREnv:
                 pv_level_obs,
                 topology_flag,
                 sensor_quality,
+                v_norm,
+                p_dir,
             ]
 
         return obs

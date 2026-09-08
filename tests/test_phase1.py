@@ -335,7 +335,7 @@ def test_dynamic_doc_env():
     
     obs = env.reset(seed=42)
     assert obs.shape == (net.n_relays, env.OBS_DIM)
-    assert env.OBS_DIM == 10  # Phase 1: 10 features
+    assert env.OBS_DIM == 12  # Objective 2: 10 -> 12 (added real V, P_dir)
     
     actions = np.zeros((net.n_relays, env.ACT_DIM))
     next_obs, rewards, done, info = env.step(actions)
