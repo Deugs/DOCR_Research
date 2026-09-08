@@ -243,9 +243,15 @@ for d in [CACHE_DIR, FIGURES_DIR, LOG_DIR, CHECKPOINT_DIR, PROGRESS_DIR]:
 FAST_MODE = False
 USE_SYNTHETIC = False
 N_RUNS_DEFAULT = 50
-N_RUNS_FAST = 2
+# These are only the fallback values for the (uncommon) direct-call path
+# where run_all_cores()/run_core_X() are invoked without a DOCRConfig
+# object -- the normal CLI path (main() -> config_from_args() ->
+# apply_config()) always overwrites these from docl_config.py's
+# TrainingConfig.n_runs_fast/n_runs_baseline_fast instead, so keep both
+# in sync (see that file's comment for why these were raised from 2).
+N_RUNS_FAST = 8
 N_RUNS_BASELINE = 10
-N_RUNS_BASELINE_FAST = 2
+N_RUNS_BASELINE_FAST = 16
 N_RUNS_HPARAM = 3
 N_RUNS_HPARAM_FAST = 1
 EPISODES_DEFAULT = 5000
@@ -468,17 +474,105 @@ def _core_pool_worker_init():
     threadpoolctl.threadpool_limits(1)
 
 
-def _run_pool(jobs, worker_fn, n_workers):
+def _disable_gpu_in_worker():
+    # Cores G/H/I/K hand a pre-trained CoreEvalBridge into each worker
+    # (via _run_pool's `initargs` below) so the pool only has to run cheap
+    # eval rollouts / a handful of independent trainings, not re-derive the
+    # bridge from scratch. But marl/marl_agents.py's _GPU_AVAILABLE is
+    # decided once at import time from torch.cuda.is_available(), with no
+    # per-process device partitioning -- so under Windows' spawn start
+    # method, every pool worker would independently open its OWN CUDA
+    # context on the SAME physical device. On a small card (this machine
+    # has 4GB) that's exactly the `torch.AcceleratorError: CUDA error: out
+    # of memory` already hit this session running the test suite. The GPU
+    # path was also never benchmarked as faster (EXPERIMENT_GUIDE.md), so
+    # forcing the CPU path in pooled workers costs nothing and is already
+    # numerically verified bit-identical there. Monkeypatching the live
+    # module globals (rather than e.g. env-var CUDA_VISIBLE_DEVICES) works
+    # regardless of whether torch/marl_agents was already imported by the
+    # time this initializer runs in the child process.
+    try:
+        import marl.marl_agents as _ma
+        _ma._GPU_AVAILABLE = False
+        _ma._GPU_DEVICE = None
+    except ImportError:
+        pass
+
+
+def _combined_worker_init(user_initializer, user_initargs):
+    """Top-level (picklable-by-reference) pool initializer for _run_pool:
+    always pins BLAS threads first, then runs the caller's own
+    initializer/initargs if one was given. Must stay a plain module-level
+    function, not a closure -- see _run_pool's initializer docstring."""
+    _core_pool_worker_init()
+    if user_initializer is not None:
+        user_initializer(*user_initargs)
+
+
+def _run_pool(jobs, worker_fn, n_workers, initializer=None, initargs=()):
     """Run `worker_fn` over `jobs` either sequentially or via a Pool,
     yielding (job, result) pairs as they complete. Sequential path calls
-    worker_fn directly (no process overhead) when n_workers <= 1."""
+    worker_fn directly (no process overhead) when n_workers <= 1.
+
+    `initializer`/`initargs`: optional additional per-worker setup, run
+    once per worker process (not per job), chained after the standard
+    BLAS-thread-pinning init above. Used by Cores G/H/I/K to seed each
+    worker with expensive shared read-only state (a pre-trained
+    CoreEvalBridge) via initargs, instead of re-pickling it into every one
+    of that Core's many job tuples -- see _init_core_bridge_worker below
+    for the concrete pattern. A-F's existing no-arg _run_pool(jobs,
+    worker_fn, n_workers) calls are unaffected (these two params default
+    to no-ops)."""
     if n_workers > 1:
-        with mp.Pool(n_workers, initializer=_core_pool_worker_init) as pool:
+        # mp.Pool's initializer must be picklable by reference (module
+        # attribute lookup on Windows' spawn start method) -- a nested
+        # closure defined here would fail with "Can't get local object
+        # ..._combined_init" the moment n_workers>1 for ANY caller,
+        # A-F's existing plain calls included. _combined_worker_init is a
+        # top-level function instead; the actual user initializer/initargs
+        # (possibly None/()) travel as its initargs tuple.
+        with mp.Pool(n_workers, initializer=_combined_worker_init,
+                     initargs=(initializer, initargs)) as pool:
             for job, result in pool.imap_unordered(worker_fn, jobs):
                 yield job, result
     else:
+        if initializer is not None:
+            initializer(*initargs)
         for job in jobs:
             yield worker_fn(job)
+
+
+# Populated once per worker process by _init_core_bridge_workers (or once
+# in-process for the n_workers<=1 sequential path) -- never touched inside
+# a job tuple, so a Core with dozens/hundreds of eval-sweep points doesn't
+# re-pickle its (possibly several) trained CoreEvalBridge instances once
+# per job.
+_WORKER_BRIDGES: Dict[str, Any] = {}
+
+
+def _init_core_bridge_workers(bridges_by_name: Dict[str, Any]):
+    """Shared _run_pool initializer for Cores G/H/I/K's pooled eval
+    sweeps: stashes one or more already-trained CoreEvalBridge instances
+    (each bridge_name -> bridge) as a per-worker-process global, and
+    forces the CPU path to avoid concurrent CUDA contention across
+    workers (see _disable_gpu_in_worker)."""
+    global _WORKER_BRIDGES
+    _disable_gpu_in_worker()
+    _WORKER_BRIDGES = bridges_by_name
+
+
+def _core_bridge_eval_job(job):
+    """Generic worker for Cores G/H/K's pooled eval sweeps: run one
+    bridge.run_evaluation(fig_num, **kwargs) call against a pre-trained
+    bridge and return only the raw result dict (not the whole BridgeResult
+    object, to sidestep any doubt about that class's picklability) -- the
+    main process does all interpretation/shaping (_rel_perf, cti_ok
+    extraction, etc.), exactly matching this file's pre-parallelization
+    sequential code; only the scheduling changed, not the math."""
+    job_key, bridge_name, fig_num, kwargs = job
+    bridge = _WORKER_BRIDGES[bridge_name]
+    r = bridge.run_evaluation(fig_num, **kwargs)
+    return job_key, r.raw_data
 
 
 def _method_seed_offset(name: str, modulus: int = 10000) -> int:
@@ -977,19 +1071,25 @@ def _aggregate_runs(runs_data: List[Dict]) -> Dict:
 # comment on _run_curriculum_single's TASKS definition)
 # ═════════════════════════════════════════════════════════════════
 def _core_B_job(args):
-    run_idx, run_seed, episodes_per_task, tasks, system = args
-    result_ewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
-                                  True, run_seed, episodes_per_task, system=system)
-    result_noewc = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
-                                    False, run_seed + 10000, episodes_per_task, system=system)
-    # Figs 5/6 are labeled "MAPPO-Safe-EWC" (see fig_05_objective_vs_pv's
-    # legend), so use the EWC run's real per-PV evaluation. Only the
-    # synthetic fallback path (_generate_synthetic_curriculum, taken
-    # when USE_SYNTHETIC=True and real training raised) lacks a
-    # "pv_evaluation" key, since that fallback never touches the real
-    # env/policy at all.
-    eval_results = result_ewc.get("pv_evaluation") or _evaluate_across_pv("checkpoint", tasks)
-    return run_idx, (result_ewc, result_noewc, eval_results)
+    # Split from one job training BOTH with_ewc and without_ewc
+    # sequentially into one job per variant -- doubles Core B's worker
+    # ceiling from n_runs to 2*n_runs, since with_ewc/without_ewc never
+    # depended on each other's results (each is its own from-scratch
+    # curriculum run). Seeds are unchanged from the bundled version
+    # (run_seed for ewc, run_seed+10000 for no_ewc), so per-(run_idx,
+    # variant) output is bit-identical to before.
+    run_idx, variant, run_seed, episodes_per_task, system = args
+    use_ewc = (variant == "ewc")
+    result = _try_experimental(_run_curriculum_single, _generate_synthetic_curriculum,
+                              use_ewc, run_seed, episodes_per_task, system=system)
+    return run_idx, variant, result
+
+
+def _core_B_eval_results(result_ewc, tasks):
+    # Factored out of the old bundled _core_B_job so the main process can
+    # call it as soon as a run_idx's "ewc" job (and only that one) comes
+    # back, regardless of whether its paired "no_ewc" job has finished yet.
+    return result_ewc.get("pv_evaluation") or _evaluate_across_pv("checkpoint", tasks)
 
 
 def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = None,
@@ -1030,6 +1130,14 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
         # discarded entirely, so no curriculum run ever had this key. Also
         # newly parametrized by `system` (was hardcoded to 8bus).
         "real_curriculum_history_v1": True,
+        # Bumped: with_ewc/without_ewc are now dispatched as 2 separate
+        # jobs per run_idx (job list grows from n_runs to 2*n_runs) instead
+        # of one job training both sequentially -- doubles Core B's worker
+        # ceiling. Same seeds, same computation per variant; only the
+        # scheduling changed, so this exists purely to bypass a
+        # pre-restructuring cache entry rather than to signal a numeric
+        # difference.
+        "parallel_b_split_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1054,17 +1162,23 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
     with_ewc = [None] * n_runs
     without_ewc = [None] * n_runs
     task_evaluations = [None] * n_runs
-    jobs = [(run_idx, seed + run_idx, episodes_per_task, TASKS, system) for run_idx in range(n_runs)]
+    jobs = (
+        [(run_idx, "ewc", seed + run_idx, episodes_per_task, system) for run_idx in range(n_runs)]
+        + [(run_idx, "no_ewc", seed + run_idx + 10000, episodes_per_task, system) for run_idx in range(n_runs)]
+    )
 
-    with ProgressTracker(total=n_runs, desc="[Core B] Curriculum runs", unit="run") as pbar:
-        for run_idx, (result_ewc, result_noewc, eval_results) in _run_pool(jobs, _core_B_job, n_workers):
-            with_ewc[run_idx] = result_ewc
-            without_ewc[run_idx] = result_noewc
-            task_evaluations[run_idx] = eval_results
+    with ProgressTracker(total=2 * n_runs, desc="[Core B] Curriculum runs", unit="run") as pbar:
+        for run_idx, variant, result in _run_pool(jobs, _core_B_job, n_workers):
+            if variant == "ewc":
+                with_ewc[run_idx] = result
+                task_evaluations[run_idx] = _core_B_eval_results(result, TASKS)
+                perf = f"{np.mean(result['task_performances'][-1]):.3f}"
+            else:
+                without_ewc[run_idx] = result
+                perf = "n/a"
 
             pbar.update(1)
-            pbar.set_postfix(run=run_idx + 1,
-                           ewc_perf=f"{np.mean(result_ewc['task_performances'][-1]):.3f}")
+            pbar.set_postfix(run=run_idx + 1, variant=variant, ewc_perf=perf)
             if progress:
                 progress.update_step(run_name, pbar.current)
 
@@ -2311,10 +2425,12 @@ except ImportError:
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN G — Robustness Evaluation (REAL)
 # ═════════════════════════════════════════════════════════════════
-def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgress = None):
+def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgress = None,
+               n_workers: int = None):
     """Robustness evaluation with real experiments via training_pipeline."""
     seed = seed if seed is not None else SEED
-    
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
+
     config = {
         "name": "core_G_robustness",
         "stress_types": ["communication", "byzantine", "bandwidth", "sensor", "adversarial"],
@@ -2355,6 +2471,16 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # only) -- both against the newly-fixed real pandapower topology
         # for those systems.
         "real_sweep_v4_ranges_and_n1_14_39": True,
+        # Bumped: the ~120 eval-sweep points below (packet loss, latency,
+        # byzantine, bandwidth, sensor, adversarial, N-1 x3 systems) now
+        # dispatch through a worker pool instead of one sequential loop --
+        # same seeds, same bridge.run_evaluation() calls, same _rel_perf
+        # math, only the scheduling changed. A pre-restructuring cache
+        # entry is numerically identical, but this bump documents the
+        # change per this file's convention rather than silently reusing
+        # sequential-era output as evidence the parallel path was
+        # exercised.
+        "parallel_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2390,154 +2516,148 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
                 # 14's real-data path.
                 return float(base_of / max(of_value, 1e-9))
 
-            # Fig 13: Communication Stress — sweep packet loss (latency
-            # held at 0) and latency (packet loss held at 0) separately,
-            # matching the two panels fig_13_communication_stress plots.
-            # Ranges match Objective 5's stated robustness-testing bounds
-            # (communication delays 10-500ms, packet loss 0-30%) --
-            # previously 0-500ms and 0-50%, exceeding what the thesis
-            # claims to have tested in both directions (missing the 10ms
-            # low point; testing up to 50% loss/500ms delay unclaimed).
-            logger.info("\n[Core G] Fig 13: Communication Stress (REAL)")
-            packet_loss_sweep = {}
-            for pl in [0.0, 0.1, 0.2, 0.3]:
-                r = bridge.run_evaluation(13, stress_level=pl, packet_loss=pl, latency_ms=0)
-                packet_loss_sweep[pl] = _rel_perf(r.raw_data["packet_loss"])
-            latency_sweep = {}
-            for lat in [10, 100, 200, 300, 400, 500]:
-                r = bridge.run_evaluation(13, stress_level=lat / 500.0, packet_loss=0.0, latency_ms=lat)
-                latency_sweep[lat] = _rel_perf(r.raw_data["packet_loss"])
-            results["communication"] = {"packet_loss": packet_loss_sweep, "latency": latency_sweep}
-
-            # Fig 20: Byzantine Resilience — one real evaluation per
-            # named attack strategy.
-            logger.info("[Core G] Fig 20: Byzantine Resilience (REAL)")
-            byzantine_sweep = {}
-            for strategy in ["random", "collusion", "fdi"]:
-                r = bridge.run_evaluation(20, byzantine_agents=[1], strategy=strategy)
-                byzantine_sweep[strategy] = _rel_perf(r.raw_data["byzantine_of"])
-            results["byzantine"] = byzantine_sweep
-
-            # Fig 22: Bandwidth Tradeoff — sweep GNN depth; bandwidth_kbps
-            # is the real quantity _eval_bandwidth computes (message size
-            # x agent count x compression), not the fabricated fallback's
-            # invented "MB/episode" scale — fig_22 is updated to plot and
-            # label it honestly as kbps.
-            logger.info("[Core G] Fig 22: Bandwidth Tradeoff (REAL)")
-            bandwidth_sweep = {}
-            for depth in [1, 2, 3, 4]:
-                compression = min(1.0, depth / 4.0)
-                r = bridge.run_evaluation(22, gnn_depth=depth, compression=compression, message_dim=8)
-                bandwidth_sweep[depth] = {
-                    "performance": _rel_perf(r.raw_data["of"]),
-                    "bandwidth_kbps": float(r.raw_data["bandwidth"]),
-                }
-            results["bandwidth"] = bandwidth_sweep
-
-            # Fig 24: Sensor Robustness — three independent sweeps
-            # (noise, systematic bias, missing-measurement rate), each
-            # holding the other two corruption knobs at zero.
-            logger.info("[Core G] Fig 24: Sensor Robustness (REAL)")
-            noise_sweep, bias_sweep, missing_sweep = {}, {}, {}
-            for sigma in [0.0, 0.05, 0.1, 0.15, 0.2]:
-                r = bridge.run_evaluation(24, noise_std=sigma, missing_rate=0.0, bias=0.0)
-                noise_sweep[sigma] = _rel_perf(r.raw_data["noisy_of"])
-            for bias_level in [0.0, 0.05, 0.1]:
-                r = bridge.run_evaluation(24, noise_std=0.0, missing_rate=0.0, bias=bias_level)
-                bias_sweep[bias_level] = _rel_perf(r.raw_data["noisy_of"])
-            for missing_rate in [0.0, 0.1, 0.2]:
-                r = bridge.run_evaluation(24, noise_std=0.0, missing_rate=missing_rate, bias=0.0)
-                missing_sweep[missing_rate] = _rel_perf(r.raw_data["noisy_of"])
-            results["sensor"] = {"noise": noise_sweep, "bias": bias_sweep, "missing": missing_sweep}
-
-            # Fig 54: Adversarial Robustness — FGSM/PGD epsilon sweeps.
-            logger.info("[Core G] Fig 54: Adversarial Robustness (REAL)")
-            fgsm_sweep, pgd_sweep = {}, {}
-            for eps in [0.01, 0.05, 0.1, 0.2]:
-                r = bridge.run_evaluation(54, attack="FGSM", epsilon=eps)
-                fgsm_sweep[eps] = _rel_perf(r.raw_data["of"])
-            for eps in [0.01, 0.05, 0.1, 0.2]:
-                r = bridge.run_evaluation(54, attack="PGD", epsilon=eps)
-                pgd_sweep[eps] = _rel_perf(r.raw_data["of"])
-            results["adversarial"] = {"fgsm": fgsm_sweep, "pgd": pgd_sweep}
-
-            # Fig 14: N-1 Contingency — one real evaluation per line in the
-            # network, reusing _eval_n1_contingency (genuine
-            # NetworkData.apply_n1_outage + post-outage policy rollout,
-            # experiments/training_pipeline.py) which was already fully
-            # implemented and bridge-wired but never called by any Core.
-            logger.info("[Core G] Fig 14: N-1 Contingency (REAL)")
-            from network.network_data import get_8bus
-            n_lines = get_8bus().n_lines
-            n1_sweep = {}
-            for line_idx in range(n_lines):
-                r = bridge.run_evaluation(14, line_outage=line_idx, recovery=True)
-                recovery_of = r.raw_data.get("recovery_of")
-                n1_sweep[line_idx] = {
-                    "performance": _rel_perf(r.raw_data["n1_of"]),
-                    "cti_ok": bool(r.raw_data["n1_cti_ok"]),
-                    "recovery_performance": _rel_perf(recovery_of) if recovery_of is not None else None,
-                }
-            results["n1_contingency"] = n1_sweep
-
-            # Claim C5: real bandwidth measurement on the 39-bus network.
-            # Claim C5 specifically requires system="39bus"; Fig 22's
-            # GNN-depth sweep above only ever ran on 8bus before. Trains a
-            # SEPARATE MAPPO-Safe-EWC base policy on 39bus via its own
-            # CoreEvalBridge instance (same real _eval_bandwidth method:
-            # message size x agent count x compression, not a fabricated
-            # scale).
-            logger.info("[Core G] 39bus Bandwidth (REAL, Claim C5)")
+            # Claim C5: a second base policy on 39bus (bandwidth + N-1
+            # both need it) and a third on 14bus (N-1 needs it) -- trained
+            # sequentially here, same as before parallelization. Kept off
+            # the pool: only 3 topologies total, and this keeps the
+            # actually-expensive ES training step away from any GPU-
+            # contention risk between concurrent workers (see
+            # _disable_gpu_in_worker) -- the real parallelization
+            # opportunity below is the ~120 CHEAP eval-sweep calls that
+            # reuse these three already-trained policies, not the
+            # trainings themselves.
+            logger.info("[Core G] 39bus Bandwidth base policy (REAL, Claim C5)")
             bridge_39 = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE, system="39bus")
             base_of_39 = bridge_39._get_base_result().best_of
             def _rel_perf_39(of_value):
                 return float(base_of_39 / max(of_value, 1e-9))
-            bandwidth_sweep_39 = {}
-            for depth in [1, 2, 3, 4]:
-                compression = min(1.0, depth / 4.0)
-                r = bridge_39.run_evaluation(22, gnn_depth=depth, compression=compression, message_dim=8)
-                bandwidth_sweep_39[depth] = {
-                    "performance": _rel_perf_39(r.raw_data["of"]),
-                    "bandwidth_kbps": float(r.raw_data["bandwidth"]),
-                }
-            results["bandwidth_39bus"] = bandwidth_sweep_39
 
-            # Objective 1/5: N-1 contingency sweep on 14bus and 39bus too
-            # -- previously only ever ran on 8bus, despite the thesis
-            # claiming topology-variation robustness across the active
-            # scope's 3 systems. Reuses bridge_39 (already trained above
-            # for the bandwidth sweep) rather than training a second,
-            # redundant 39bus policy; 14bus needs its own bridge since no
-            # other Core G step trains one.
-            logger.info("[Core G] 14bus N-1 Contingency (REAL)")
-            from network.network_data import get_14bus
+            logger.info("[Core G] 14bus N-1 base policy (REAL)")
+            from network.network_data import get_8bus, get_14bus, get_39bus
             bridge_14 = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE, system="14bus")
             base_of_14 = bridge_14._get_base_result().best_of
             def _rel_perf_14(of_value):
                 return float(base_of_14 / max(of_value, 1e-9))
-            n1_sweep_14 = {}
-            for line_idx in range(get_14bus().n_lines):
-                r = bridge_14.run_evaluation(14, line_outage=line_idx, recovery=True)
-                recovery_of = r.raw_data.get("recovery_of")
-                n1_sweep_14[line_idx] = {
-                    "performance": _rel_perf_14(r.raw_data["n1_of"]),
-                    "cti_ok": bool(r.raw_data["n1_cti_ok"]),
-                    "recovery_performance": _rel_perf_14(recovery_of) if recovery_of is not None else None,
-                }
-            results["n1_contingency_14bus"] = n1_sweep_14
 
-            logger.info("[Core G] 39bus N-1 Contingency (REAL)")
-            from network.network_data import get_39bus
-            n1_sweep_39 = {}
-            for line_idx in range(get_39bus().n_lines):
-                r = bridge_39.run_evaluation(14, line_outage=line_idx, recovery=True)
-                recovery_of = r.raw_data.get("recovery_of")
-                n1_sweep_39[line_idx] = {
-                    "performance": _rel_perf_39(r.raw_data["n1_of"]),
-                    "cti_ok": bool(r.raw_data["n1_cti_ok"]),
-                    "recovery_performance": _rel_perf_39(recovery_of) if recovery_of is not None else None,
-                }
-            results["n1_contingency_39bus"] = n1_sweep_39
+            n_lines_8 = get_8bus().n_lines
+            n_lines_14 = get_14bus().n_lines
+            n_lines_39 = get_39bus().n_lines
+
+            # Every sweep point below is an independent, read-only
+            # bridge.run_evaluation() call against one of the three
+            # already-trained policies -- none mutates the bridge's
+            # cached base-policy state or depends on another point's
+            # result, so they're safe to fan out across a worker pool.
+            # job_key encodes which named sweep dict each point belongs
+            # to; bridge_name selects which trained policy to evaluate
+            # against (see _init_core_bridge_workers/_core_bridge_eval_job
+            # above _run_pool).
+            jobs = []
+            # Fig 13: Communication Stress. Ranges match Objective 5's
+            # stated robustness-testing bounds (10-500ms delay, 0-30%
+            # packet loss).
+            for pl in [0.0, 0.1, 0.2, 0.3]:
+                jobs.append((("packet_loss", pl), "main", 13,
+                            dict(stress_level=pl, packet_loss=pl, latency_ms=0)))
+            for lat in [10, 100, 200, 300, 400, 500]:
+                jobs.append((("latency", lat), "main", 13,
+                            dict(stress_level=lat / 500.0, packet_loss=0.0, latency_ms=lat)))
+            # Fig 20: Byzantine Resilience.
+            for strategy in ["random", "collusion", "fdi"]:
+                jobs.append((("byzantine", strategy), "main", 20,
+                            dict(byzantine_agents=[1], strategy=strategy)))
+            # Fig 22: Bandwidth Tradeoff (8bus).
+            for depth in [1, 2, 3, 4]:
+                jobs.append((("bandwidth", depth), "main", 22,
+                            dict(gnn_depth=depth, compression=min(1.0, depth / 4.0), message_dim=8)))
+            # Fig 24: Sensor Robustness -- three independent sweeps.
+            for sigma in [0.0, 0.05, 0.1, 0.15, 0.2]:
+                jobs.append((("sensor_noise", sigma), "main", 24,
+                            dict(noise_std=sigma, missing_rate=0.0, bias=0.0)))
+            for bias_level in [0.0, 0.05, 0.1]:
+                jobs.append((("sensor_bias", bias_level), "main", 24,
+                            dict(noise_std=0.0, missing_rate=0.0, bias=bias_level)))
+            for missing_rate in [0.0, 0.1, 0.2]:
+                jobs.append((("sensor_missing", missing_rate), "main", 24,
+                            dict(noise_std=0.0, missing_rate=missing_rate, bias=0.0)))
+            # Fig 54: Adversarial Robustness.
+            for eps in [0.01, 0.05, 0.1, 0.2]:
+                jobs.append((("adversarial_fgsm", eps), "main", 54, dict(attack="FGSM", epsilon=eps)))
+            for eps in [0.01, 0.05, 0.1, 0.2]:
+                jobs.append((("adversarial_pgd", eps), "main", 54, dict(attack="PGD", epsilon=eps)))
+            # Fig 14: N-1 Contingency, all three systems.
+            for line_idx in range(n_lines_8):
+                jobs.append((("n1", line_idx), "main", 14, dict(line_outage=line_idx, recovery=True)))
+            for depth in [1, 2, 3, 4]:
+                jobs.append((("bandwidth_39", depth), "39bus", 22,
+                            dict(gnn_depth=depth, compression=min(1.0, depth / 4.0), message_dim=8)))
+            for line_idx in range(n_lines_14):
+                jobs.append((("n1_14", line_idx), "14bus", 14, dict(line_outage=line_idx, recovery=True)))
+            for line_idx in range(n_lines_39):
+                jobs.append((("n1_39", line_idx), "39bus", 14, dict(line_outage=line_idx, recovery=True)))
+
+            logger.info(f"[Core G] Running {len(jobs)} eval-sweep points "
+                        f"(Figs 13,14,20,22,24,54) across n_workers={n_workers}...")
+            raw = {}
+            for job_key, raw_data in _run_pool(
+                jobs, _core_bridge_eval_job, n_workers,
+                initializer=_init_core_bridge_workers,
+                initargs=({"main": bridge, "39bus": bridge_39, "14bus": bridge_14},),
+            ):
+                raw[job_key] = raw_data
+
+            # Reassemble every named sweep dict from the collected raw
+            # results, using the exact same shaping math as the
+            # pre-parallelization sequential version above.
+            packet_loss_sweep = {pl: _rel_perf(raw[("packet_loss", pl)]["packet_loss"])
+                                for pl in [0.0, 0.1, 0.2, 0.3]}
+            latency_sweep = {lat: _rel_perf(raw[("latency", lat)]["packet_loss"])
+                            for lat in [10, 100, 200, 300, 400, 500]}
+            results["communication"] = {"packet_loss": packet_loss_sweep, "latency": latency_sweep}
+
+            results["byzantine"] = {strategy: _rel_perf(raw[("byzantine", strategy)]["byzantine_of"])
+                                   for strategy in ["random", "collusion", "fdi"]}
+
+            bandwidth_sweep = {}
+            for depth in [1, 2, 3, 4]:
+                d = raw[("bandwidth", depth)]
+                bandwidth_sweep[depth] = {"performance": _rel_perf(d["of"]),
+                                         "bandwidth_kbps": float(d["bandwidth"])}
+            results["bandwidth"] = bandwidth_sweep
+
+            noise_sweep = {sigma: _rel_perf(raw[("sensor_noise", sigma)]["noisy_of"])
+                          for sigma in [0.0, 0.05, 0.1, 0.15, 0.2]}
+            bias_sweep = {b: _rel_perf(raw[("sensor_bias", b)]["noisy_of"]) for b in [0.0, 0.05, 0.1]}
+            missing_sweep = {m: _rel_perf(raw[("sensor_missing", m)]["noisy_of"]) for m in [0.0, 0.1, 0.2]}
+            results["sensor"] = {"noise": noise_sweep, "bias": bias_sweep, "missing": missing_sweep}
+
+            fgsm_sweep = {eps: _rel_perf(raw[("adversarial_fgsm", eps)]["of"]) for eps in [0.01, 0.05, 0.1, 0.2]}
+            pgd_sweep = {eps: _rel_perf(raw[("adversarial_pgd", eps)]["of"]) for eps in [0.01, 0.05, 0.1, 0.2]}
+            results["adversarial"] = {"fgsm": fgsm_sweep, "pgd": pgd_sweep}
+
+            def _shape_n1(prefix, rel_perf_fn, n_lines):
+                sweep = {}
+                for line_idx in range(n_lines):
+                    d = raw[(prefix, line_idx)]
+                    recovery_of = d.get("recovery_of")
+                    sweep[line_idx] = {
+                        "performance": rel_perf_fn(d["n1_of"]),
+                        "cti_ok": bool(d["n1_cti_ok"]),
+                        "recovery_performance": rel_perf_fn(recovery_of) if recovery_of is not None else None,
+                    }
+                return sweep
+
+            results["n1_contingency"] = _shape_n1("n1", _rel_perf, n_lines_8)
+
+            bandwidth_sweep_39 = {}
+            for depth in [1, 2, 3, 4]:
+                d = raw[("bandwidth_39", depth)]
+                bandwidth_sweep_39[depth] = {"performance": _rel_perf_39(d["of"]),
+                                            "bandwidth_kbps": float(d["bandwidth"])}
+            results["bandwidth_39bus"] = bandwidth_sweep_39
+
+            results["n1_contingency_14bus"] = _shape_n1("n1_14", _rel_perf_14, n_lines_14)
+            results["n1_contingency_39bus"] = _shape_n1("n1_39", _rel_perf_39, n_lines_39)
 
             is_synthetic = False
         except Exception as e:
@@ -2602,10 +2722,12 @@ def _generate_synthetic_core_G(seed: int):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN H — Transfer Learning (REAL)
 # ═════════════════════════════════════════════════════════════════
-def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgress = None):
+def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgress = None,
+               n_workers: int = None):
     """Transfer learning with real experiments."""
     seed = seed if seed is not None else SEED
-    
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
+
     config = {
         "name": "core_H_transfer",
         "evaluations": ["unseen_faults", "zero_shot_8to14"],
@@ -2636,6 +2758,13 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # from before this change would silently lack
         # results["zero_shot"]["cold_start"].
         "real_cold_start_v1": True,
+        # Bumped: the fault-type + zero-shot eval calls below now dispatch
+        # through a worker pool instead of a sequential loop (cold-start
+        # training stays sequential in the main process, after the pool,
+        # since it needs zero_shot's base_of and is a real from-scratch
+        # training call rather than a cheap bridge eval). Same seeds/calls,
+        # only the scheduling changed.
+        "parallel_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2658,28 +2787,31 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
     if BRIDGE_AVAILABLE:
         try:
             bridge = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE)
-            
-            # Fig 23: Unseen Fault Types
-            # Real sweep over the env's actual generalization axis (fault
-            # TYPE — see _eval_unseen_faults' docstring) rather than a
-            # single point: "3ph" is the training-time fault_type, so the
-            # genuinely unseen conditions are the other 3 IEEE fault types.
-            logger.info("\n[Core H] Fig 23: Unseen Fault Types (REAL)")
-            unseen_types = [ft for ft in FAULT_TYPES if ft != FAULT_TYPE]
-            unseen_faults = {}
-            for ft in unseen_types:
-                fig23 = bridge.run_evaluation(23, unseen_fault_type=ft)
-                base_of = bridge._get_base_result().best_of
-                unseen_faults[ft] = float(base_of / max(fig23.raw_data["unseen_of"], 1e-9))
-            results["unseen_faults"] = unseen_faults
+            base_of = bridge._get_base_result().best_of
 
-            # Fig 25: Zero-Shot Transfer 8->14 Bus (REAL)
-            logger.info("[Core H] Fig 25: Zero-Shot Transfer 8->14 Bus (REAL)")
-            fig25 = bridge.run_evaluation(25, eval_system="14bus")
-            results["zero_shot"] = {
-                **fig25.raw_data,
-                "base_of": bridge._get_base_result().best_of,
-            }
+            # Fig 23 (unseen fault types) and Fig 25 (zero-shot transfer)
+            # are both independent, read-only bridge.run_evaluation() calls
+            # against the same already-trained policy -- dispatched
+            # through the pool exactly like Core G's sweeps. Cold-start
+            # training below stays sequential (it's a real from-scratch
+            # training call, not a cheap eval, and needs this pool's
+            # zero-shot result first).
+            logger.info("\n[Core H] Figs 23/25: Unseen Faults + Zero-Shot Transfer (REAL)")
+            unseen_types = [ft for ft in FAULT_TYPES if ft != FAULT_TYPE]
+            jobs = [(("unseen", ft), "main", 23, dict(unseen_fault_type=ft)) for ft in unseen_types]
+            jobs.append((("zero_shot", None), "main", 25, dict(eval_system="14bus")))
+
+            raw = {}
+            for job_key, raw_data in _run_pool(
+                jobs, _core_bridge_eval_job, n_workers,
+                initializer=_init_core_bridge_workers, initargs=({"main": bridge},),
+            ):
+                raw[job_key] = raw_data
+
+            unseen_faults = {ft: float(base_of / max(raw[("unseen", ft)]["unseen_of"], 1e-9))
+                            for ft in unseen_types}
+            results["unseen_faults"] = unseen_faults
+            results["zero_shot"] = {**raw[("zero_shot", None)], "base_of": base_of}
 
             # Fig 25: Cold-Start Baseline — a genuine from-scratch training
             # run on the target system (14bus), reusing Core C's own
@@ -2739,10 +2871,57 @@ def _generate_synthetic_core_H(seed: int):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN I — Deployment Benchmark (REAL)
 # ═════════════════════════════════════════════════════════════════
-def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgress = None):
+def _core_I_measure_latency(seed, net_obj, base_result_obj, eval_bridge):
+    """Real per-decision inference latency: reconstructs the actual
+    trained actor (GNN comm module included, if trained with
+    use_comm=True) and times its deterministic forward pass, rather than
+    env.reset() + RNG overhead. Shared between the 8bus (Fig 18) and
+    39bus (Claim C5) measurements. Hoisted to module level (was a nested
+    closure in run_core_I) so it's picklable by reference for
+    _core_I_training_job below -- multiprocessing's spawn start method
+    can't pickle a closure over run_core_I's locals."""
+    import time
+    from marl.marl_env import DynamicDOCREnv
+    env = DynamicDOCREnv(net_obj, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE)
+    _, mean_fn, _, _ = eval_bridge._get_pipeline()._get_actor_for_eval(env, base_result_obj, net=net_obj)
+    latencies = []
+    obs = env.reset(seed=seed)
+    for _ in range(100):
+        t0 = time.perf_counter()
+        for i in range(env.n_agents):
+            _ = mean_fn(obs[i])
+        latencies.append((time.perf_counter() - t0) * 1000)
+    return {
+        "latencies_ms": np.array(latencies),
+        "mean_ms": np.mean(latencies),
+        "p50_ms": np.percentile(latencies, 50),
+        "p99_ms": np.percentile(latencies, 99),
+    }
+
+
+def _core_I_training_job(args):
+    """Core I's 2 base-policy trainings (8bus, 39bus) are independent of
+    each other -- unlike G/H/K's cheap eval sweeps, these ARE the
+    expensive part, so (unlike those Cores) the training itself is what
+    gets pooled here, one job per system. Returns the trained bridge
+    itself (in addition to the latency measurement) so the main process
+    can run Fig 53's compression sweep against the 8bus policy afterward
+    without retraining it."""
+    system, seed = args
+    from network.network_data import get_8bus, get_39bus
+    net_obj = get_8bus() if system == "8bus" else get_39bus()
+    bridge = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE, system=system)
+    base_result = bridge._get_base_result()
+    latency = _core_I_measure_latency(seed, net_obj, base_result, bridge)
+    return system, (bridge, base_result.best_of, latency)
+
+
+def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgress = None,
+               n_workers: int = None):
     """Deployment benchmark with real experiments."""
     seed = seed if seed is not None else SEED
-    
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
+
     config = {
         "name": "core_I_deployment",
         "benchmarks": ["inference_latency", "model_compression"],
@@ -2764,6 +2943,11 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # this specific system; only 8bus was ever measured before) via a
         # second, separately-trained CoreEvalBridge.
         "real_39bus_latency_v1": True,
+        # Bumped: the 8bus and 39bus base-policy trainings (each with its
+        # own latency measurement) now run as 2 concurrent pool jobs
+        # instead of sequentially -- same seeds, same _measure_latency
+        # math, only the scheduling changed.
+        "parallel_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2782,51 +2966,24 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
 
     results = {}
 
-    def _measure_latency(eval_bridge, net_obj, base_result_obj):
-        """Real per-decision inference latency: reconstructs the actual
-        trained actor (GNN comm module included, if trained with
-        use_comm=True) and times its deterministic forward pass, rather
-        than env.reset() + RNG overhead. Shared between the 8bus (Fig 18)
-        and 39bus (Claim C5) measurements below -- same method, different
-        trained policy."""
-        import time
-        from marl.marl_env import DynamicDOCREnv
-        env = DynamicDOCREnv(net_obj, seed=seed, use_pandapower=False, fault_type=FAULT_TYPE)
-        _, mean_fn, _, _ = eval_bridge._get_pipeline()._get_actor_for_eval(env, base_result_obj, net=net_obj)
-        latencies = []
-        obs = env.reset(seed=seed)
-        for _ in range(100):
-            t0 = time.perf_counter()
-            for i in range(env.n_agents):
-                _ = mean_fn(obs[i])
-            latencies.append((time.perf_counter() - t0) * 1000)
-        return {
-            "latencies_ms": np.array(latencies),
-            "mean_ms": np.mean(latencies),
-            "p50_ms": np.percentile(latencies, 50),
-            "p99_ms": np.percentile(latencies, 99),
-        }
-
     if BRIDGE_AVAILABLE:
         try:
-            bridge = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE)
+            # Fig 18 (8bus latency) and Claim C5 (39bus latency) each
+            # train their own independent MAPPO-Safe-EWC base policy --
+            # unlike G/H/K, the training itself is the expensive part
+            # here, so it's what gets pooled (see _core_I_training_job),
+            # capped at 2 workers since there are only 2 independent jobs.
+            logger.info("\n[Core I] Figs 18 + Claim C5: Inference Latency, 8bus + 39bus (REAL)")
+            jobs = [("8bus", seed), ("39bus", seed)]
+            trained = {}
+            for system, (trained_bridge, base_of_val, latency) in _run_pool(
+                jobs, _core_I_training_job, min(n_workers, len(jobs)),
+                initializer=_disable_gpu_in_worker,
+            ):
+                trained[system] = (trained_bridge, base_of_val, latency)
 
-            # Fig 18: Inference Latency (from base policy evaluation)
-            logger.info("\n[Core I] Fig 18: Inference Latency (REAL)")
-            base_result = bridge._get_base_result()
-            base_of = base_result.best_of
-            from network.network_data import get_8bus
-            results["latency"] = _measure_latency(bridge, get_8bus(), base_result)
-
-            # Claim C5: same real measurement, on the 39-bus network. This
-            # trains a SEPARATE MAPPO-Safe-EWC base policy on 39bus (via
-            # its own CoreEvalBridge instance) -- Claim C5 specifically
-            # requires this system, and no Core measured it there before.
-            logger.info("\n[Core I] 39bus Inference Latency (REAL, Claim C5)")
-            from network.network_data import get_39bus
-            bridge_39 = CoreEvalBridge(seed=seed, fast_mode=FAST_MODE, system="39bus")
-            base_result_39 = bridge_39._get_base_result()
-            results["latency_39bus"] = _measure_latency(bridge_39, get_39bus(), base_result_39)
+            bridge, base_of, results["latency"] = trained["8bus"]
+            _, _, results["latency_39bus"] = trained["39bus"]
 
             # Fig 53: Model Compression — one real evaluation per method.
             # int8 quantization and magnitude pruning are already fully
@@ -3018,10 +3175,12 @@ def _generate_synthetic_core_J(seed: int):
 # ═════════════════════════════════════════════════════════════════
 # CORE RUN K — Seasonal Generalization (REAL)
 # ═════════════════════════════════════════════════════════════════
-def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgress = None):
+def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgress = None,
+               n_workers: int = None):
     """Seasonal generalization with real experiments."""
     seed = seed if seed is not None else SEED
-    
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
+
     config = {
         "name": "core_K_seasonal",
         "seasons": ["spring", "summer", "autumn", "winter"],
@@ -3036,6 +3195,10 @@ def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # would silently fall back to its hardcoded placeholder without
         # this bump forcing a fresh run.
         "real_performance_pv_variability_v1": True,
+        # Bumped: the 4-season eval sweep below now dispatches through a
+        # worker pool instead of a sequential loop -- same seeds, same
+        # bridge.run_evaluation() calls, only the scheduling changed.
+        "parallel_v1": True,
     }
     cached = cache.get(config)
     if cached is not None:
@@ -3062,12 +3225,15 @@ def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             # and is cached on the bridge instance).
             base_of = bridge._get_base_result().best_of
 
-            for season in config["seasons"]:
-                logger.info(f"\n[Core K] Season: {season} (REAL)")
-                fig58 = bridge.run_evaluation(58, season=season)
-                seasonal_of = fig58.raw_data.get("of")
+            jobs = [(("season", season), "main", 58, dict(season=season)) for season in config["seasons"]]
+            for job_key, raw_data in _run_pool(
+                jobs, _core_bridge_eval_job, min(n_workers, len(jobs)),
+                initializer=_init_core_bridge_workers, initargs=({"main": bridge},),
+            ):
+                season = job_key[1]
+                seasonal_of = raw_data.get("of")
                 performance = float(base_of / seasonal_of) if seasonal_of else None
-                results[season] = {**fig58.raw_data, "performance": performance}
+                results[season] = {**raw_data, "performance": performance}
 
             is_synthetic = False
         except Exception as e:
@@ -3182,11 +3348,11 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
     core_D = run_core_D(n_runs=n_runs_baseline, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers) if "D" in all_cores else None
     core_E = run_core_E(n_seeds=n_runs_hparam, n_steps=n_episodes_hparam, seed=SEED, progress=progress, n_workers=n_workers) if "E" in all_cores else None
     core_F = run_core_F(seed=SEED, progress=progress, n_workers=n_workers) if "F" in all_cores else None
-    core_G = run_core_G(seed=SEED, progress=progress) if "G" in all_cores else None
-    core_H = run_core_H(seed=SEED, progress=progress) if "H" in all_cores else None
-    core_I = run_core_I(seed=SEED, progress=progress) if "I" in all_cores else None
+    core_G = run_core_G(seed=SEED, progress=progress, n_workers=n_workers) if "G" in all_cores else None
+    core_H = run_core_H(seed=SEED, progress=progress, n_workers=n_workers) if "H" in all_cores else None
+    core_I = run_core_I(seed=SEED, progress=progress, n_workers=n_workers) if "I" in all_cores else None
     core_J = run_core_J(seed=SEED, progress=progress) if "J" in all_cores else None
-    core_K = run_core_K(seed=SEED, progress=progress) if "K" in all_cores else None
+    core_K = run_core_K(seed=SEED, progress=progress, n_workers=n_workers) if "K" in all_cores else None
     
     elapsed = time.time() - t0
     
@@ -3377,11 +3543,11 @@ def main():
         if args.core_D: run_core_D(n_runs=n_runs_baseline, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_E: run_core_E(n_seeds=n_runs_hparam, n_steps=n_eps_hparam, seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_F: run_core_F(seed=SEED, progress=progress, n_workers=args.n_workers)
-        if args.core_G: run_core_G(seed=SEED, progress=progress)
-        if args.core_H: run_core_H(seed=SEED, progress=progress)
-        if args.core_I: run_core_I(seed=SEED, progress=progress)
+        if args.core_G: run_core_G(seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_H: run_core_H(seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_I: run_core_I(seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_J: run_core_J(seed=SEED, progress=progress)
-        if args.core_K: run_core_K(seed=SEED, progress=progress)
+        if args.core_K: run_core_K(seed=SEED, progress=progress, n_workers=args.n_workers)
 
         if not any([args.core_A, args.core_B, args.core_C, args.core_D, args.core_E,
                     args.core_F, args.core_G, args.core_H, args.core_I, args.core_J, args.core_K]):

@@ -93,9 +93,20 @@ class TrainingConfig:
     """Core training hyperparameters."""
     # Run counts
     n_runs: int = 50                      # Number of independent training runs
-    n_runs_fast: int = 2                # Fast mode runs
+    # Fast-mode job counts were sized to n_workers=1 defaults from before
+    # run_core_training.py's --n-workers pooling existed. Core A/C read
+    # n_runs_fast, Core B/D read n_runs_baseline_fast -- both left every
+    # 32-worker campaign pod mostly idle (Core A/B: 2 of 32 workers used;
+    # Core C/D: 10 of 32). Raised so Core A stays within one pool "wave"
+    # (<=32 jobs, zero added wall-clock) and post-split Core B (2 jobs per
+    # run_idx) exactly fills one wave (2*16=32); Core C (5 methods x 8=40)
+    # and Core D (5 configs x 16=80) trade a few extra waves (~2x/~3x
+    # their own wall-clock) for meaningfully more samples per method --
+    # also a real (not guaranteed) side benefit for Claims C1-C4, which
+    # previously had only 2-3 samples per method to test against.
+    n_runs_fast: int = 8                # Fast mode runs
     n_runs_baseline: int = 10           # Baseline comparison runs
-    n_runs_baseline_fast: int = 2       # Fast baseline runs
+    n_runs_baseline_fast: int = 16      # Fast baseline runs
     n_runs_hparam: int = 3              # Hyperparameter grid seeds
     n_runs_hparam_fast: int = 1         # Fast hparam seeds
     
