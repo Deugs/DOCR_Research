@@ -1300,12 +1300,18 @@ class TrainingPipeline:
         act_fn, mean_fn, comm_graph, actor = self._get_actor_for_eval(env, result, net=net)
         rng = np.random.default_rng(config.seed_offset + 800)
 
-        # Raw (uncompressed) bandwidth: msg_dim floats/agent/step at 4 bytes
-        # each (float32), reduced by compression_ratio via lossy
-        # quantization below.
+        # Per-agent bandwidth: msg_dim floats/agent/step at 4 bytes each
+        # (float32), reduced by compression_ratio via lossy quantization
+        # below. Previously multiplied by env.n_agents and stored under
+        # bandwidth_kbps with no "_per_agent" qualifier -- that's the
+        # network-wide AGGREGATE bandwidth, not the per-agent rate the
+        # thesis's <1kbps/agent design target (and Claim C5's
+        # bandwidth_kbps < 1.0 check) actually means. A larger network
+        # would then fail this check purely by having more agents, even
+        # though each agent's own link stays within budget.
         msg_dim = result.comm_msg_dim
-        bytes_per_step = env.n_agents * msg_dim * 4 * config.compression_ratio
-        kbps = bytes_per_step * 8 / 1000.0
+        bytes_per_agent_per_step = msg_dim * 4 * config.compression_ratio
+        kbps = bytes_per_agent_per_step * 8 / 1000.0
 
         total_params = comm_graph.n_params() if hasattr(comm_graph, 'n_params') else 0
         compressed_params = int(total_params * config.compression_ratio)

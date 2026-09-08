@@ -968,7 +968,7 @@ def run_phase2(progress: ExperimentProgress):
             obj4_pv_levels = [0.0, 0.2, 0.4, 0.6]
             obj4_methods = [
                 "GA-SQP", "HWOA", "HHO", "JAYA", "EEO",
-                "MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO",
+                "MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "Single-PPO",
             ]
 
             n_runs = 3 if config.experiment.fast_mode else config.training.n_runs

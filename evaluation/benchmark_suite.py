@@ -483,12 +483,57 @@ def _run_method_impl(method: str, net: NetworkData, seed: int,
             use_sqp=cfg.use_sqp, topology_state=topology_state,
         )
 
-    elif method in ("IPPO", "MAPPO", "MAPPO-Comm", "MAPPO-Safe", "MAPPO-Safe-EWC", "Single-PPO"):
+    elif method in ("IPPO", "MAPPO", "MAPPO-Comm", "MAPPO-Safe", "MAPPO-Safe-EWC"):
         # MARL methods - import dynamically to avoid dependency issues
         return _run_marl_method_impl(method, net, seed, cfg, verbose)
 
+    elif method == "Single-PPO":
+        # Centralized (not multi-agent) baseline -- needs its own env
+        # wrapper (CentralizedPPOEnvironment), not DynamicDOCREnv, so it
+        # can't go through _run_marl_method_impl. Previously routed
+        # there anyway by the tuple above, which silently built a plain
+        # MAPPOMARLTrainer and returned MAPPO's numbers mislabeled
+        # "Single-PPO" instead of erroring.
+        return _run_single_ppo_impl(net, seed, cfg, verbose)
+
     else:
         raise ValueError(f"Unknown method: {method}")
+
+
+def _run_single_ppo_impl(net: NetworkData, seed: int, cfg: BenchmarkConfig,
+                         verbose: bool = False) -> Dict:
+    """Run the centralized (single-agent) PPO baseline."""
+    from marl.single_agent_ppo import CentralizedPPOEnvironment, SinglePPOTrainer
+
+    env = CentralizedPPOEnvironment(net, use_pandapower=cfg.use_pandapower, seed=seed)
+    env.reset(pv_level=cfg.pv_level, fault_type=cfg.fault_type, seed=seed)
+    trainer = SinglePPOTrainer(env, seed=seed)
+
+    t0 = time.perf_counter()
+    result = trainer.train(total_steps=cfg.marl_steps, verbose=verbose,
+                           log_every=max(cfg.marl_steps // 10, 1))
+    elapsed = time.perf_counter() - t0
+
+    # Normalize to the same shape _run_marl_method_impl's results have:
+    # "best_of" (not just "OF") and a real "constraints" dict, both read
+    # downstream by experiments/core_to_phase5_bridge.py's
+    # _from_benchmark_pv().
+    result["best_of"] = result["OF"]
+    topology_state = {
+        "fault_currents": compute_fault_currents_dynamic(
+            net, pv_penetration=cfg.pv_level, fault_type=cfg.fault_type
+        )
+    }
+    result["constraints"] = check_constraints(
+        net, result["TMS"], result["PS"], fault_type=cfg.fault_type,
+        topology_state=topology_state,
+    )
+    result["elapsed"] = elapsed
+    result["method"] = "Single-PPO"
+    result["fault_type"] = cfg.fault_type
+    result["pv_level"] = cfg.pv_level
+
+    return result
 
 
 def _run_marl_method_impl(method: str, net: NetworkData, seed: int,

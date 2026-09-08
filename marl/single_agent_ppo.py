@@ -481,7 +481,14 @@ class SinglePPOTrainer:
         MAPPOMARLTrainer.train() in marl/marl_agents.py for the same
         opt-in pattern and rationale.
         """
-        obs = self.env.reset()
+        # reset()'s pv_level/fault_type default to 0.0/"3ph" regardless
+        # of what the caller already configured on env (via __init__ or
+        # an explicit reset() beforehand) -- calling it bare here silently
+        # reverted every training run back to 0% PV no matter what the
+        # caller intended, since this is the only reset() call train()
+        # ever makes. Reuse whatever the env is currently configured
+        # with instead of re-defaulting it.
+        obs = self.env.reset(pv_level=self.env.current_pv_level, fault_type=self.env.fault_type)
         step = 0
         history = []
         best_OF = np.inf
@@ -564,9 +571,12 @@ def run_single_ppo(
     use_pandapower=False,
     hidden_actor=128,
     hidden_critic=128,
+    pv_level=0.0,
+    fault_type="3ph",
 ):
     """Convenience function to run centralized PPO."""
     env = CentralizedPPOEnvironment(net, use_pandapower=use_pandapower, seed=seed)
+    env.reset(pv_level=pv_level, fault_type=fault_type, seed=seed)
     trainer = SinglePPOTrainer(
         env,
         hidden_actor=hidden_actor,
