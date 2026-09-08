@@ -243,15 +243,18 @@ for d in [CACHE_DIR, FIGURES_DIR, LOG_DIR, CHECKPOINT_DIR, PROGRESS_DIR]:
 FAST_MODE = False
 USE_SYNTHETIC = False
 N_RUNS_DEFAULT = 50
-# These are only the fallback values for the (uncommon) direct-call path
-# where run_all_cores()/run_core_X() are invoked without a DOCRConfig
+# These are only the fallback MINIMUM floor for the (uncommon) direct-call
+# path where run_all_cores()/run_core_X() are invoked without a DOCRConfig
 # object -- the normal CLI path (main() -> config_from_args() ->
 # apply_config()) always overwrites these from docl_config.py's
-# TrainingConfig.n_runs_fast/n_runs_baseline_fast instead, so keep both
-# in sync (see that file's comment for why these were raised from 2).
-N_RUNS_FAST = 8
+# TrainingConfig.n_runs_fast/n_runs_baseline_fast instead, so keep both in
+# sync. Cores A/B/C/D auto-scale their actual fast-mode n_runs at runtime
+# via _n_runs_for_wave(n_workers, ...) to fill one pool wave -- these
+# constants only matter as the floor when n_workers is too small for that
+# to help (see docl_config.py's matching comment).
+N_RUNS_FAST = 2
 N_RUNS_BASELINE = 10
-N_RUNS_BASELINE_FAST = 16
+N_RUNS_BASELINE_FAST = 2
 N_RUNS_HPARAM = 3
 N_RUNS_HPARAM_FAST = 1
 EPISODES_DEFAULT = 5000
@@ -542,6 +545,22 @@ def _run_pool(jobs, worker_fn, n_workers, initializer=None, initargs=()):
             yield worker_fn(job)
 
 
+def _n_runs_for_wave(n_workers: int, jobs_per_run: int, minimum: int) -> int:
+    """Pick n_runs so jobs_per_run * n_runs fills (but doesn't exceed) one
+    _run_pool wave under n_workers -- more samples at zero extra
+    wall-clock, since a fuller single wave costs exactly the same as a
+    half-empty one (bounded by the slowest job either way). Used by fast
+    mode's n_runs defaulting for Cores A/B/C/D so a 64-worker pod gets
+    twice the samples of a 32-worker one automatically, instead of a
+    fixed constant that either wastes capacity or forces extra waves
+    regardless of what n_workers was actually requested. Falls back to
+    `minimum` when n_workers is too small for this to matter (e.g. a
+    laptop run with n_workers=1-2)."""
+    if n_workers <= 1:
+        return minimum
+    return max(minimum, n_workers // jobs_per_run)
+
+
 # Populated once per worker process by _init_core_bridge_workers (or once
 # in-process for the n_workers<=1 sequential path) -- never touched inside
 # a job tuple, so a Core with dozens/hundreds of eval-sweep points doesn't
@@ -698,11 +717,16 @@ def _core_A_job(args):
 def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None,
                progress: ExperimentProgress = None, n_workers: int = None):
     # Use config values if not explicitly provided
-    n_runs = n_runs if n_runs is not None else (N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT)
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
+    # Fast mode: auto-scale to fill one pool wave (jobs_per_run=1, since
+    # each of Core A's n_runs jobs is independent) instead of a fixed
+    # constant -- more samples for free on a bigger pod, see
+    # _n_runs_for_wave's docstring.
+    n_runs = n_runs if n_runs is not None else (
+        _n_runs_for_wave(n_workers, 1, N_RUNS_FAST) if FAST_MODE else N_RUNS_DEFAULT)
     n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
     seed = seed if seed is not None else SEED
-    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
-    
+
     config = {
         # Name/pv corrected from "...100pv"/1.0: _run_core_A_experimental
         # actually trains at curriculum_stage=3 (60% PV, the active sweep
@@ -1094,10 +1118,14 @@ def _core_B_eval_results(result_ewc, tasks):
 
 def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = None,
                progress: ExperimentProgress = None, n_workers: int = None, system: str = "8bus"):
-    n_runs = n_runs if n_runs is not None else (N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE)
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
+    # Fast mode: auto-scale to fill one pool wave. jobs_per_run=2 since
+    # the with_ewc/without_ewc split (see _core_B_job) dispatches 2
+    # independent jobs per run_idx.
+    n_runs = n_runs if n_runs is not None else (
+        _n_runs_for_wave(n_workers, 2, N_RUNS_BASELINE_FAST) if FAST_MODE else N_RUNS_BASELINE)
     episodes_per_task = episodes_per_task if episodes_per_task is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT) // 10
     seed = seed if seed is not None else SEED
-    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
 
     config = {
         "name": "core_B_curriculum" if system == "8bus" else f"core_B_curriculum_{system}",
@@ -1467,10 +1495,15 @@ def _core_C_job(args):
 def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
                progress: ExperimentProgress = None, n_workers: int = None,
                system: str = "8bus"):
-    n_runs = n_runs if n_runs is not None else (N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT)
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
+    _c_methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
+    # Fast mode: auto-scale to fill one pool wave. jobs_per_run=len(methods)
+    # since each run_idx dispatches one job per method (see the job-list
+    # comprehension below).
+    n_runs = n_runs if n_runs is not None else (
+        _n_runs_for_wave(n_workers, len(_c_methods), N_RUNS_FAST) if FAST_MODE else N_RUNS_DEFAULT)
     n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
     seed = seed if seed is not None else SEED
-    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
 
     config = {
         # "system" folded into the cache name (matching Core A's
@@ -1481,7 +1514,7 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
         # cache slot regardless of which system was requested.
         "name": f"core_C_baselines_{system}",
         "system": system,
-        "methods": ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"],
+        "methods": _c_methods,
         "n_runs": n_runs,
         "n_episodes": n_episodes,
         "seed": seed,
@@ -1838,14 +1871,18 @@ def _core_D_job(args):
 
 def run_core_D(n_runs: int = None, n_episodes: int = None, seed: int = None,
                progress: ExperimentProgress = None, n_workers: int = None):
-    n_runs = n_runs if n_runs is not None else (N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE)
+    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
+    _d_configs = ["MAPPO", "MAPPO+GNN", "MAPPO+GNN+Safe", "MAPPO+GNN+Safe+EWC", "MAPPO+GNN+Safe+EWC+Curr"]
+    # Fast mode: auto-scale to fill one pool wave. jobs_per_run=len(configs)
+    # since each run_idx dispatches one job per ablation config.
+    n_runs = n_runs if n_runs is not None else (
+        _n_runs_for_wave(n_workers, len(_d_configs), N_RUNS_BASELINE_FAST) if FAST_MODE else N_RUNS_BASELINE)
     n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
     seed = seed if seed is not None else SEED
-    n_workers = n_workers if n_workers is not None else N_WORKERS_DEFAULT
-    
+
     config = {
         "name": "core_D_ablation",
-        "configs": ["MAPPO", "MAPPO+GNN", "MAPPO+GNN+Safe", "MAPPO+GNN+Safe+EWC", "MAPPO+GNN+Safe+EWC+Curr"],
+        "configs": _d_configs,
         "n_runs": n_runs,
         "n_episodes": n_episodes,
         "seed": seed,

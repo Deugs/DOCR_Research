@@ -935,8 +935,15 @@ def run_phase2(progress: ExperimentProgress):
         episodes_flag = f" --episodes {config.training.n_episodes}"
         workers_flag = f" --n-workers {config.experiment.n_workers}" if config.experiment.n_workers > 1 else ""
         fault_type_flag = f" --fault-type {config.system.fault_type}"
+        # config.experiment.cores was parsed from --cores but never
+        # forwarded to this subprocess -- silently dropped, so e.g.
+        # `run_thesis_experiments.py --cores B C` still ran all 11 cores.
+        # Only add the flag when cores has actually been restricted (the
+        # full A-K set is the default and needs no explicit flag).
+        cores_flag = (f" --cores {' '.join(config.experiment.cores)}"
+                     if set(config.experiment.cores) != set("ABCDEFGHIJK") else "")
 
-        cmd = f"python run_core_training.py --all{fast_flag}{system_flag}{pv_flag}{runs_flag}{episodes_flag}{workers_flag}{fault_type_flag}"
+        cmd = f"python run_core_training.py --all{fast_flag}{system_flag}{pv_flag}{runs_flag}{episodes_flag}{workers_flag}{fault_type_flag}{cores_flag}"
 
         run_subprocess(
             cmd,
