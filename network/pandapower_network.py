@@ -58,76 +58,229 @@ class PandapowerNetwork:
                 name=f"Bus {i+1}"
             )
 
-        # Add external grid (slack bus) at bus 0. s_sc_max_mva/rx_max are
-        # required by pandapower's short-circuit module (sc.calc_sc) for
-        # both case="max" and case="min" studies -- without them, any SC
-        # study (Fig 44's fault-contribution analysis, run_short_circuit()
-        # below) fails with "short circuit apparent power s_sc_max_mva
-        # needs to be specified for external grid". 1000 MVA (10x this
-        # system's base_mva=100.0) is a typical utility-substation
-        # short-circuit strength for a distribution-class system, matching
-        # the value already used for case="min" in the unwired
-        # experiments/exp_fig44_fault_contribution.py.
-        pp.create_ext_grid(net, bus=bus_map[0], vm_pu=1.0, va_degree=0.0,
+        # Add external grid (slack bus). Defaults to bus 0 (1-indexed bus
+        # 1) for systems without a real designated reference bus; systems
+        # with real line_data can override via "slack_bus"/"slack_vm_pu"
+        # (1-indexed bus number, per-unit voltage setpoint). This mattered
+        # for 39bus specifically: MATPOWER case39's mpc.bus marks bus 31
+        # (not bus 1) as the type=3 reference bus, at Vg=0.982 pu (its
+        # gen row's Vg) -- always placing the slack at bus 0 regardless
+        # put pandapower's idealized infinite-source slack on a bus that,
+        # in the real system, is just an ordinary PQ load bus, and left
+        # the ACTUAL reference bus (31) to be modeled as if it were an
+        # ordinary generator -- part of why power flow wouldn't converge
+        # independent of every other fix above.
+        #
+        # s_sc_max_mva/rx_max are required by pandapower's short-circuit
+        # module (sc.calc_sc) for both case="max" and case="min" studies
+        # -- without them, any SC study (Fig 44's fault-contribution
+        # analysis, run_short_circuit() below) fails with "short circuit
+        # apparent power s_sc_max_mva needs to be specified for external
+        # grid". 1000 MVA (10x this system's base_mva=100.0) is a typical
+        # utility-substation short-circuit strength for a distribution-
+        # class system, matching the value already used for case="min" in
+        # the unwired experiments/exp_fig44_fault_contribution.py.
+        slack_bus0 = (self.net_data.line_data.get("slack_bus", 1) - 1
+                      if self.net_data.line_data else 0)
+        slack_vm_pu = (self.net_data.line_data.get("slack_vm_pu", 1.0)
+                        if self.net_data.line_data else 1.0)
+        pp.create_ext_grid(net, bus=bus_map[slack_bus0], vm_pu=slack_vm_pu, va_degree=0.0,
                             s_sc_max_mva=1000.0, rx_max=0.1,
                             s_sc_min_mva=1000.0, rx_min=0.1)
 
-        # Derive the pandapower line topology from this network's own
-        # relay-pair bus data (RelayPair.bus_pri/bus_bkp, 1-indexed) instead
-        # of a topology guess keyed only on bus count -- previously this was
-        # a hardcoded stand-in completely decoupled from the actual relay
-        # network topology used everywhere else (network/network_data.py,
-        # marl/comm_graph.py, etc.), so pandapower's power flow / fault
-        # study described a different graph than the one relays actually
-        # coordinate on.
         n = self.net_data.n_buses
-        edges = set()
-        for p in self.net_data.pairs:
-            b1, b2 = p.bus_pri - 1, p.bus_bkp - 1
-            if b1 != b2 and 0 <= b1 < n and 0 <= b2 < n:
-                edges.add(tuple(sorted((b1, b2))))
-        line_pairs = sorted(edges)
-        if not line_pairs:
-            # Junction-bus convention networks (bus_pri == bus_bkp for every
-            # pair, e.g. get_14bus()/get_39bus()/get_57bus()/get_118bus())
-            # don't encode a from/to edge per pair at all -- every relay
-            # pair shares one junction bus by definition -- so there is no
-            # real topology to recover from RelayPair data here. Fall back
-            # to a simple ring so every bus still connects to something;
-            # this remains an intentionally simplified stand-in for those
-            # networks pending real per-line bus endpoint data.
-            line_pairs = [(i, (i+1) % n) for i in range(n)]
-
-        for from_bus, to_bus in line_pairs:
-            if from_bus < self.net_data.n_buses and to_bus < self.net_data.n_buses:
-                pp.create_line(
+        if self.net_data.line_data and self.net_data.line_data.get("lines"):
+            # Real per-line topology AND impedance, sourced from this
+            # system's own standard CDF/MATPOWER line list (see
+            # get_14bus()/get_39bus() -- the same data those functions
+            # already use for fault-current calculations, just not
+            # previously exposed to pandapower). Replaces two separate
+            # problems the branch below has: (1) a fake ring topology for
+            # every "junction-bus convention" network (bus_pri==bus_bkp
+            # for every RelayPair, so no real from/to edge is recoverable
+            # from pairs alone), and (2) an arbitrary cable std_type
+            # picked by a voltage threshold regardless of the system's
+            # actual base voltage -- e.g. a 12-20kV-rated cable modeling
+            # 39-bus's 345kV transmission lines, and a 0.4kV-rated cable
+            # modeling 8-bus's 11kV lines. Both produced power flow that
+            # either failed to converge (14bus) or "converged" with
+            # 1000%+ line loading (8bus, 39bus) -- an artifact of the
+            # placeholder line model, not the actual network.
+            V_base_kv = self.net_data.base_voltage
+            S_base_mva = self.net_data.base_mva
+            z_base_ohm = V_base_kv ** 2 / S_base_mva
+            y_base_s = 1.0 / z_base_ohm
+            f_hz = 50.0
+            for ln in self.net_data.line_data["lines"]:
+                from_bus0 = ln["from_bus"] - 1
+                to_bus0 = ln["to_bus"] - 1
+                if not (0 <= from_bus0 < n and 0 <= to_bus0 < n):
+                    continue
+                ratio = ln.get("ratio", 0.0)
+                if ratio:
+                    # A nonzero MATPOWER `ratio` (including exactly 1.0,
+                    # a unity-ratio isolation transformer) marks a
+                    # transformer branch, not a plain line. These have
+                    # near-zero series resistance (r_pu often exactly 0)
+                    # -- pandapower's Newton-Raphson solver is
+                    # numerically ill-conditioned by that when modeled
+                    # as create_line_from_parameters (confirmed via
+                    # pp.diagnostic(): "impedance values close to zero",
+                    # non-convergence persisting until reindexed/rescaled
+                    # away). create_transformer_from_parameters handles
+                    # a small series impedance robustly since that's the
+                    # normal case for a real transformer.
+                    #
+                    # sn_mva/vk_percent/vkr_percent are on the
+                    # transformer's OWN rated power, not the system's
+                    # S_base_mva these r_pu/x_pu values are expressed on
+                    # -- rescale by (sn_mva / S_base_mva). Cross-checked
+                    # directly against pandapower's own built-in
+                    # pandapower.networks.case39() reference conversion
+                    # of this exact standard system: it independently
+                    # produces the identical vk_percent (e.g. 16.29% for
+                    # the bus2-bus30 transformer, 45.0% for bus6-bus31)
+                    # using this same formula, and that reference network
+                    # converges without issue -- pandapower's
+                    # diagnostic() flagging vk_percent>20% as an
+                    # "invalid_values" candidate is only an advisory
+                    # plausibility heuristic, not a hard error; a version
+                    # of this fix that instead set sn_mva=S_base_mva to
+                    # silence that warning was actually wrong, not a fix.
+                    # The off-nominal tap ratio is baked directly into
+                    # vn_hv_kv (both sides otherwise share this system's
+                    # single nominal voltage in this codebase's model,
+                    # so there's no genuine HV/LV voltage-class split to
+                    # reflect here beyond the tap itself). No magnetizing
+                    # branch is modeled (pfe_kw=i0_percent=0), matching
+                    # b_pu=0 on every transformer branch in the source
+                    # data -- these are series-impedance-only in
+                    # MATPOWER's own model too.
+                    sn_mva = ln["mva_limit"]
+                    base_ratio = sn_mva / S_base_mva
+                    vk_percent = max(
+                        np.hypot(ln["r_pu"], ln["x_pu"]) * base_ratio * 100.0, 0.01
+                    )
+                    vkr_percent = ln["r_pu"] * base_ratio * 100.0
+                    pp.create_transformer_from_parameters(
+                        net,
+                        hv_bus=bus_map[from_bus0],
+                        lv_bus=bus_map[to_bus0],
+                        sn_mva=sn_mva,
+                        vn_hv_kv=V_base_kv * ratio,
+                        vn_lv_kv=V_base_kv,
+                        vkr_percent=vkr_percent,
+                        vk_percent=vk_percent,
+                        pfe_kw=0.0,
+                        i0_percent=0.0,
+                        name=f"Trafo_{ln['from_bus']}_{ln['to_bus']}",
+                    )
+                    continue
+                r_ohm = ln["r_pu"] * z_base_ohm
+                x_ohm = ln["x_pu"] * z_base_ohm
+                b_s = ln.get("b_pu", 0.0) * y_base_s
+                c_nf = max(b_s / (2 * np.pi * f_hz) * 1e9, 0.0)
+                max_i_ka = ln["mva_limit"] / (np.sqrt(3) * V_base_kv)
+                pp.create_line_from_parameters(
                     net,
-                    from_bus=bus_map[from_bus],
-                    to_bus=bus_map[to_bus],
+                    from_bus=bus_map[from_bus0],
+                    to_bus=bus_map[to_bus0],
                     length_km=1.0,
-                    std_type="NAYY 4x150 SE" if self.net_data.base_voltage <= 20 else "NA2XS2Y 1x185 RM/25 12/20 kV"
+                    r_ohm_per_km=max(r_ohm, 1e-6),  # pandapower rejects r=0
+                    x_ohm_per_km=x_ohm,
+                    c_nf_per_km=c_nf,
+                    max_i_ka=max_i_ka,
+                    name=f"Line_{ln['from_bus']}_{ln['to_bus']}",
                 )
+        else:
+            # Derive the pandapower line topology from this network's own
+            # relay-pair bus data (RelayPair.bus_pri/bus_bkp, 1-indexed)
+            # instead of a topology guess keyed only on bus count --
+            # previously this was a hardcoded stand-in completely
+            # decoupled from the actual relay network topology used
+            # everywhere else (network/network_data.py, marl/comm_graph.py,
+            # etc.), so pandapower's power flow / fault study described a
+            # different graph than the one relays actually coordinate on.
+            # This path has no real per-line impedance data available
+            # (net_data.line_data is None for these systems), so it still
+            # falls back to a generic cable std_type -- kept for systems
+            # without a line_data source (8bus/30bus/57bus/118bus); its
+            # power-flow *loading magnitudes* aren't calibrated against a
+            # real line rating and shouldn't be trusted quantitatively,
+            # only the topology/direction structure RelayPair data gives.
+            edges = set()
+            for p in self.net_data.pairs:
+                b1, b2 = p.bus_pri - 1, p.bus_bkp - 1
+                if b1 != b2 and 0 <= b1 < n and 0 <= b2 < n:
+                    edges.add(tuple(sorted((b1, b2))))
+            line_pairs = sorted(edges)
+            if not line_pairs:
+                # Junction-bus convention networks (bus_pri == bus_bkp for
+                # every pair, e.g. get_57bus()/get_118bus() -- get_14bus()/
+                # get_39bus() now have real line_data above and never reach
+                # here) don't encode a from/to edge per pair at all, so
+                # there is no real topology to recover from RelayPair data.
+                # Fall back to a simple ring so every bus still connects to
+                # something; an intentionally simplified stand-in pending
+                # real per-line bus endpoint data for these systems too.
+                line_pairs = [(i, (i+1) % n) for i in range(n)]
 
-        # Add loads based on Iload_max (convert A to MW)
-        for i in range(self.net_data.n_relays):
-            # Real bus this relay is located at (from its RelayPair's
-            # bus_pri/bus_bkp) — the previous placeholder min(i, n_buses-1)
-            # ignored real topology, dumping multiple relays' loads onto
-            # whichever bus happened to match their index.
-            bus_idx = self.net_data.get_relay_bus(i)
-            # P(MW) = sqrt(3) * V_LL(kV) * I(A) / 1000 for 3-phase real power
-            # (V_LL(kV)*1000 = volts, so P(W) = sqrt(3)*V_LL(kV)*1000*I(A),
-            # and P(MW) = that / 1e6 = sqrt(3)*V_LL(kV)*I(A) / 1e3). The
-            # previous "/ 1e6" divisor left the kV->V conversion undone,
-            # undersizing every load by 1000x.
-            p_mw = self.net_data.Iload_max[i] * self.net_data.base_voltage * 1.732 / 1e3  # 3-phase
-            pp.create_load(
-                net, 
-                bus=bus_map[bus_idx], 
-                p_mw=p_mw * 0.8,  # 0.8 pf
-                q_mvar=p_mw * 0.6,
-                name=f"Load_R{i}"
-            )
+            for from_bus, to_bus in line_pairs:
+                if from_bus < self.net_data.n_buses and to_bus < self.net_data.n_buses:
+                    pp.create_line(
+                        net,
+                        from_bus=bus_map[from_bus],
+                        to_bus=bus_map[to_bus],
+                        length_km=1.0,
+                        std_type="NAYY 4x150 SE" if self.net_data.base_voltage <= 20 else "NA2XS2Y 1x185 RM/25 12/20 kV"
+                    )
+
+        if self.net_data.line_data and self.net_data.line_data.get("loads"):
+            # Real per-bus load (standard CDF/MATPOWER case data, same
+            # source as line_data["lines"] above). Iload_max is a
+            # per-relay CT/protection pickup rating, not a bus's real
+            # power demand -- summing it into per-bus MW below produced
+            # system-wide loads several times the real system's actual
+            # demand (see get_14bus()/get_39bus()'s comments), which
+            # alone was enough to prevent power flow from converging
+            # regardless of how correct the line model was.
+            for ld in self.net_data.line_data["loads"]:
+                bus0 = ld["bus"] - 1
+                if 0 <= bus0 < self.net_data.n_buses and (ld["p_mw"] or ld["q_mvar"]):
+                    pp.create_load(
+                        net,
+                        bus=bus_map[bus0],
+                        p_mw=ld["p_mw"],
+                        q_mvar=ld["q_mvar"],
+                        name=f"Load_Bus{ld['bus']}",
+                    )
+        else:
+            # No real per-bus load data available for this system --
+            # fall back to the Iload_max-derived heuristic. Not
+            # calibrated against real system demand (see the line-model
+            # else-branch's identical caveat above); kept for systems
+            # without a line_data source.
+            for i in range(self.net_data.n_relays):
+                # Real bus this relay is located at (from its RelayPair's
+                # bus_pri/bus_bkp) — the previous placeholder
+                # min(i, n_buses-1) ignored real topology, dumping
+                # multiple relays' loads onto whichever bus happened to
+                # match their index.
+                bus_idx = self.net_data.get_relay_bus(i)
+                # P(MW) = sqrt(3) * V_LL(kV) * I(A) / 1000 for 3-phase real
+                # power (V_LL(kV)*1000 = volts, so P(W) =
+                # sqrt(3)*V_LL(kV)*1000*I(A), and P(MW) = that / 1e6 =
+                # sqrt(3)*V_LL(kV)*I(A) / 1e3). The previous "/ 1e6"
+                # divisor left the kV->V conversion undone, undersizing
+                # every load by 1000x.
+                p_mw = self.net_data.Iload_max[i] * self.net_data.base_voltage * 1.732 / 1e3  # 3-phase
+                pp.create_load(
+                    net,
+                    bus=bus_map[bus_idx],
+                    p_mw=p_mw * 0.8,  # 0.8 pf
+                    q_mvar=p_mw * 0.6,
+                    name=f"Load_R{i}"
+                )
 
         # Add DG/PV generators. Assumes dg.p_mw is the DG's full RATED
         # capacity (dg.pv_penetration==0.0, the NetworkData constructors'
@@ -161,11 +314,39 @@ class PandapowerNetwork:
                 # pv_penetration-scaled output -- a generator's nameplate
                 # rating doesn't shrink just because it's dispatched below
                 # full output.
+                # always_on generators (e.g. 39-bus's 10 real synchronous
+                # machines) already have their dispatched output baked
+                # into dg.p_mw itself (rated * a fixed loading factor, see
+                # get_39bus()) -- they don't scale with pv_penetration the
+                # way genuine distributed-PV entries do.
+                output_p_mw = dg.p_mw if dg.always_on else dg.p_mw * dg.pv_penetration
+                output_q_mvar = dg.q_mvar if dg.always_on else dg.q_mvar * dg.pv_penetration
+                if dg.always_on and dg.vm_pu is not None:
+                    # Real generators regulate local voltage via reactive
+                    # power (a voltage-controlled PV bus in power-flow
+                    # terms), not a fixed PQ injection -- confirmed by
+                    # direct comparison against pandapower's own built-in
+                    # pandapower.networks.case39() reference, which
+                    # models these same 9 buses with create_gen (not
+                    # create_sgen) and converges; an all-PQ version of
+                    # the same data does not. Distributed-PV entries
+                    # below (always_on=False) keep the PQ/sgen model,
+                    # matching how real inverter-based PV lacking
+                    # dedicated voltage control is actually operated.
+                    pp.create_gen(
+                        net,
+                        bus=bus_map[dg_bus0],
+                        p_mw=output_p_mw,
+                        vm_pu=dg.vm_pu,
+                        sn_mva=float(np.hypot(dg.p_mw, dg.q_mvar)) or 1.0,
+                        name=f"Gen_Bus{dg.bus_idx}",
+                    )
+                    continue
                 pp.create_sgen(
                     net,
                     bus=bus_map[dg_bus0],
-                    p_mw=dg.p_mw * dg.pv_penetration,
-                    q_mvar=dg.q_mvar * dg.pv_penetration,
+                    p_mw=output_p_mw,
+                    q_mvar=output_q_mvar,
                     sn_mva=float(np.hypot(dg.p_mw, dg.q_mvar)) or 1.0,
                     name=f"PV_Bus{dg.bus_idx}",
                     type="PV",
@@ -311,14 +492,23 @@ class PandapowerNetwork:
                         self.pp_net.line.at[line_idx, "x_ohm_per_km"] *= factor
 
     def update_pv_penetration(self, pv_level: float):
-        """Update PV generation scaling for all DG buses."""
+        """Update PV generation scaling for all genuine distributed-PV DG
+        buses. always_on generators (e.g. 39-bus's real synchronous
+        machines) are skipped -- they dispatch at a fixed level
+        independent of pv_level (see DGConfig.always_on)."""
         if not PANDAPOWER_AVAILABLE or self.pp_net is None:
             return
 
         for dg in self.net_data.dg_buses:
-            # Find sgen corresponding to this DG bus
+            if dg.always_on:
+                continue
+            # Find sgen corresponding to this DG bus. Exact match on the
+            # "PV_Bus{n}" name, not substring containment -- `"PV_Bus3" in
+            # "PV_Bus39"` was previously True, so a system with both a bus
+            # 3 and a bus 39 DG would have silently cross-applied one
+            # bus's pv_level scaling to the other's sgen.
             for sgen_idx in range(len(self.pp_net.sgen)):
-                if f"PV_Bus{dg.bus_idx}" in str(self.pp_net.sgen.at[sgen_idx, "name"]):
+                if str(self.pp_net.sgen.at[sgen_idx, "name"]) == f"PV_Bus{dg.bus_idx}":
                     self.pp_net.sgen.at[sgen_idx, "p_mw"] = dg.p_mw * pv_level
                     self.pp_net.sgen.at[sgen_idx, "q_mvar"] = dg.q_mvar * pv_level
 
@@ -342,6 +532,23 @@ class PandapowerNetwork:
             if self.pp_net.line.at[line_idx, "in_service"]:
                 loadings[line_idx] = float(self.pp_net.res_line.at[line_idx, "loading_percent"])
         return loadings
+
+    def get_line_flows(self) -> Dict[int, float]:
+        """Return real power flow (MW) leaving the 'from' bus of each
+        in-service line, after run_power_flow(). Sign follows
+        pandapower's convention: positive means flow from `from_bus`
+        toward `to_bus`; a sign flip relative to a 0%-PV baseline at the
+        same line indicates the line's real power direction has
+        reversed (e.g. a downstream PV injection now exceeds local load
+        and pushes power back toward the substation)."""
+        if not PANDAPOWER_AVAILABLE or self.pp_net is None:
+            return {}
+
+        flows = {}
+        for line_idx in range(len(self.pp_net.line)):
+            if self.pp_net.line.at[line_idx, "in_service"]:
+                flows[line_idx] = float(self.pp_net.res_line.at[line_idx, "p_from_mw"])
+        return flows
 
 
 # Supported network sizes for validation

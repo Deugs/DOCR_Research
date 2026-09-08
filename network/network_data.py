@@ -38,6 +38,25 @@ class DGConfig:
     # low-voltage-ride-through (LVRT) approximation, not a certified standards implementation.
     # (Alternative tag: "ieee_1547".)
     ride_through: bool = True  # fault ride-through capability
+    # True for a system's real, always-present base generation (e.g.
+    # 39-bus's 10 synchronous machines) — dispatched near rated capacity
+    # regardless of pv_penetration, unlike genuine distributed-PV entries
+    # (the default) which scale with it. Without this distinction,
+    # get_39bus()'s real generators were being scaled the same way as
+    # 8bus/14bus's small rooftop-PV additions -- meaning at PV=0% they
+    # output zero, leaving pandapower's idealized slack bus to supply the
+    # entire system load alone, which is why power flow failed to
+    # converge independent of the line/load-model fixes.
+    always_on:    bool = False
+    # Voltage setpoint (pu) for always_on generators specifically --
+    # when set, PandapowerNetwork models this DG as a real
+    # voltage-controlled generator (pp.create_gen) rather than a fixed
+    # PQ injection (pp.create_sgen). Real transmission generators
+    # regulate local voltage via reactive power; modeling them as PQ
+    # instead leaves a meshed system with no voltage support anywhere
+    # except the single slack bus, which is its own separate source of
+    # power-flow non-convergence in a system this size.
+    vm_pu:        Optional[float] = None
 
 
 @dataclass
@@ -681,23 +700,153 @@ def get_39bus() -> NetworkData:
             seen.add(key)
             pairs.append(RelayPair(pri, bkp, round(ip, 1), round(ib, 1), bp, bb))
 
-    # ── DG buses: generators at buses 30-39 (10 synchronous generators) ───────
-    # Rated powers from standard case39 generator data (MW)
+    # ── Base generation: buses 30-39 (10 real synchronous generators) ────────
+    # Rated powers from standard case39 generator data (MW). always_on=True:
+    # these are the system's real, always-present generators, not
+    # distributed PV -- they dispatch near rated capacity regardless of
+    # pv_penetration (see DGConfig.always_on's docstring). Previously
+    # scaled by both `* 0.10` and `* pv_penetration`, so at PV=0% (this
+    # system's own baseline) every one of them output exactly zero,
+    # leaving pandapower's idealized slack bus alone to supply the
+    # system's entire ~6,100 MW real load -- a large enough mismatch to
+    # prevent power flow from converging on its own, independent of the
+    # line/load-model fixes elsewhere in this function. Values are the
+    # real solved-case dispatch (mpc.gen's Pg column, MATPOWER case39,
+    # https://github.com/MATPOWER/matpower/blob/master/data/case39.m),
+    # not a guessed loading factor on nameplate rating. Bus 31 excluded
+    # here: it's the system's real slack/reference bus (mpc.bus type=3),
+    # not an independent generator injection -- PandapowerNetwork's
+    # ext_grid now goes there instead (see its "slack_bus" handling), and
+    # adding a separate 677.871 MW sgen there too would double-count
+    # generation the ext_grid already supplies as needed to balance.
+    # Vg is each generator's real solved voltage setpoint (mpc.gen's Vg
+    # column) -- modeled as a genuine voltage-controlled generator
+    # (pp.create_gen), not a fixed PQ injection, matching how
+    # pandapower's own built-in pandapower.networks.case39() models
+    # these same 9 buses (confirmed by direct inspection: it uses
+    # net.gen, not net.sgen, and its reference network converges cleanly
+    # while an all-PQ version of the same data does not -- a meshed
+    # transmission system this size genuinely needs local voltage
+    # support at its generator buses, not just at the single slack).
     gen_data = [
-        (30, 250.0), (31, 677.0), (32, 650.0), (33, 632.0), (34, 508.0),
-        (35, 650.0), (36, 560.0), (37, 540.0), (38, 830.0), (39, 1000.0),
+        (30, 250.0, 1.0499), (32, 650.0, 0.9841), (33, 632.0, 0.9972),
+        (34, 508.0, 1.0123), (35, 650.0, 1.0494), (36, 560.0, 1.0636),
+        (37, 540.0, 1.0275), (38, 830.0, 1.0265), (39, 1000.0, 1.03),
     ]
     dg_buses = [
-        DGConfig(bus_idx=b, p_mw=p * 0.10, pv_penetration=0.0,
-                 inverter_model="simplified_linear_frt")
-        for b, p in gen_data
+        DGConfig(bus_idx=b, p_mw=p, pv_penetration=0.0,
+                 inverter_model="synchronous_generator", always_on=True, vm_pu=vg)
+        for b, p, vg in gen_data
+    ]
+
+    # ── Genuine distributed PV: small additions at a few major load buses,
+    # scaled 0-60% by pv_penetration (unlike the base generators above).
+    # Sized at ~10% of each bus's real load -- matching get_14bus()'s DG
+    # total (27.24 MW) relative to its system load (~259 MW), the same
+    # ~10.5% ratio -- so the PV sweep represents a comparable relative
+    # penetration level here to the other active-scope systems, not an
+    # arbitrary transmission-scale number. Deliberately load-only buses
+    # (not 30/32-39, the real generator buses above) -- adding a second
+    # DG entry at an already-generator bus would create two sgens/gens
+    # sharing the same "PV_Bus{n}" name, which update_pv_penetration()
+    # matches on exactly (see its docstring), making the match ambiguous.
+    pv_dg_data = [
+        (20, 63.0), (8, 52.0), (4, 50.0), (16, 33.0), (23, 25.0),
+    ]
+    dg_buses += [
+        DGConfig(bus_idx=b, p_mw=p, pv_penetration=0.0,
+                 inverter_model="simplified_linear_frt", always_on=False)
+        for b, p in pv_dg_data
     ]
 
     If_min = _ensure_feasible_ps_bounds(If_min, Iload_max, "get_39bus")
+
+    # PandapowerNetwork._build_network() needs a fully-CONNECTED,
+    # fully-accurate topology to solve real power flow (see
+    # get_14bus()'s identical comment for the general rationale). The
+    # abbreviated 23-line `lines` list above is deliberately kept as-is
+    # for relay-pair generation (n_relays=46, matching every other Core's
+    # cached 39bus result already generated this session) -- changing it
+    # would double n_relays and invalidate all of that. Instead,
+    # line_data below carries the COMPLETE, separate 46-branch topology
+    # (verified against MATPOWER's actual case39.m, not hand-recalled --
+    # the abbreviated 23-line list above turned out to leave 17 of 39
+    # buses, including most of the generator buses, with no connection
+    # to the rest of the network at all) plus the real per-bus loads and
+    # generator dispatch, for pandapower's power-flow use only.
+    # Source: https://github.com/MATPOWER/matpower/blob/master/data/case39.m
+    # 7th column is MATPOWER's tap `ratio` -- 0.0 for a plain line, a
+    # nonzero value (including exactly 1.0, a unity-ratio isolation
+    # transformer) marks a transformer branch. pandapower's Newton-
+    # Raphson solver is numerically ill-conditioned by these branches'
+    # near-zero series resistance when modeled as plain lines (confirmed
+    # via pp.diagnostic() -- see PandapowerNetwork._build_network()'s
+    # transformer-branch handling below), so they need pp.create_
+    # transformer_from_parameters, not create_line_from_parameters.
+    full_branches = [
+        (1, 2, 0.0035, 0.0411, 0.6987, 600, 0.0), (1, 39, 0.0010, 0.0250, 0.7500, 1000, 0.0),
+        (2, 3, 0.0013, 0.0151, 0.2572, 500, 0.0), (2, 25, 0.0070, 0.0086, 0.1460, 500, 0.0),
+        (2, 30, 0.0000, 0.0181, 0.0000, 900, 1.025), (3, 4, 0.0013, 0.0213, 0.2214, 500, 0.0),
+        (3, 18, 0.0011, 0.0133, 0.2138, 500, 0.0), (4, 5, 0.0008, 0.0128, 0.1342, 600, 0.0),
+        (4, 14, 0.0008, 0.0129, 0.1382, 500, 0.0), (5, 6, 0.0002, 0.0026, 0.0434, 1200, 0.0),
+        (5, 8, 0.0008, 0.0112, 0.1476, 900, 0.0), (6, 7, 0.0006, 0.0092, 0.1130, 900, 0.0),
+        (6, 11, 0.0007, 0.0082, 0.1389, 480, 0.0), (6, 31, 0.0000, 0.0250, 0.0000, 1800, 1.07),
+        (7, 8, 0.0004, 0.0046, 0.0780, 900, 0.0), (8, 9, 0.0023, 0.0363, 0.3804, 900, 0.0),
+        (9, 39, 0.0010, 0.0250, 1.2000, 900, 0.0), (10, 11, 0.0004, 0.0043, 0.0729, 600, 0.0),
+        (10, 13, 0.0004, 0.0043, 0.0729, 600, 0.0), (10, 32, 0.0000, 0.0200, 0.0000, 900, 1.07),
+        (12, 11, 0.0016, 0.0435, 0.0000, 500, 1.006), (12, 13, 0.0016, 0.0435, 0.0000, 500, 1.006),
+        (13, 14, 0.0009, 0.0101, 0.1723, 600, 0.0), (14, 15, 0.0018, 0.0217, 0.3660, 600, 0.0),
+        (15, 16, 0.0009, 0.0094, 0.1710, 600, 0.0), (16, 17, 0.0007, 0.0089, 0.1342, 600, 0.0),
+        (16, 19, 0.0016, 0.0195, 0.3040, 600, 0.0), (16, 21, 0.0008, 0.0135, 0.2548, 600, 0.0),
+        (16, 24, 0.0003, 0.0059, 0.0680, 600, 0.0), (17, 18, 0.0007, 0.0082, 0.1319, 600, 0.0),
+        (17, 27, 0.0013, 0.0173, 0.3216, 600, 0.0), (19, 20, 0.0007, 0.0138, 0.0000, 900, 1.06),
+        (19, 33, 0.0007, 0.0142, 0.0000, 900, 1.07), (20, 34, 0.0009, 0.0180, 0.0000, 900, 1.009),
+        (21, 22, 0.0008, 0.0140, 0.2565, 900, 0.0), (22, 23, 0.0006, 0.0096, 0.1846, 600, 0.0),
+        (22, 35, 0.0000, 0.0143, 0.0000, 900, 1.025), (23, 24, 0.0022, 0.0350, 0.3610, 600, 0.0),
+        (23, 36, 0.0005, 0.0272, 0.0000, 900, 1.0), (25, 26, 0.0032, 0.0323, 0.5310, 600, 0.0),
+        (25, 37, 0.0006, 0.0232, 0.0000, 900, 1.025), (26, 27, 0.0014, 0.0147, 0.2396, 600, 0.0),
+        (26, 28, 0.0043, 0.0474, 0.7802, 600, 0.0), (26, 29, 0.0057, 0.0625, 1.0290, 600, 0.0),
+        (28, 29, 0.0014, 0.0151, 0.2490, 600, 0.0), (29, 38, 0.0008, 0.0156, 0.0000, 1200, 1.025),
+    ]
+
+    # Real per-bus loads (MATPOWER case39.m mpc.bus Pd/Qd columns). The
+    # earlier hand-derived list here had transcription errors relative to
+    # the authoritative source (bus 1: 0 -> actually 97.6 MW; bus 9: 0 ->
+    # actually 6.5/-66.6; bus 20: 628 -> actually 680) -- corrected below.
+    real_loads = [
+        (1, 97.6, 44.2), (2, 0.0, 0.0), (3, 322.0, 2.4), (4, 500.0, 184.0),
+        (5, 0.0, 0.0), (6, 0.0, 0.0), (7, 233.8, 84.0), (8, 522.0, 176.6),
+        (9, 6.5, -66.6), (10, 0.0, 0.0), (11, 0.0, 0.0), (12, 8.53, 88.0),
+        (13, 0.0, 0.0), (14, 0.0, 0.0), (15, 320.0, 153.0), (16, 329.0, 32.3),
+        (17, 0.0, 0.0), (18, 158.0, 30.0), (19, 0.0, 0.0), (20, 680.0, 103.0),
+        (21, 274.0, 115.0), (22, 0.0, 0.0), (23, 247.5, 84.6), (24, 308.6, -92.2),
+        (25, 224.0, 47.2), (26, 139.0, 17.0), (27, 281.0, 75.5), (28, 206.0, 27.6),
+        (29, 283.5, 26.9), (30, 0.0, 0.0), (31, 9.2, 4.6), (32, 0.0, 0.0),
+        (33, 0.0, 0.0), (34, 0.0, 0.0), (35, 0.0, 0.0), (36, 0.0, 0.0),
+        (37, 0.0, 0.0), (38, 0.0, 0.0), (39, 1104.0, 250.0),
+    ]
+
+    line_data = {
+        "lines": [
+            {"from_bus": fb, "to_bus": tb, "r_pu": r, "x_pu": x,
+             "b_pu": b, "mva_limit": mva_lim, "ratio": ratio}
+            for (fb, tb, r, x, b, mva_lim, ratio) in full_branches
+        ],
+        "loads": [
+            {"bus": bus, "p_mw": p, "q_mvar": q}
+            for (bus, p, q) in real_loads
+        ],
+        # MATPOWER case39's real reference bus (mpc.bus type=3) and its
+        # solved voltage setpoint (mpc.gen's Vg for that bus) -- see
+        # PandapowerNetwork._build_network()'s slack-bus handling.
+        "slack_bus": 31,
+        "slack_vm_pu": 0.982,
+    }
+
     return NetworkData(
         "IEEE-39Bus", n_relays, pairs, Iload_max, If_min,
         n_buses=39, base_voltage=345.0, base_mva=100.0,
-        dg_buses=dg_buses, relay_bus=relay_bus
+        dg_buses=dg_buses, relay_bus=relay_bus, line_data=line_data,
     )
 
 
@@ -846,10 +995,53 @@ def get_14bus() -> NetworkData:
     ]
 
     If_min = _ensure_feasible_ps_bounds(If_min, Iload_max, "get_14bus")
+
+    # Real per-line impedance/topology (from the same standard CDF `lines`
+    # list already used above for fault-current calculations) exposed to
+    # PandapowerNetwork._build_network() via the previously-unused
+    # line_data field. Without this, pandapower fell back to a fake ring
+    # topology and an arbitrary voltage-threshold cable-type guess for
+    # every "junction-bus convention" network (this one included) --
+    # producing unrealistic (1000%+) line loadings and non-convergent
+    # power flow, since neither the topology nor the impedance actually
+    # matched this system.
+    #
+    # Real per-bus loads (standard IEEE 14-bus case, MW/Mvar) are also
+    # included here rather than derived from Iload_max: Iload_max is a
+    # per-relay CT/protection pickup rating (used elsewhere for PS
+    # bounds), not a bus's real power demand -- back-computing MW from it
+    # summed to ~3900 MW system-wide, ~15x the real system's ~259 MW load,
+    # which no combination of this system's real generation could ever
+    # supply. That's why power flow failed to converge even after fixing
+    # the line model above; it wasn't just a line-topology problem.
+    line_data = {
+        "lines": [
+            {"from_bus": fb, "to_bus": tb, "r_pu": r, "x_pu": x,
+             "b_pu": b, "mva_limit": mva_lim, "ratio": 0.0}
+            for (fb, tb, r, x, b, mva_lim) in lines
+        ],
+        "loads": [
+            {"bus": 1, "p_mw": 0.0, "q_mvar": 0.0},
+            {"bus": 2, "p_mw": 21.7, "q_mvar": 12.7},
+            {"bus": 3, "p_mw": 94.2, "q_mvar": 19.0},
+            {"bus": 4, "p_mw": 47.8, "q_mvar": -3.9},
+            {"bus": 5, "p_mw": 7.6, "q_mvar": 1.6},
+            {"bus": 6, "p_mw": 11.2, "q_mvar": 7.5},
+            {"bus": 7, "p_mw": 0.0, "q_mvar": 0.0},
+            {"bus": 8, "p_mw": 0.0, "q_mvar": 0.0},
+            {"bus": 9, "p_mw": 29.5, "q_mvar": 16.6},
+            {"bus": 10, "p_mw": 9.0, "q_mvar": 5.8},
+            {"bus": 11, "p_mw": 3.5, "q_mvar": 1.8},
+            {"bus": 12, "p_mw": 6.1, "q_mvar": 1.6},
+            {"bus": 13, "p_mw": 13.5, "q_mvar": 5.8},
+            {"bus": 14, "p_mw": 14.9, "q_mvar": 5.0},
+        ],
+    }
+
     return NetworkData(
         "IEEE-14Bus", n_relays, pairs, Iload_max, If_min,
         n_buses=14, base_voltage=13.8, base_mva=100.0,
-        dg_buses=dg_buses, relay_bus=relay_bus
+        dg_buses=dg_buses, relay_bus=relay_bus, line_data=line_data,
     )
 
 
