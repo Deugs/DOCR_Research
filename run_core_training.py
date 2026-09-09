@@ -304,6 +304,25 @@ def apply_config(config: DOCRConfig):
         PROGRESS_DIR = base / "progress"
         for d in [CACHE_DIR, FIGURES_DIR, LOG_DIR, CHECKPOINT_DIR, PROGRESS_DIR]:
             d.mkdir(parents=True, exist_ok=True)
+
+    # --cache-dir (config.experiment.cache_dir) was, until now, silently
+    # ignored here -- ExperimentConfig/docl_config.py define and CLI-map
+    # the field, but nothing in this function ever read it, so it had
+    # ZERO effect regardless of what was passed on the command line.
+    # run_full_campaign.py's whole concurrent-multi-system design depends
+    # on each subprocess actually writing to its OWN --cache-dir (its own
+    # module docstring: "avoids a lost-update race on the shared
+    # cache_index.json") -- without this, every concurrent subprocess
+    # silently pointed at the same shared results/core_cache/, and
+    # CacheManager's non-atomic load-once/dump-whole-index writes turned
+    # that into a real, frequent (not rare) lost-update race across
+    # concurrent processes. Checked independently of output_dir (and
+    # applied after it) so an explicit --cache-dir always wins, matching
+    # how a more specific CLI flag is expected to override a more general
+    # one.
+    if config.experiment.cache_dir != "results/core_cache":
+        CACHE_DIR = Path(config.experiment.cache_dir)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
     
     logger.info(f"[CONFIG] Applied DOCRConfig: system={config.system.name}, "
                 f"fast_mode={FAST_MODE}, use_synthetic={USE_SYNTHETIC}, seed={SEED}")
@@ -558,7 +577,17 @@ def _n_runs_for_wave(n_workers: int, jobs_per_run: int, minimum: int) -> int:
     laptop run with n_workers=1-2)."""
     if n_workers <= 1:
         return minimum
-    return max(minimum, n_workers // jobs_per_run)
+    n_runs = max(minimum, n_workers // jobs_per_run)
+    if n_runs != minimum:
+        # Disclosed at runtime (not just in EXPERIMENT_GUIDE.md) since
+        # this directly changes the sample size -- and therefore any
+        # confidence interval -- of a "--fast" run depending on
+        # n_workers/pool size alone, with no other visible signal that
+        # two fast-mode runs used different n_runs.
+        logger.info(f"[CONFIG] Fast-mode n_runs auto-scaled to pool size: "
+                    f"{n_runs} (minimum={minimum}, n_workers={n_workers}, "
+                    f"jobs_per_run={jobs_per_run})")
+    return n_runs
 
 
 # Populated once per worker process by _init_core_bridge_workers (or once
@@ -2623,6 +2652,24 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             for eps in [0.01, 0.05, 0.1, 0.2]:
                 jobs.append((("adversarial_pgd", eps), "main", 54, dict(attack="PGD", epsilon=eps)))
             # Fig 14: N-1 Contingency, all three systems.
+            #
+            # n_lines_39 (and n_lines_14) come from get_39bus()/get_14bus()'s
+            # n_lines property, which counts edges in the abbreviated
+            # relay-pair-generating `lines` list -- NOT the real, complete
+            # branch set. For 39bus specifically that abbreviated list only
+            # spans 23 of the true 46 branches (see get_39bus()'s own
+            # comment in network/network_data.py, "leave 17 of 39 buses,
+            # including most of the generator buses, with no connection"),
+            # kept that way deliberately to avoid doubling n_relays and
+            # invalidating every other Core's already-cached 39bus result.
+            # PandapowerNetwork's real 46-branch topology (added this round
+            # for genuine power-flow solves) is a SEPARATE structure that
+            # apply_n1_outage() never reads from -- this sweep never
+            # outages any of the 23 branches missing from the abbreviated
+            # graph, including every branch connecting the 10 real
+            # generator buses. "N-1 sweep extended to 14bus/39bus" here
+            # means "extended to the abbreviated relay-coordination graph
+            # for those systems", not the complete real topology.
             for line_idx in range(n_lines_8):
                 jobs.append((("n1", line_idx), "main", 14, dict(line_outage=line_idx, recovery=True)))
             for depth in [1, 2, 3, 4]:

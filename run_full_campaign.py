@@ -204,6 +204,29 @@ def phase_d_figures_sequential(systems: List[str], n_workers: int, args: argpars
         _run_blocking(cmd, f"Phase D: figures/report for {system}")
 
 
+def phase_e_reverse_power_flow(args: argparse.Namespace) -> None:
+    """Objective 1's reverse-power-flow analysis
+    (experiments/exp_reverse_power_flow.py) -- genuinely real (solves
+    actual AC power flow via pandapower at each PV level, no synthetic
+    fallback), but was never wired into any orchestrator until now; only
+    reachable via a manual `python -m experiments.exp_reverse_power_flow`.
+    Runs once (it already internally loops over all 3 systems), not
+    per-system like Phase D, and degrades gracefully -- not by crashing
+    the whole campaign -- if pandapower isn't installed, matching how
+    every other pandapower-dependent path in this codebase treats it as
+    optional."""
+    if args.skip_reverse_power_flow:
+        return
+    print(f"\n{'=' * 70}\n>>> Phase E: Objective 1 reverse-power-flow analysis\n{'=' * 70}", flush=True)
+    t0 = time.time()
+    try:
+        from experiments.exp_reverse_power_flow import write_report
+        path = write_report()
+        print(f">>> Phase E: wrote {path} in {time.time() - t0:.1f}s", flush=True)
+    except RuntimeError as e:
+        print(f">>> Phase E: skipped -- {e}", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -223,6 +246,8 @@ def main():
     parser.add_argument("--skip-figures", action="store_true",
                         help="Skip Phase D (figure/report generation) -- just get "
                              "Core-level training data cached for every system")
+    parser.add_argument("--skip-reverse-power-flow", action="store_true",
+                        help="Skip Phase E (Objective 1's reverse-power-flow analysis)")
     args = parser.parse_args()
 
     systems = [s.strip() for s in args.systems.split(",") if s.strip()]
@@ -241,6 +266,7 @@ def main():
             phase_c_merge_caches(cache_dirs)
 
     phase_d_figures_sequential(systems, args.n_workers, args)
+    phase_e_reverse_power_flow(args)
 
     total = time.time() - t_start
     print(f"\n{'=' * 70}\nCAMPAIGN COMPLETE in {total / 60:.1f} min ({total:.0f}s)\n{'=' * 70}")

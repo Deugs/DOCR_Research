@@ -366,6 +366,95 @@ def test_main6_phase7_robustness_deployment_phase8_dispatch():
     print("  ✓ test_main6_phase7_robustness_deployment_phase8_dispatch")
 
 
+def test_fig48_shap_locates_feature_axis_by_size_not_fixed_position():
+    """
+    run_post_processing.py::fig_48_shap() previously assumed
+    shap.KernelExplainer's returned array was shaped
+    (n_actions, n_explain, n_features) and averaged over
+    `range(shap_arr.ndim - 1)` -- i.e. every axis except the LAST.
+    Verified directly against this repo's installed shap==0.51.0 (the
+    numpy-2.x-compatible version this session upgraded to from the
+    broken 0.41.0 pin): KernelExplainer.shap_values() on a multi-output
+    function actually returns (n_explain, n_features, n_actions) --
+    n_features is the MIDDLE axis, not the last. Averaging over the
+    wrong axes silently collapsed the real per-feature signal down to
+    n_actions=2 "features", which the pre-existing shape-mismatch
+    fallback then blindly np.resize()'d up to the real feature count --
+    every SHAP figure generated since the shap upgrade plotted 2
+    meaningless bars stretched over 12 feature labels, with only a
+    warning log (not a watermark) to notice.
+
+    This constructs a synthetic SHAP array in the REAL (n_explain,
+    n_features, n_actions) shape, with each feature's magnitude
+    distinctly and monotonically increasing by feature index, and
+    verifies fig_48_shap() correctly identifies the top feature (highest
+    index) rather than being confused by the wrong axis order.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import run_post_processing as pp
+
+    n_explain, n_features, n_actions = 5, 12, 2
+    # Each feature i's two action columns are BOTH positive but on very
+    # different scales ((i+1)*10 and (i+1)*1) -- per feature, averaging
+    # over the (correct) sample+action axes still increases monotonically
+    # with i (5.5, 11, 16.5, ..., 66), so the correct computation must
+    # rank the LAST feature ("Power-flow direction") first. But averaging
+    # over the WRONG axes (samples+features, as the old ndim-1 assumption
+    # does) collapses each action column to a single overall scale ([65,
+    # 6.5] here) -- tiling that 2-element result up to 12 via
+    # np.resize() interleaves those two very different values by
+    # even/odd position, completely uncorrelated with the real
+    # per-feature ranking, so the buggy computation's top feature is
+    # essentially arbitrary and reliably NOT index 11. This is a
+    # deliberately strong, deterministic case (no noise) -- a milder
+    # per-feature-only signal was tried first and passed even with the
+    # bug reintroduced, due to the wrong axis's near-tied values
+    # producing a top rank that coincidentally still looked plausible.
+    shap_arr = np.zeros((n_explain, n_features, n_actions))
+    for i in range(n_features):
+        shap_arr[:, i, 0] = (i + 1) * 10.0
+        shap_arr[:, i, 1] = (i + 1) * 1.0
+    assert shap_arr.shape == (n_explain, n_features, n_actions)
+
+    fake_bridge_cache = {"data": {"shap": shap_arr.tolist(), "base": 0.0}}
+
+    captured = {}
+
+    class _FakeAx:
+        def barh(self, positions, values, **kwargs):
+            captured["values"] = list(values)
+            return None
+        def set_yticks(self, *a, **k): pass
+        def set_yticklabels(self, labels, **k): captured["labels"] = list(labels)
+        def set_xlabel(self, *a, **k): pass
+        def set_title(self, *a, **k): pass
+        def invert_yaxis(self): pass
+        def grid(self, *a, **k): pass
+
+    class _FakeFig:
+        def savefig(self, *a, **k): pass
+
+    with patch.object(pp, "load_bridge_cache", lambda fig_num: fake_bridge_cache["data"]), \
+         patch.object(pp.plt, "subplots", lambda *a, **k: (_FakeFig(), _FakeAx())), \
+         patch.object(pp, "save_fig", lambda *a, **k: None):
+        pp.fig_48_shap()
+
+    assert "labels" in captured and "values" in captured
+    # Highest-index feature (feature 12, "Power-flow direction") must
+    # rank first -- if the wrong axis were averaged over instead, the
+    # per-feature ordering would collapse to noise.
+    assert captured["labels"][0] == "Power-flow direction", (
+        f"expected the highest-magnitude feature (last, index 11) to rank "
+        f"first, got ordering starting with {captured['labels'][:3]} -- "
+        f"looks like the wrong array axis was averaged over"
+    )
+    assert captured["values"][0] > captured["values"][-1], \
+        "expected descending order by |SHAP value|"
+
+    print("  ✓ test_fig48_shap_locates_feature_axis_by_size_not_fixed_position")
+
+
 def run_all_tests():
     """Run all figure-script regression tests."""
     print("\n" + "=" * 60)
@@ -381,6 +470,7 @@ def run_all_tests():
         test_pv_inverter_fault_current_scales_by_fault_type,
         test_robustness_tester_test_method_delegates_to_stress_and_perturbs_net,
         test_main6_phase7_robustness_deployment_phase8_dispatch,
+        test_fig48_shap_locates_feature_axis_by_size_not_fixed_position,
     ]
 
     passed = 0
