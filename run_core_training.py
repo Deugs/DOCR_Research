@@ -3504,12 +3504,27 @@ def run_all_cores(fast: bool = None, use_synthetic: bool = None, config: DOCRCon
     t0 = time.time()
     
     # Run only the requested cores (all 11 by default) with progress tracking
-    core_A = run_core_A(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers) if "A" in all_cores else None
-    core_B = run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_episodes // 10, seed=SEED, progress=progress, n_workers=n_workers,
+    #
+    # A/B/C/D deliberately do NOT get n_runs=n_runs/n_runs_baseline here
+    # (unlike E/F/G/H/I/K's n_workers-only calls) -- those two variables
+    # are precomputed above from the flat N_RUNS_FAST/N_RUNS_BASELINE_FAST
+    # constants, which would short-circuit each function's own `n_runs if
+    # n_runs is not None else _n_runs_for_wave(...)` fallback (only
+    # engages when n_runs is None). Passing n_runs explicitly here was a
+    # real bug -- confirmed live (Core A logged "Runs: 2" on a 32-worker
+    # pod instead of the expected auto-scaled 32) -- that made the whole
+    # auto-scaling mechanism dead code on the actual `--all` path this
+    # campaign orchestrator uses, the only path that matters in practice.
+    # Leaving n_runs unset lets each function's own default apply
+    # correctly in both fast mode (auto-scaled) and full mode
+    # (N_RUNS_DEFAULT/N_RUNS_BASELINE, exactly what these precomputed
+    # variables would have supplied anyway).
+    core_A = run_core_A(n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers) if "A" in all_cores else None
+    core_B = run_core_B(episodes_per_task=n_episodes // 10, seed=SEED, progress=progress, n_workers=n_workers,
                         system=CONFIG.system.name if CONFIG is not None else "8bus") if "B" in all_cores else None
-    core_C = run_core_C(n_runs=n_runs, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers,
+    core_C = run_core_C(n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers,
                         system=CONFIG.system.name if CONFIG is not None else "8bus") if "C" in all_cores else None
-    core_D = run_core_D(n_runs=n_runs_baseline, n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers) if "D" in all_cores else None
+    core_D = run_core_D(n_episodes=n_episodes, seed=SEED, progress=progress, n_workers=n_workers) if "D" in all_cores else None
     core_E = run_core_E(n_seeds=n_runs_hparam, n_steps=n_episodes_hparam, seed=SEED, progress=progress, n_workers=n_workers) if "E" in all_cores else None
     core_F = run_core_F(seed=SEED, progress=progress, n_workers=n_workers) if "F" in all_cores else None
     core_G = run_core_G(seed=SEED, progress=progress, n_workers=n_workers) if "G" in all_cores else None
@@ -3708,12 +3723,16 @@ def main():
 
         logger.info(f"[CONFIG] Synthetic fallback: {'ENABLED' if use_synthetic else 'DISABLED'}")
 
-        if args.core_A: run_core_A(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
-        if args.core_B: run_core_B(n_runs=n_runs_baseline, episodes_per_task=n_eps // 10, seed=SEED, progress=progress, n_workers=args.n_workers,
+        # A/B/C/D: n_runs deliberately omitted here too -- same reasoning
+        # as run_all_cores() above (see its comment): passing the
+        # precomputed n_runs/n_runs_baseline would short-circuit each
+        # function's own _n_runs_for_wave auto-scaling.
+        if args.core_A: run_core_A(n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_B: run_core_B(episodes_per_task=n_eps // 10, seed=SEED, progress=progress, n_workers=args.n_workers,
                                    system=config.system.name if config is not None else "8bus")
-        if args.core_C: run_core_C(n_runs=n_runs, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers,
+        if args.core_C: run_core_C(n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers,
                                    system=config.system.name if config is not None else "8bus")
-        if args.core_D: run_core_D(n_runs=n_runs_baseline, n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
+        if args.core_D: run_core_D(n_episodes=n_eps, seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_E: run_core_E(n_seeds=n_runs_hparam, n_steps=n_eps_hparam, seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_F: run_core_F(seed=SEED, progress=progress, n_workers=args.n_workers)
         if args.core_G: run_core_G(seed=SEED, progress=progress, n_workers=args.n_workers)
