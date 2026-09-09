@@ -101,10 +101,24 @@ for s in ['8bus','14bus','39bus']:
 Expected output:
 ```
 Setup OK — all imports resolved
-  8bus:  14 relays, 20 pairs, 15 lines
-  14bus: 40 relays, 52 pairs, 33 lines
-  39bus: 46 relays, 42 pairs, 32 lines
+  8bus:  14 relays, 20 pairs, 9 lines
+  14bus: 40 relays, 52 pairs, 20 lines
+  39bus: 92 relays, 86 pairs, 46 lines
 ```
+
+**Update (2026-09-09):** 39bus's relay/N-1 topology was rebuilt from a
+real 46-branch/39-bus graph (verified against MATPOWER case39.m) instead
+of an abbreviated 23-branch/22-bus graph that left 17 buses — including
+all 10 real generator buses — with zero relay or N-1 coverage. `n_lines`
+now reports real branch counts (9 for 8bus: 7 lines + 2 transformers; 20
+for 14bus; 46 for 39bus) instead of a relay-pair-derived tuple count. The
+old 39bus graph is preserved as `NETWORKS["39bus_reduced"]` (46 relays,
+42 pairs, 22-of-39 bus coverage) so previously-published results using
+it stay reproducible. See §9's new "Topology provenance" subsection for
+the full history, the retraining this requires, and the known remaining
+limitation (27 of 92 relays end up with no backup pair, mostly an
+artifact of MATPOWER's arbitrary branch from/to direction convention,
+same class of limitation 14/57/118bus already have).
 
 ---
 
@@ -834,9 +848,152 @@ report mean ± std across seeds. The `stat_analysis.py` Wilcoxon tests
 and Cliff's delta already account for variance across seeds.
 
 ### 39-bus training is very slow
-39-bus has 46 agents; each ES perturbation does 10×46 = 460 forward passes.
-At ~24s/500 steps for 8-bus (14 agents), expect 39-bus to be roughly 3×
-slower per step. Reduce `--n-runs` to 10 for exploratory runs.
+39-bus has 92 agents (rebuilt from the real topology — see "Topology
+provenance" below; was 46 before 2026-09-09); each ES perturbation does
+10×92 = 920 forward passes. Measured directly: an env-step benchmark at
+92 agents runs ~2.05x the per-step cost of the old 46-agent graph.
+Reduce `--n-runs` to 10 for exploratory runs.
+
+### Topology provenance: 39bus's relay graph, and what changed on 2026-09-09
+
+`get_39bus()` used to build its relay/pair/N-1 graph from an abbreviated
+23-branch, 22-of-39-bus literal that was disconnected from the real
+46-branch/39-bus topology (verified against MATPOWER case39.m: 34 lines
++ 12 transformers, 10 real generators) that `PandapowerNetwork` used for
+actual AC power-flow solves. 17 of 39 buses — including all 10 real
+generator buses (30-39) — had zero relay coverage in the abbreviated
+graph, so Core G's "N-1 contingency on the 39-bus New England system"
+sweep (Figs 13/14/20/22/24/54) never outaged a single branch connected
+to a generator.
+
+`get_39bus()` is now built from the real 46-branch topology directly:
+92 relays, 86 pairs, full 39-of-39 bus coverage. The exact same
+pair-construction algorithm already used at 57/118-bus scale is reused
+unchanged — only its input branch list changed. `PandapowerNetwork`'s
+power-flow behavior is bit-identical before/after (it was always reading
+the real topology; only the relay/N-1 side was disconnected from it).
+
+The old 23-branch graph is preserved as a separate factory,
+`get_39bus_reduced()` (registered as `NETWORKS["39bus_reduced"]`, 46
+relays / 42 pairs / 22-of-39 buses), so any already-published result
+computed against it stays reproducible and citable as a named,
+out-of-active-scope provenance variant — it is not deleted, just no
+longer the default `"39bus"`.
+
+**Known limitation, not fixed by this change:** 27 of the new 92 relays
+end up with no backup pair (mostly the 9 radial generator step-up
+terminals, which are legitimately backup-less, plus 18 relays orphaned
+by an artifact of MATPOWER's arbitrary branch from/to direction
+convention — the same class of limitation 14/57/118-bus already have,
+just at a different ratio). This is pinned by a non-regression test
+rather than silently allowed to drift.
+
+**Relay indices are not comparable pre/post this change.** Six of the
+23 previously-abbreviated branches had incorrect MVA limits relative to
+the real case39 data, and the branch ordering (hence relay numbering)
+differs entirely. Any per-relay or per-pair comparison against
+pre-2026-09-09 39-bus results is meaningless; only system-level
+aggregates (objective function, CTI violation rate, latency) are
+comparable, and even those only loosely given the ~2x agent-count
+change.
+
+**Cache invalidation:** `NetworkData.topology_fingerprint()` (a stable
+hash over bus/relay/pair/branch/DG-placement structure, including
+`base_voltage`) is now folded into every Core's cache key for each
+system it touches, so a stale pre-change cached policy can no longer
+silently read back as a valid cache hit — it naturally misses instead.
+`--cache-status` prints each entry's recorded `topology_fp` for audit.
+This does **not** retroactively invalidate already-cached entries (that
+requires either re-running with the same config, which will now miss
+and retrain, or an explicit `CacheManager.invalidate(...)` call before a
+retraining pass) — see the reproducibility checklist below.
+
+Because the 8-bus fix in this same round (next subsection) also changed
+`base_voltage` (11kV → 150kV), and `topology_fingerprint()` deliberately
+includes `base_voltage`, **every Core that trains on 8-bus is also
+affected** — not just the 39/14-bus-specific ones. In practice that's
+9 of the 11 Cores (A, D, E, J, K are 8bus-only; F, G, H, I are
+multi-system). A full retraining pass across all affected Cores is
+tracked as a separate follow-up (GPU-heavy; not done in this round) —
+this round's changes are data-layer-only, verified via direct
+pandapower/topology smoke tests and the full test suite, not via
+retraining.
+
+### 8-bus reverse-power-flow anomaly: root cause and fix (2026-09-09)
+
+`experiments/exp_reverse_power_flow.py` (Objective 1) previously reported
+865-886% max line loading for 8-bus at all PV levels — traced to two
+independent, compounding defects, both scoped to the fallback code path
+`PandapowerNetwork._build_network()` took because `get_8bus()` had no
+real `line_data`:
+1. The fallback load-construction loop created one `pp.create_load` row
+   **per relay** instead of per bus — any bus with multiple incident
+   relays (buses 5/7/8 on 8bus) had its load summed 2-3x by pandapower.
+   Fixed to aggregate by `max()` per bus (each relay's `Iload_max` rates
+   that relay's own branch, not an additive independent load); this
+   fallback path is shared by 3/8/30/57/118-bus, so all of them benefit.
+2. `get_8bus()` had no real line impedance/rating data, so it fell back
+   to a generic low-voltage cable type (0.27 kA) mismatched to its
+   actual 150kV subtransmission currents. Real `line_data` (7 lines + 2
+   step-up transformers, impedances/loads sourced from Rajput & Pandya,
+   "On 8-Bus Test System for Solving Challenges in Relay Coordination,"
+   IEEE 2016, Tables II-V — cross-referenced against this repo's
+   existing `get_8bus()` relay/fault-current data, which already
+   matches that source's Case-2 variant with a 400 MVA external grid at
+   bus 4) is now used instead. `base_voltage` corrected 11.0 → 150.0 kV.
+   The existing 14-relay/20-pair relay-coordination graph is left
+   untouched (same established pattern as 39-bus's relay-graph/
+   `line_data` split) — only the real power-flow topology changed.
+
+   **Line thermal ratings (mva_limit) are not published in the cited
+   sources** (they cover relay coordination, not thermal loading), so a
+   disclosed engineering estimate (~156 MVA/line, from an assumed 600A
+   150kV overhead-line ampacity) is used and flagged via
+   `line_data["data_provenance"]` (`lines`/`loads`/`transformers` marked
+   `cited_verified`, `mva_limit` marked `engineering_estimate`,
+   `loading_percent_calibrated: False`). `exp_reverse_power_flow.py`'s
+   JSON output now surfaces this via a per-system `model_fidelity`
+   block, so a reader doesn't need to find a code comment to know 8-bus's
+   loading percentages carry this caveat.
+
+Result: 8-bus max line loading dropped from 885.7% to 68.96% (plausible
+for a 150kV subtransmission system), with 4 real load rows (was 14
+duplicated rows summing to 94.65 MW; now totals the real 240 MW system
+load), converged power flow, min voltage 0.982 pu.
+
+**The "zero reversals at any PV level, on any system" finding is real,
+not a bug**, and is now a quantified, disclosed result rather than a
+bare zero: all three systems size distributed PV at only ~10% of local
+bus load, and the sweep only reaches 60% penetration, so net export past
+any monitored line is mathematically out of reach at current sizing —
+confirmed by the new `pv_to_load_ratio`/`per_dg_bus_pv_to_local_load`
+fields in the JSON output (e.g. 39-bus's PV buses sit at 5.6-6.1% of
+local load even at 60% penetration). The closest any line comes to
+reversing is captured by the new `flow_ratio_vs_baseline`/
+`min_flow_ratio`/`closest_to_reversal_line` fields (e.g. 39-bus line 18
+falls to ~21% of its baseline flow at 60% PV). `PV_LEVELS` and DG
+capacities were deliberately left unchanged to get this finding — do not
+change them to try to force a reversal to appear; if demonstrating
+reversal at higher penetration becomes a thesis requirement, that's a
+separate, explicit scope decision, reported as an additional labelled
+sensitivity arm alongside (never replacing) this calibrated result.
+
+Separately, 14-bus's distributed PV was relocated off its default slack
+bus (bus 1) onto real load buses — previously ~23 of its 27 MW of
+"distributed PV" sat on the slack bus, invisibly absorbed by `ext_grid`,
+making its PV sweep nearly inert (its most-affected line moved only
+1.1% across the whole 0-60% sweep). This follows the same load-only-bus
+pattern already used for 39-bus's PV placement. Like the 39/8-bus
+changes above, this changes what 14-bus's cached MARL policies actually
+observed and is covered by `topology_fingerprint()`'s DG-placement term.
+
+`results/reverse_power_flow_analysis.json` has **not** been regenerated
+as part of this round — see the reproducibility checklist below for
+when/how to do that once the model changes are fully verified together.
+
+Also newly documented: Phase E (`run_full_campaign.py`), which runs this
+reverse-power-flow analysis once per full campaign, degrading gracefully
+if pandapower is unavailable. Skip it with `--skip-reverse-power-flow`.
 
 ---
 
@@ -855,6 +1012,20 @@ Before submitting results, verify:
 - [ ] PV sweep is exactly 0 %, 20 %, 40 %, 60 % (not 0–100 %)
 - [ ] `exp_fig39_ablation.py`'s EWC ablation was run with curriculum=True
       to verify catastrophic-forgetting prevention claim
+- [ ] After the 2026-09-09 topology fix (39bus rebuild, 8bus real
+      line_data, 14bus PV relocation — see §9): confirm `--cache-status`
+      shows a `topology_fp` recorded on every Core entry you rely on
+      before trusting it as current; a pre-2026-09-09 cached entry with
+      no `topology_fp` recorded is stale and should be retrained, not
+      reused. Any Core touching 8bus (A, D, E, J, K, F, G, H, I — 9 of
+      11) or 14bus/39bus (B, C, F, G, H, I) needs this check.
+- [ ] `results/reverse_power_flow_analysis.json` should be regenerated
+      (via `python -m experiments.exp_reverse_power_flow`) and diffed
+      against its currently-committed version once the full model chain
+      is verified together — 39bus's numbers should be unchanged to
+      ~1e-9 (nothing in the 2026-09-09 round touches its power-flow
+      model), 8bus/14bus should move to the plausible ranges documented
+      in §9.
 
 ---
 
