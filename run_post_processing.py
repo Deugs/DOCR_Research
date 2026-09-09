@@ -2572,12 +2572,15 @@ def fig_47_sympathetic_tripping():
 def fig_48_shap():
     """Fig 48: SHAP feature importance — from core_eval_fig48 (real KernelExplainer output)."""
     logger.info("\\n[Fig 48] SHAP Feature Importance")
-    # Real obs schema (marl/marl_env.py DynamicDOCREnv._get_obs, OBS_DIM=10):
-    # note ps_n appears twice by construction (a pre-existing duplicate
-    # feature, not a labeling error introduced here).
+    # Real obs schema (marl/marl_env.py DynamicDOCREnv._get_obs, OBS_DIM=12
+    # as of Objective 2's V/P_dir features -- was 10): note ps_n appears
+    # twice by construction (a pre-existing duplicate feature, not a
+    # labeling error introduced here). Order matches marl_env.py's own
+    # module docstring exactly.
     features = ["TMS (norm.)", "PS (norm.)", "Fault current (norm.)", "CTI slack (norm.)",
                 "CTI violation flag", "Own trip time (norm.)", "PS (norm.) [dup]",
-                "PV generation level", "Topology change flag", "Sensor quality"]
+                "PV generation level", "Topology change flag", "Sensor quality",
+                "Voltage (norm.)", "Power-flow direction"]
 
     real = load_bridge_cache(48)
     shap_arr = None
@@ -2591,9 +2594,30 @@ def fig_48_shap():
         shap_values = np.sort(rng.exponential(0.1, len(features)))[::-1]
         order = np.arange(len(features))
     else:
-        # shap_arr shape: (n_actions, n_explain, n_features) from
-        # shap.KernelExplainer on the actor's multi-output mean action.
-        mean_abs = np.abs(shap_arr).mean(axis=tuple(range(shap_arr.ndim - 1)))
+        # shap.KernelExplainer's returned array axis order for a
+        # multi-output function is version-dependent -- verified directly
+        # against the installed shap==0.51.0 (upgraded this session from
+        # the numpy-2.x-incompatible 0.41.0 pin): shap_values() returns
+        # (n_explain, n_features, n_actions), NOT the (n_actions,
+        # n_explain, n_features) this code previously assumed (a stale
+        # assumption from the old pinned version, never actually verified
+        # against 0.51.0's real output). Averaging over
+        # `range(ndim - 1)` blindly assumed n_features was the LAST axis
+        # -- on the real (20, 12, 2) shape that instead averaged over
+        # (n_explain, n_features) and kept n_actions=2, so every SHAP
+        # figure generated after the shap upgrade silently plotted 2
+        # meaningless "feature" bars (mean_abs.shape[0]=2) hard-resized up
+        # to 12 real feature names via the fallback below, rather than
+        # ever hitting a shape mismatch loud enough to notice.
+        #
+        # Fixed by locating the feature axis by its actual SIZE (matches
+        # len(features)) instead of assuming a fixed position, so this
+        # stays correct regardless of which axis order a given
+        # shap/explainer version happens to use.
+        feature_axis = next((ax for ax, size in enumerate(shap_arr.shape) if size == len(features)),
+                             shap_arr.ndim - 1)
+        other_axes = tuple(ax for ax in range(shap_arr.ndim) if ax != feature_axis)
+        mean_abs = np.abs(shap_arr).mean(axis=other_axes) if other_axes else np.abs(shap_arr)
         if mean_abs.shape[0] != len(features):
             logger.warning(f"Fig 48: cached SHAP feature count ({mean_abs.shape[0]}) != known obs schema ({len(features)}); truncating/padding to match.")
             mean_abs = np.resize(mean_abs, len(features))

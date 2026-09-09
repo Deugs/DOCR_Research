@@ -199,8 +199,6 @@ def main(train_steps: int = 8000, n_eval: int = 30, seed: int = 42,
     out_path.mkdir(parents=True, exist_ok=True)
 
     net = get_8bus()
-    obs_dim = 10
-    act_dim = 2
 
     logger.info("Figure 53 (v2) — Model Compression Experiment")
     logger.info("  System: %s (%d relays)", net.name, net.n_relays)
@@ -208,6 +206,13 @@ def main(train_steps: int = 8000, n_eval: int = 30, seed: int = 42,
     # ── Train baseline ────────────────────────────────────────────────────────
     logger.info("[1/6] Training baseline MAPPO (%d steps)...", train_steps)
     env = DynamicDOCREnv(net, seed=seed, use_pandapower=False)
+    # Derived from the real env, not hardcoded -- MAPPOMARLTrainer sizes
+    # its actor from env.OBS_DIM (12 as of the V/P_dir observation
+    # features added this round), so a stale hardcoded obs_dim here would
+    # build the _latency_ms()/distill_student() synthetic input batches
+    # at the wrong width and crash feeding them into the real actor.
+    obs_dim = env.OBS_DIM
+    act_dim = env.ACT_DIM
     trainer = MAPPOMARLTrainer(env, use_comm=False, hidden_actor=64, hidden_critic=64, seed=seed)
     trainer.train(total_steps=train_steps, verbose=False)
     base_actor = copy.deepcopy(trainer.actor)

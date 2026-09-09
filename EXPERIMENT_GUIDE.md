@@ -283,6 +283,36 @@ margin) via new per-run metrics on Core C, but keep a smaller illustrative
 architecturally bounded per the reasons above; see each figure function's
 code comment in `run_post_processing.py` for specifics.
 
+**Update (2026-09-09): observation space expanded 10→12 (OBS_DIM), two new
+features added.** `marl/marl_env.py::DynamicDOCREnv._get_obs()` now appends
+per-agent voltage (`v_norm`) and power-flow direction (`p_dir`). Read the
+actual disclosure in that function's own comments before citing these as
+new real signal: `v_norm` is a genuine AC-solve quantity only under
+`use_pandapower=True`, which the code's own comment says is NOT what "the
+vast majority of training" actually uses — under the (default) analytical
+path it's a deterministic formula of two features already in the
+observation vector. `p_dir` is **never** a real per-step measurement in
+either mode; it's always `2*pv_level*is_dg_bus - 1` — for non-DG-bus
+agents a constant, for DG-bus agents a value perfectly linearly collinear
+with the already-present `pv_level` feature. Neither is fabricated (both
+are disclosed in-code), but "add real V and P_dir observation features"
+overstates what these actually deliver for the training regime this
+pipeline's own comments say matters most.
+
+Found and fixed while checking this change didn't miss any stale
+`OBS_DIM=10` references: `experiments/exp_fig53_model_compression.py` had
+`obs_dim = 10` hardcoded (would crash feeding a 10-wide synthetic batch
+into the real 12-wide actor) — now derived from `env.OBS_DIM`/`env.ACT_DIM`
+directly. `run_post_processing.py::fig_48_shap()`'s feature-name list still
+had 10 entries (now 12, matching `marl_env.py`'s own documented feature
+order) — and, separately, its SHAP-array axis-averaging logic assumed a
+fixed `(n_actions, n_explain, n_features)` shape that shap==0.51.0 (this
+session's numpy-2.x-compatible upgrade from the broken 0.41.0 pin) doesn't
+actually use; verified the real installed version returns `(n_explain,
+n_features, n_actions)` instead, so every SHAP figure generated since that
+upgrade had silently averaged over the wrong axes. Now locates the feature
+axis by its actual size rather than assuming a fixed position.
+
 ### 2.2.2 Training efficiency (2026-08-07)
 
 Three changes reduce how long real training actually takes, none of which
@@ -465,9 +495,20 @@ order, and the `hash()`-based seed offsets Cores C and D used internally
 fixed the same way. Default is `--n-workers 1` (sequential, matching prior
 behavior exactly).
 
-**Cores G-K are not parallelized.** Each just makes a handful (1-5) of
-sequential calls into `core_eval_bridge.py` for specific figures — much
-smaller in scope than A-F, so left as-is.
+**Update: Cores G/H/I/K are now parallelized too** (`run_core_G`/`run_core_H`/
+`run_core_I`/`run_core_K` all accept `n_workers`, same pinned-BLAS-thread
+`mp.Pool` pattern as A-F). Each still only makes a handful (1-5) of
+sequential-by-design calls into `core_eval_bridge.py` per config, so the
+speedup is smaller than A-F's, but this is no longer accurate as an
+"unparallelized, left as-is" description. Fast-mode `n_runs` for A-D now
+also auto-scales to the worker pool size via `_n_runs_for_wave()` (fills
+one full pool "wave" rather than leaving workers idle) — this means the
+same `--fast` run's sample size (and therefore any confidence interval)
+genuinely differs depending on `--n-workers`/pool size, which is NOT
+currently logged/disclosed anywhere in the run's own output. If comparing
+fast-mode results across two runs, check `n_runs` in
+`results/core_cache/cache_index.json`'s config for that entry rather than
+assuming it matches.
 
 From-scratch time estimate for Phase 2 at full scale (`thesis_sweep`
 preset), measured directly on one CPU core rather than trusting this
