@@ -304,25 +304,6 @@ def apply_config(config: DOCRConfig):
         PROGRESS_DIR = base / "progress"
         for d in [CACHE_DIR, FIGURES_DIR, LOG_DIR, CHECKPOINT_DIR, PROGRESS_DIR]:
             d.mkdir(parents=True, exist_ok=True)
-
-    # --cache-dir (config.experiment.cache_dir) was, until now, silently
-    # ignored here -- ExperimentConfig/docl_config.py define and CLI-map
-    # the field, but nothing in this function ever read it, so it had
-    # ZERO effect regardless of what was passed on the command line.
-    # run_full_campaign.py's whole concurrent-multi-system design depends
-    # on each subprocess actually writing to its OWN --cache-dir (its own
-    # module docstring: "avoids a lost-update race on the shared
-    # cache_index.json") -- without this, every concurrent subprocess
-    # silently pointed at the same shared results/core_cache/, and
-    # CacheManager's non-atomic load-once/dump-whole-index writes turned
-    # that into a real, frequent (not rare) lost-update race across
-    # concurrent processes. Checked independently of output_dir (and
-    # applied after it) so an explicit --cache-dir always wins, matching
-    # how a more specific CLI flag is expected to override a more general
-    # one.
-    if config.experiment.cache_dir != "results/core_cache":
-        CACHE_DIR = Path(config.experiment.cache_dir)
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
     
     logger.info(f"[CONFIG] Applied DOCRConfig: system={config.system.name}, "
                 f"fast_mode={FAST_MODE}, use_synthetic={USE_SYNTHETIC}, seed={SEED}")
@@ -371,9 +352,15 @@ class CacheManager:
         with open(cache_path, "wb") as f:
             pickle.dump(result, f)
         self.index[key] = {
-            "name": config.get("name", "unnamed"), 
-            "created": datetime.now().isoformat(), 
+            "name": config.get("name", "unnamed"),
+            "created": datetime.now().isoformat(),
             "config_keys": list(config.keys()),
+            # Recorded so --cache-status can be audited by a human:
+            # which network topology (per system this Core touches) the
+            # cached artifact was actually produced against. Purely
+            # informational here — invalidation happens via the config
+            # hash itself (see topology_fp()).
+            "topology_fp": config.get("topology_fp", {}),
             "size_mb": cache_path.stat().st_size / (1024 * 1024)
         }
         self._save_index()
@@ -409,6 +396,69 @@ cache: Optional[CacheManager] = None
 def init_cache():
     global cache
     cache = CacheManager(CACHE_DIR)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Topology fingerprinting — cache-poisoning prevention
+# ──────────────────────────────────────────────────────────────────
+# CacheManager._compute_key() hashes ONLY the config dict, so a cached
+# policy trained against an older network topology is otherwise returned
+# as a valid "hit" after that topology changes -- silently, with no
+# error. Folding NetworkData.topology_fingerprint() into each Core's
+# config dict makes a topology change produce a different config hash,
+# i.e. a natural cache MISS. There is deliberately no fingerprint
+# comparison inside CacheManager.get(): the key itself is the mechanism.
+#
+# Each Core gets fingerprints for ONLY the systems it actually
+# trains/evaluates on (see each run_core_* config below), so e.g. the
+# 8bus-only Cores (A/D/E/J/K) are not invalidated by a 39bus change and
+# vice versa.
+_TOPOLOGY_FP_MEMO: Dict[str, str] = {}
+
+
+def topology_fp(*systems) -> Dict[str, str]:
+    """
+    Return {system_name: topology_fingerprint} for the given systems.
+
+    Accepts any mix of individual names and iterables of names, e.g.
+    topology_fp("8bus"), topology_fp("8bus", "39bus"),
+    topology_fp(systems_list). Names are resolved through
+    network.network_data.load_network (same accessor this module already
+    uses elsewhere), so aliases and the "39bus_reduced" provenance
+    variant resolve correctly.
+
+    Fingerprints are memoized per process: NetworkData construction is
+    pure data assembly, but every Core builds its config dict on the hot
+    path (and worker subprocesses rebuild them), so memoizing keeps this
+    free.
+    """
+    from network.network_data import load_network
+
+    names: List[str] = []
+    for s in systems:
+        if isinstance(s, str):
+            names.append(s)
+        else:
+            names.extend(s)
+
+    out: Dict[str, str] = {}
+    for name in sorted(set(names)):
+        if name not in _TOPOLOGY_FP_MEMO:
+            net = load_network(name)
+            fp_fn = getattr(net, "topology_fingerprint", None)
+            if fp_fn is None:
+                # Fail loud rather than substituting a placeholder: a
+                # constant stand-in fingerprint would re-introduce
+                # exactly the silent cache-poisoning this guards against.
+                raise RuntimeError(
+                    "NetworkData.topology_fingerprint() is missing from "
+                    "network/network_data.py — the cache-poisoning guard "
+                    "cannot be computed. Update network_data.py before "
+                    "running any Core."
+                )
+            _TOPOLOGY_FP_MEMO[name] = fp_fn()
+        out[name] = _TOPOLOGY_FP_MEMO[name]
+    return out
 
 # ──────────────────────────────────────────────────────────────────
 # Unified Training Logger
@@ -577,17 +627,7 @@ def _n_runs_for_wave(n_workers: int, jobs_per_run: int, minimum: int) -> int:
     laptop run with n_workers=1-2)."""
     if n_workers <= 1:
         return minimum
-    n_runs = max(minimum, n_workers // jobs_per_run)
-    if n_runs != minimum:
-        # Disclosed at runtime (not just in EXPERIMENT_GUIDE.md) since
-        # this directly changes the sample size -- and therefore any
-        # confidence interval -- of a "--fast" run depending on
-        # n_workers/pool size alone, with no other visible signal that
-        # two fast-mode runs used different n_runs.
-        logger.info(f"[CONFIG] Fast-mode n_runs auto-scaled to pool size: "
-                    f"{n_runs} (minimum={minimum}, n_workers={n_workers}, "
-                    f"jobs_per_run={jobs_per_run})")
-    return n_runs
+    return max(minimum, n_workers // jobs_per_run)
 
 
 # Populated once per worker process by _init_core_bridge_workers (or once
@@ -788,6 +828,9 @@ def run_core_A(n_runs: int = None, n_episodes: int = None, seed: int = None,
         # pipeline). A stale cache entry from before this change would
         # silently lack both.
         "real_fig36_fig38_v1": True,
+        # Core A trains on 8bus only (_run_core_A_experimental ->
+        # get_8bus()), so it depends on 8bus's topology and nothing else.
+        "topology_fp": topology_fp("8bus"),
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1195,6 +1238,9 @@ def run_core_B(n_runs: int = None, episodes_per_task: int = None, seed: int = No
         # pre-restructuring cache entry rather than to signal a numeric
         # difference.
         "parallel_b_split_v1": True,
+        # Core B is parametrized by a single `system` (8bus/14bus/39bus);
+        # only that system's topology is depended on.
+        "topology_fp": topology_fp(system),
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1563,6 +1609,11 @@ def run_core_C(n_runs: int = None, n_episodes: int = None, seed: int = None,
         # separately under core_C_metrics_{system}. A stale cache entry
         # from before this change has no corresponding metrics entry.
         "real_fig33_55_56_metrics_v1": True,
+        # Core C is parametrized by a single `system` (threaded through to
+        # _run_baseline_single/_evaluate_traditional); the derived
+        # core_C_metrics_{system} entry below reuses this same dict, so it
+        # inherits the fingerprint automatically.
+        "topology_fp": topology_fp(system),
     }
     cached = cache.get(config)
     if cached is not None:
@@ -1920,6 +1971,9 @@ def run_core_D(n_runs: int = None, n_episodes: int = None, seed: int = None,
         # "MAPPO+GNN" (dead post-hoc attribute guards, unused ewc_wrapper).
         # Now genuinely differ — see _run_ablation_single.
         "real_safety_ewc": True,
+        # Core D's ablation arms all train on 8bus (_run_ablation_single
+        # -> get_8bus()).
+        "topology_fp": topology_fp("8bus"),
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2193,6 +2247,9 @@ def run_core_E(n_seeds: int = None, n_steps: int = None, seed: int = None,
         # never used at all (CTI was also hardcoded to 0). Now genuinely
         # wired — see _run_hparam_single.
         "real_hparam_effect": True,
+        # Core E's hyper-parameter grid runs entirely on 8bus
+        # (_run_hparam_single -> get_8bus()).
+        "topology_fp": topology_fp("8bus"),
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2370,7 +2427,11 @@ def run_core_F(systems: List[str] = None, seed: int = None,
             "3bus", "8bus", "14bus", "30bus", "39bus", "57bus", "118bus"
         ]
         
-    config = {"name": "core_F_scalability", "systems": systems, "seed": seed, "fault_type": FAULT_TYPE}
+    # Core F touches exactly the systems in its `systems` list (which
+    # differs between fast mode and the full 7-system suite), so the
+    # fingerprint set is derived from that list rather than hardcoded.
+    config = {"name": "core_F_scalability", "systems": systems, "seed": seed,
+              "fault_type": FAULT_TYPE, "topology_fp": topology_fp(systems)}
     cached = cache.get(config)
     if cached is not None:
         logger.info("[Core F] Using cached results")
@@ -2547,6 +2608,10 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # sequential-era output as evidence the parallel path was
         # exercised.
         "parallel_v1": True,
+        # Core G trains three base policies: 8bus (main bridge, all
+        # stress sweeps), 39bus (bandwidth sweep + N-1) and 14bus (N-1) —
+        # see the CoreEvalBridge(system=...) calls below.
+        "topology_fp": topology_fp("8bus", "14bus", "39bus"),
     }
     cached = cache.get(config)
     if cached is not None:
@@ -2652,24 +2717,6 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             for eps in [0.01, 0.05, 0.1, 0.2]:
                 jobs.append((("adversarial_pgd", eps), "main", 54, dict(attack="PGD", epsilon=eps)))
             # Fig 14: N-1 Contingency, all three systems.
-            #
-            # n_lines_39 (and n_lines_14) come from get_39bus()/get_14bus()'s
-            # n_lines property, which counts edges in the abbreviated
-            # relay-pair-generating `lines` list -- NOT the real, complete
-            # branch set. For 39bus specifically that abbreviated list only
-            # spans 23 of the true 46 branches (see get_39bus()'s own
-            # comment in network/network_data.py, "leave 17 of 39 buses,
-            # including most of the generator buses, with no connection"),
-            # kept that way deliberately to avoid doubling n_relays and
-            # invalidating every other Core's already-cached 39bus result.
-            # PandapowerNetwork's real 46-branch topology (added this round
-            # for genuine power-flow solves) is a SEPARATE structure that
-            # apply_n1_outage() never reads from -- this sweep never
-            # outages any of the 23 branches missing from the abbreviated
-            # graph, including every branch connecting the 10 real
-            # generator buses. "N-1 sweep extended to 14bus/39bus" here
-            # means "extended to the abbreviated relay-coordination graph
-            # for those systems", not the complete real topology.
             for line_idx in range(n_lines_8):
                 jobs.append((("n1", line_idx), "main", 14, dict(line_outage=line_idx, recovery=True)))
             for depth in [1, 2, 3, 4]:
@@ -2849,6 +2896,9 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # training call rather than a cheap bridge eval). Same seeds/calls,
         # only the scheduling changed.
         "parallel_v1": True,
+        # Core H trains its base policy on 8bus (default CoreEvalBridge
+        # system) and transfers/cold-starts on 14bus.
+        "topology_fp": topology_fp("8bus", "14bus"),
     }
     cached = cache.get(config)
     if cached is not None:
@@ -3032,6 +3082,9 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # instead of sequentially -- same seeds, same _measure_latency
         # math, only the scheduling changed.
         "parallel_v1": True,
+        # Core I trains/measures two base policies: 8bus (Fig 18) and
+        # 39bus (Claim C5) — see _core_I_job.
+        "topology_fp": topology_fp("8bus", "39bus"),
     }
     cached = cache.get(config)
     if cached is not None:
@@ -3164,6 +3217,11 @@ def run_core_J(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # fault types instead of just config.fault_type -- a stale entry
         # has no "sympathetic_by_fault_type" key.
         "real_fig44_sc_and_fig47_fault_sweep_v1": True,
+        # Core J's five analyses all run against the default
+        # CoreEvalBridge system (8bus) — including Fig 44's short-circuit
+        # study, which is built from 8bus's pandapower model and so is
+        # sensitive to 8bus's line_data/base_voltage.
+        "topology_fp": topology_fp("8bus"),
     }
     cached = cache.get(config)
     if cached is not None:
@@ -3283,6 +3341,9 @@ def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgres
         # worker pool instead of a sequential loop -- same seeds, same
         # bridge.run_evaluation() calls, only the scheduling changed.
         "parallel_v1": True,
+        # Core K's 4-season sweep runs against the default
+        # CoreEvalBridge system (8bus).
+        "topology_fp": topology_fp("8bus"),
     }
     cached = cache.get(config)
     if cached is not None:
@@ -3573,6 +3634,15 @@ def main():
             size = info.get('size_mb', 'N/A')
             size_str = f"{size:.2f} MB" if isinstance(size, (int, float)) else size
             print(f"  {key}: {info['name']} ({info['created']}) [{size_str}]")
+            # Topology fingerprints of the systems this entry was
+            # produced against (empty for entries written before
+            # fingerprinting landed — those are unaudited by definition).
+            fp = info.get('topology_fp') or {}
+            if fp:
+                fp_str = ", ".join(f"{s}={h}" for s, h in sorted(fp.items()))
+                print(f"      topology_fp: {fp_str}")
+            else:
+                print(f"      topology_fp: (none recorded — pre-fingerprint entry)")
         return
 
     if args.progress:

@@ -362,13 +362,19 @@ class NetworkData:
         cache hit after this change despite training against different
         PV-current magnitudes.
 
-        Deliberately excludes `name` and every non-structural quantity
-        (fault currents, DG dispatch, PS bounds): the intended consumer is
-        CacheManager._compute_key() in run_core_training.py, which hashes
-        only the config dict and would otherwise return a policy trained
-        on a DIFFERENT topology as a valid cache "hit" after a topology
-        change. get_39bus() and get_39bus_reduced() therefore fingerprint
-        differently (92/86 relays/pairs vs 46/42), which is the point.
+        Deliberately excludes `name`, fault currents and PS bounds (those
+        are per-relay tuning outputs derived FROM the structure captured
+        here, not independent structure) -- but DOES include DG/PV bus
+        placement and rated capacity, since a relocation like get_14bus()'s
+        PV-off-the-slack-bus fix changes what a trained policy actually
+        observed/optimized against even when relay/pair/branch topology is
+        identical. The intended consumer is CacheManager._compute_key() in
+        run_core_training.py, which hashes only the config dict and would
+        otherwise return a policy trained on a DIFFERENT topology or DG
+        placement as a valid cache "hit" after a change. get_39bus() and
+        get_39bus_reduced() fingerprint differently (92/86 relays/pairs vs
+        46/42); get_14bus() before/after its PV relocation also fingerprints
+        differently even though its relay/pair/branch topology didn't move.
         """
         import hashlib
 
@@ -378,6 +384,16 @@ class NetworkData:
             f"n_pairs={int(self.n_pairs)}",
             f"base_voltage={round(float(self.base_voltage), 6)}",
         ]
+        dg_rows = sorted(
+            (
+                int(dg.bus_idx), round(float(dg.p_mw), 6),
+                round(float(dg.q_mvar), 6), bool(dg.always_on),
+            )
+            for dg in self.dg_buses
+        )
+        parts.append("dg=" + ";".join(
+            f"{bus}:{p:.6f}:{q:.6f}:{ao}" for bus, p, q, ao in dg_rows
+        ))
         branches = (self.line_data or {}).get("lines") or []
         if branches:
             rows = sorted(
