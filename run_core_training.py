@@ -304,7 +304,26 @@ def apply_config(config: DOCRConfig):
         PROGRESS_DIR = base / "progress"
         for d in [CACHE_DIR, FIGURES_DIR, LOG_DIR, CHECKPOINT_DIR, PROGRESS_DIR]:
             d.mkdir(parents=True, exist_ok=True)
-    
+
+    # --cache-dir (config.experiment.cache_dir) -- re-added after a prior
+    # merge's apply_config() restructuring (for topology-fingerprint
+    # cache keys) silently dropped this block without moving it anywhere
+    # else; confirmed by direct test that --cache-dir had zero effect on
+    # CACHE_DIR before this fix. run_full_campaign.py's whole concurrent-
+    # multi-system design depends on each subprocess actually writing to
+    # its own --cache-dir (see that script's module docstring: "avoids a
+    # lost-update race on the shared cache_index.json") -- without this,
+    # every concurrent subprocess silently points at the same shared
+    # results/core_cache/, turning CacheManager's non-atomic
+    # load-once/dump-whole-index writes into a real, frequent lost-update
+    # race across concurrent processes. Checked independently of
+    # output_dir (and applied after it) so an explicit --cache-dir always
+    # wins, matching how a more specific CLI flag is expected to override
+    # a more general one.
+    if config.experiment.cache_dir != "results/core_cache":
+        CACHE_DIR = Path(config.experiment.cache_dir)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
     logger.info(f"[CONFIG] Applied DOCRConfig: system={config.system.name}, "
                 f"fast_mode={FAST_MODE}, use_synthetic={USE_SYNTHETIC}, seed={SEED}")
 
