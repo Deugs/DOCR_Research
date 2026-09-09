@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 from network.network_data import (
     get_3bus, get_8bus, get_30bus, get_39bus, get_14bus, get_57bus, get_118bus,
-    NetworkData, RelayPair, _ensure_feasible_ps_bounds,
+    NetworkData, RelayPair, _ensure_feasible_ps_bounds, NETWORKS,
 )
 from network.relay_physics import (
     idmt_time, compute_operating_times, objective_function, 
@@ -156,6 +156,192 @@ def test_ensure_feasible_ps_bounds():
     assert fixed[0] >= required[0] - 1e-9
     assert fixed[1] == if_min[1]  # untouched: was already feasible
     print("  _ensure_feasible_ps_bounds() floors only the infeasible relay")
+
+
+def test_relay_graph_matches_powerflow_graph():
+    """Regression guard for the 39bus/14bus relay-topology gap: for any
+    network whose line_data carries a real branch table AND whose relay
+    graph was generated from that same table -- the discriminator
+    NetworkData.apply_n1_outage() already uses internally to decide
+    whether its real-branch outage path applies: n_relays ==
+    2 * len(line_data["lines"]) -- the relay/pair graph must actually
+    describe the same topology PandapowerNetwork solves power flow on:
+    one relay at each end of every branch, covering exactly the
+    branches' own endpoints.
+
+    8bus also carries line_data["lines"] (the real 7-line + 2-transformer
+    published system, for pandapower's power-flow use only) but
+    DELIBERATELY keeps a separate, smaller 14-relay/20-pair coordination
+    graph (see get_8bus()'s own comment on the two coexisting
+    structures) -- its n_relays (14) != 2*len(line_data["lines"]) (18),
+    so it fails this same discriminator and must NOT be held to the
+    invariant below.
+    """
+    checked = []
+    excluded = []
+    for name, get_net in NETWORKS.items():
+        net = get_net()
+        if not (net.line_data and net.line_data.get("lines")):
+            continue
+        branches = net.line_data["lines"]
+        if net.n_relays == 2 * len(branches):
+            checked.append(name)
+            expected_endpoints = []
+            for ln in branches:
+                expected_endpoints.append(int(ln["from_bus"]) - 1)
+                expected_endpoints.append(int(ln["to_bus"]) - 1)
+            actual = sorted(int(b) for b in net.relay_bus)
+            assert actual == sorted(expected_endpoints), \
+                f"{name}: relay_bus multiset doesn't match branch endpoints"
+        else:
+            excluded.append(name)
+
+    assert "14bus" in checked, "14bus should satisfy n_relays == 2*n_branches"
+    assert "39bus" in checked, "39bus should satisfy n_relays == 2*n_branches"
+    assert "8bus" in excluded, (
+        "8bus's relay/pair graph is deliberately smaller than its "
+        "line_data branch table (separate coordination vs power-flow "
+        "topologies, see get_8bus()) -- it should NOT satisfy this "
+        "invariant"
+    )
+    print(f"  relay graph matches line_data branch endpoints for {checked}; "
+          f"8bus correctly excluded (deliberately separate graphs): {excluded}")
+
+
+def test_39bus_full_bus_coverage():
+    """get_39bus()'s relay graph, rebuilt from the full 46-branch
+    topology, must cover all 39 buses -- the abbreviated 23-line graph
+    it replaces (now get_39bus_reduced()) left 17 of 39 buses, including
+    all 10 real generator buses, with zero relay coverage, so a
+    "N-1 contingency on 39-bus" sweep could never outage a single
+    generator-connected branch."""
+    net = get_39bus()
+    assert set(int(b) for b in net.relay_bus) == set(range(39))
+    print("  get_39bus(): all 39 buses have relay coverage")
+
+
+def test_generator_buses_have_relays():
+    """Every DG bus, and every explicit line_data slack bus, must have at
+    least one relay physically located there -- a generator (or slack)
+    bus with zero relay coverage can never be N-1-outaged or sensed,
+    defeating the point of adding it to the topology in the first
+    place. Generic across every network that has both dg_buses and a
+    real relay-location mapping."""
+    for get_net in [get_8bus, get_14bus, get_39bus]:
+        net = get_net()
+        if net.relay_bus is not None:
+            relay_buses = set(int(b) for b in net.relay_bus)
+        else:
+            relay_buses = set(net.get_relay_bus(i) for i in range(net.n_relays))
+
+        for dg in net.dg_buses:
+            dg_bus0 = int(dg.bus_idx) - 1
+            assert dg_bus0 in relay_buses, \
+                f"{net.name}: DG bus {dg.bus_idx} (0-indexed {dg_bus0}) has no relay"
+
+        if net.line_data and "slack_bus" in net.line_data:
+            slack0 = int(net.line_data["slack_bus"]) - 1
+            assert slack0 in relay_buses, \
+                f"{net.name}: slack bus {net.line_data['slack_bus']} has no relay"
+
+        print(f"  {net.name}: all {len(net.dg_buses)} DG buses "
+              f"(and slack bus, where set) have relay coverage")
+
+
+def test_39bus_ps_bounds_and_n1_after_expansion():
+    """After the 39bus relay-graph expansion (46->92 relays), PS bounds
+    must remain feasible for every relay, and apply_n1_outage() must
+    succeed (real single-branch contingency, via
+    NetworkData.apply_n1_outage()'s real-branch path) for every one of
+    the network's 46 real branches, returning a sensible outage
+    factor."""
+    net = get_39bus()
+    ps_min, ps_max = net.ps_bounds()
+    assert len(ps_min) == 92
+    assert np.all(ps_min <= ps_max), \
+        "ps_min > ps_max for at least one of the 92 relays"
+
+    n_lines = net.n_lines
+    assert n_lines == 46
+    for k in range(n_lines):
+        new_net, outage_factor = net.apply_n1_outage(k)
+        assert 0.0 < outage_factor <= 1.0, \
+            f"line {k}: outage_factor {outage_factor} is not a sensible (0, 1] value"
+        assert new_net.n_relays == net.n_relays
+    print(f"  get_39bus(): ps_bounds feasible for all 92 relays; "
+          f"apply_n1_outage() succeeded for all {n_lines} branches")
+
+
+def test_reduced_variant_preserved():
+    """get_39bus_reduced() must reproduce the pre-expansion 39bus relay
+    graph exactly (46 relays, 42 pairs, 22-of-39 bus coverage) so the
+    already-published reduced-graph results stay reproducible and
+    citable as a named provenance variant."""
+    net = NETWORKS["39bus_reduced"]()
+    assert net.n_relays == 46
+    assert net.n_pairs == 42
+    buses_covered = len(set(int(b) for b in net.relay_bus))
+    assert buses_covered == 22
+    print(f"  39bus_reduced: {net.n_relays} relays, {net.n_pairs} pairs, "
+          f"{buses_covered}/39 buses covered")
+
+
+def test_topology_fingerprint_changes_with_topology():
+    """topology_fingerprint() must be a stable, deterministic function of
+    a network's structural identity -- CacheManager relies on it to
+    avoid returning a policy trained on a DIFFERENT topology as a valid
+    cache hit after a topology change."""
+    net_full = get_39bus()
+    net_full_again = get_39bus()
+    net_reduced = NETWORKS["39bus_reduced"]()
+
+    fp1 = net_full.topology_fingerprint()
+    fp2 = net_full_again.topology_fingerprint()
+    fp_reduced = net_reduced.topology_fingerprint()
+
+    assert fp1 == fp2, "topology_fingerprint() is not stable across repeated calls"
+    assert fp1 != fp_reduced, (
+        "39bus (92 relays/86 pairs) and 39bus_reduced (46/42) have "
+        "genuinely different topologies but produced the same fingerprint"
+    )
+
+    fp8_a = get_8bus().topology_fingerprint()
+    fp8_b = get_8bus().topology_fingerprint()
+    assert fp8_a == fp8_b, "8bus topology_fingerprint() is not deterministic"
+    print(f"  topology_fingerprint(): 39bus={fp1[:8]}... != "
+          f"39bus_reduced={fp_reduced[:8]}..., stable across repeated calls")
+
+
+def test_14bus_dg_placement_excludes_condensers_and_slack():
+    """get_14bus()'s DG placement must never include the 3 zero-real-
+    power synchronous-condenser buses (3/6/8, deliberately dropped by
+    the `if p > 0` filter -- see get_14bus()'s comment) or the resolved
+    slack bus (bus 1: 14bus's line_data carries no explicit "slack_bus"
+    key, so PandapowerNetwork defaults the ext_grid to bus 0 / 1-indexed
+    bus 1). A DG entry on either would be either inert (a p_mw=0
+    reactive-only condenser under this codebase's P-scaled DG model) or
+    invisibly absorbed by the ideal slack source -- the exact bug
+    get_14bus()'s PV was relocated to fix. NOTE: this replaces the plan
+    document's originally-specified `test_14bus_dg_filter_is_deliberate`
+    (which pinned `len(dg_buses) == 2`); the actual current PV placement
+    relocated PV onto 9 load buses, not 2, so that assertion no longer
+    reflects reality."""
+    net = get_14bus()
+    condenser_buses_1indexed = {3, 6, 8}
+    slack_bus_1indexed = 1  # line_data has no "slack_bus" key -> default bus 1
+
+    assert len(net.dg_buses) > 0
+    for dg in net.dg_buses:
+        assert dg.bus_idx not in condenser_buses_1indexed, (
+            f"DG at condenser bus {dg.bus_idx} -- these are reactive-only "
+            f"and inert under the current P-scaled DG model"
+        )
+        assert dg.bus_idx != slack_bus_1indexed, (
+            f"DG at the resolved slack bus {dg.bus_idx} would be "
+            f"invisibly absorbed by the ideal ext_grid source"
+        )
+    print(f"  get_14bus(): {len(net.dg_buses)} DG buses, none on condenser "
+          f"buses {condenser_buses_1indexed} or slack bus {slack_bus_1indexed}")
 
 
 def test_idmt_relay():
@@ -358,6 +544,13 @@ def run_all_tests():
         test_relay_bus_survives_apply_pv_penetration_and_copy,
         test_relay_bus_mapping_fallback_paths,
         test_ensure_feasible_ps_bounds,
+        test_relay_graph_matches_powerflow_graph,
+        test_39bus_full_bus_coverage,
+        test_generator_buses_have_relays,
+        test_39bus_ps_bounds_and_n1_after_expansion,
+        test_reduced_variant_preserved,
+        test_topology_fingerprint_changes_with_topology,
+        test_14bus_dg_placement_excludes_condensers_and_slack,
         test_idmt_relay,
         test_idmt_relay_enforces_floor_and_ceiling,
         test_objective_function,
