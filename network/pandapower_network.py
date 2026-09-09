@@ -260,6 +260,25 @@ class PandapowerNetwork:
             # calibrated against real system demand (see the line-model
             # else-branch's identical caveat above); kept for systems
             # without a line_data source.
+            #
+            # get_relay_bus(i) is a legitimate many-to-one mapping -- any
+            # bus with more than one incident line has more than one
+            # relay on it. Iload_max[i] rates that specific relay's own
+            # outgoing branch's protection pickup, so several relays at
+            # one bus are independent measurements of the SAME bus's
+            # approximate load-current scale, not additive independent
+            # loads. Previously this loop called pp.create_load() once
+            # per relay, so pandapower's per-bus aggregation summed those
+            # measurements and multiplied a bus's load by however many
+            # relays/lines happened to converge there (verified: 3 of
+            # 8bus's 8 buses were triple-counted this way, producing
+            # 17.99/20.58/22.86 MW there vs 4.27-9.14 MW at single-relay
+            # buses, which alone was enough to push max line loading to
+            # 865-886%). Aggregate by bus first -- using max() across a
+            # bus's relays as the defensible reading of "this bus's
+            # approximate load current, per whichever relay's rating is
+            # largest" -- so exactly one load row is created per bus.
+            bus_p_mw: dict = {}
             for i in range(self.net_data.n_relays):
                 # Real bus this relay is located at (from its RelayPair's
                 # bus_pri/bus_bkp) — the previous placeholder
@@ -274,12 +293,22 @@ class PandapowerNetwork:
                 # divisor left the kV->V conversion undone, undersizing
                 # every load by 1000x.
                 p_mw = self.net_data.Iload_max[i] * self.net_data.base_voltage * 1.732 / 1e3  # 3-phase
+                if 0 <= bus_idx < self.net_data.n_buses:
+                    bus_p_mw[bus_idx] = max(bus_p_mw.get(bus_idx, 0.0), p_mw)
+
+            for bus_idx, p_mw in bus_p_mw.items():
+                p_load = p_mw * 0.8  # 0.8 pf
+                q_load = p_mw * 0.6
+                if not (p_load or q_load):
+                    # Mirrors the real-load-data branch above, which skips
+                    # rows whose p_mw/q_mvar both round to zero.
+                    continue
                 pp.create_load(
                     net,
                     bus=bus_map[bus_idx],
-                    p_mw=p_mw * 0.8,  # 0.8 pf
-                    q_mvar=p_mw * 0.6,
-                    name=f"Load_R{i}"
+                    p_mw=p_load,
+                    q_mvar=q_load,
+                    name=f"Load_Bus{bus_idx + 1}",
                 )
 
         # Add DG/PV generators. Assumes dg.p_mw is the DG's full RATED
