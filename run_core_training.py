@@ -624,8 +624,20 @@ def _run_pool(jobs, worker_fn, n_workers, initializer=None, initargs=()):
         # (possibly None/()) travel as its initargs tuple.
         with mp.Pool(n_workers, initializer=_combined_worker_init,
                      initargs=(initializer, initargs)) as pool:
-            for job, result in pool.imap_unordered(worker_fn, jobs):
-                yield job, result
+            # Yield each worker_fn(job) return value exactly as returned --
+            # do NOT unpack/repack it into a fixed (job, result) 2-tuple.
+            # Real bug, caught live on an actual campaign run: most worker
+            # functions here return a 2-tuple, but Core B's post-split
+            # _core_B_job returns (run_idx, variant, result) -- a 3-tuple.
+            # The old `for job, result in pool.imap_unordered(...): yield
+            # job, result` line unconditionally unpacked into exactly 2
+            # names, raising "ValueError: too many values to unpack" the
+            # instant Core B ran with n_workers>1, a path never exercised
+            # by this session's local tests (RAM-gated) until this pod.
+            # The sequential branch below never had this bug -- it just
+            # yields worker_fn(job) untouched -- so mirror that here.
+            for result in pool.imap_unordered(worker_fn, jobs):
+                yield result
     else:
         if initializer is not None:
             initializer(*initargs)
