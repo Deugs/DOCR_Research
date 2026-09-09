@@ -215,7 +215,16 @@ class NetworkData:
         constructors (see _uses_distinct_bus_convention) — so this
         picks the correct identification strategy for whichever
         convention the current network actually uses.
+
+        When real branch data IS available (line_data["lines"] -- 8bus,
+        14bus and 39bus), that table is authoritative: it lists the
+        network's actual branches, so no convention-based inference from
+        RelayPair indices is needed or wanted. The inference paths below
+        remain for the networks that have no line_data (3bus, 30bus,
+        57bus, 118bus).
         """
+        if self.line_data and self.line_data.get("lines"):
+            return max(len(self.line_data["lines"]), 1)
         if self._uses_distinct_bus_convention:
             edges = {tuple(sorted((p.bus_pri, p.bus_bkp))) for p in self.pairs}
         else:
@@ -248,10 +257,40 @@ class NetworkData:
         specific (relay_index, bus) combination, and affected pairs are
         those where the OUTAGED relay participates as primary or backup.
 
+        Real-branch path: when line_data["lines"] is present AND the relay
+        graph was generated from that same branch table (n_relays ==
+        2 * n_branches, i.e. the relay 2k / 2k+1 = from/to end of branch k
+        convention every line-based constructor uses), `line_idx` outages
+        that REAL branch and rescales the fault currents of its two
+        directional relays' pairs — a genuine single-branch contingency
+        instead of a convention-derived proxy. This is what get_14bus()
+        and get_39bus() take. get_39bus_reduced() deliberately does not
+        (its 46 relays don't index the 46-branch line_data table), so it
+        falls through to the junction-bus path below and keeps its
+        original pre-unification behavior.
+
         Returns the outage_factor so callers can report how severe the
         applied contingency was (useful for sanity-checking Fig 14 output).
         """
         from environment.topology_manager import TopologyManager
+
+        branches = (self.line_data or {}).get("lines") or []
+        if branches and self.n_relays == 2 * len(branches):
+            k = int(line_idx) % len(branches)
+            outaged_relays = {2 * k, 2 * k + 1}
+
+            tm = TopologyManager(n_buses=self.n_buses, n_lines=len(branches))
+            tm.apply_n1_outage("line", k)
+            outage_factor = tm.get_outage_factor()
+
+            new_net = self.copy()
+            for p in new_net.pairs:
+                if p.primary in outaged_relays or p.backup in outaged_relays:
+                    # Fewer parallel paths -> lower fault current seen by
+                    # relays electrically adjacent to the removed branch.
+                    p.If_pri *= outage_factor
+                    p.If_bkp *= outage_factor
+            return new_net, outage_factor
 
         distinct_convention = self._uses_distinct_bus_convention
 
@@ -299,6 +338,82 @@ class NetworkData:
                 p.If_bkp *= outage_factor
 
         return new_net, outage_factor
+
+    def topology_fingerprint(self) -> str:
+        """
+        Short, stable hash of this network's STRUCTURAL identity.
+
+        Covers bus/relay/pair counts, base_voltage, plus either the real
+        branch table (line_data["lines"]: from/to/r/x/mva_limit, when
+        present) or the sorted (primary_bus, backup_bus) pair list. Every
+        float is rounded to 6 decimals and the representation is fully
+        sorted before hashing, so the same topology yields the same
+        fingerprint across runs, processes and platforms (no dict
+        ordering, no repr of raw binary floats, no PYTHONHASHSEED
+        dependence).
+
+        base_voltage is included deliberately, not just relay/branch
+        topology: get_8bus()'s base_voltage changed 11.0 -> 150.0 when it
+        gained real line_data, and environment/dynamic_network.py derives
+        PV fault-current contribution and MARL-visible currents directly
+        from base_voltage (P = sqrt(3)*V*I), so this is a structural
+        change even though relay/pair counts for 8bus didn't move --
+        without this field, a cached 8bus policy would still read as a
+        cache hit after this change despite training against different
+        PV-current magnitudes.
+
+        Deliberately excludes `name`, fault currents and PS bounds (those
+        are per-relay tuning outputs derived FROM the structure captured
+        here, not independent structure) -- but DOES include DG/PV bus
+        placement and rated capacity, since a relocation like get_14bus()'s
+        PV-off-the-slack-bus fix changes what a trained policy actually
+        observed/optimized against even when relay/pair/branch topology is
+        identical. The intended consumer is CacheManager._compute_key() in
+        run_core_training.py, which hashes only the config dict and would
+        otherwise return a policy trained on a DIFFERENT topology or DG
+        placement as a valid cache "hit" after a change. get_39bus() and
+        get_39bus_reduced() fingerprint differently (92/86 relays/pairs vs
+        46/42); get_14bus() before/after its PV relocation also fingerprints
+        differently even though its relay/pair/branch topology didn't move.
+        """
+        import hashlib
+
+        parts: List[str] = [
+            f"n_buses={int(self.n_buses)}",
+            f"n_relays={int(self.n_relays)}",
+            f"n_pairs={int(self.n_pairs)}",
+            f"base_voltage={round(float(self.base_voltage), 6)}",
+        ]
+        dg_rows = sorted(
+            (
+                int(dg.bus_idx), round(float(dg.p_mw), 6),
+                round(float(dg.q_mvar), 6), bool(dg.always_on),
+            )
+            for dg in self.dg_buses
+        )
+        parts.append("dg=" + ";".join(
+            f"{bus}:{p:.6f}:{q:.6f}:{ao}" for bus, p, q, ao in dg_rows
+        ))
+        branches = (self.line_data or {}).get("lines") or []
+        if branches:
+            rows = sorted(
+                (
+                    int(ln["from_bus"]), int(ln["to_bus"]),
+                    round(float(ln["r_pu"]), 6), round(float(ln["x_pu"]), 6),
+                    round(float(ln.get("mva_limit", 0.0)), 6),
+                )
+                for ln in branches
+            )
+            parts.append("branches=" + ";".join(
+                f"{fb}-{tb}:{r:.6f}:{x:.6f}:{mva:.6f}" for fb, tb, r, x, mva in rows
+            ))
+        else:
+            bus_pairs = sorted(
+                (int(p.bus_pri), int(p.bus_bkp)) for p in self.pairs
+            )
+            parts.append("pairs=" + ";".join(f"{a}-{b}" for a, b in bus_pairs))
+        canonical = "|".join(parts)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def _ensure_feasible_ps_bounds(If_min: np.ndarray, Iload_max: np.ndarray,
@@ -411,10 +526,133 @@ def get_8bus() -> NetworkData:
         DGConfig(bus_idx=7, p_mw=1.0, pv_penetration=0.0, inverter_model="simplified_linear_frt"),
     ]
 
+    # ── Real power-flow topology (line_data) ──────────────────────────────
+    # Two DIFFERENT structures coexist for this system, deliberately, and
+    # following the precedent already set for 39bus (see
+    # _39BUS_FULL_BRANCHES' note):
+    #   * the RelayPair graph above (14 relays / 20 pairs) is the
+    #     COORDINATION scheme -- untouched here, it is what every cached
+    #     8bus Core result was trained against;
+    #   * line_data below is the REAL 7-line power-flow topology of the
+    #     published 8-bus system, used only by PandapowerNetwork.
+    # A third, 11-edge drawing exists in phase1_scripts/exp_fig03.py's
+    # Figure 3; it matches neither and is a figure-only artifact.
+    #
+    # Source (verified against this function's existing relay/fault-current
+    # data, which it reproduces exactly): Rajput & Pandya, "On 8-Bus Test
+    # System for Solving Challenges in Relay Coordination", IEEE 2016,
+    # Tables II-V -- Case-1 network data with Case-2's external-grid link
+    # (Birla, Maheshwari & Gupta lineage).
+    #
+    # Per-unit conversion, 100 MVA base (this file's convention -- same
+    # base_mva as get_14bus()/get_39bus()) and 150 kV line voltage:
+    #   Zbase = 150^2 / 100 = 225 ohm; r_pu = R_total/225, x_pu = X_total/225
+    #   with R_total/X_total = (ohm/km) * length(km) from Table II:
+    #     1-2: 0.400/5.000 (100 km)   1-3: 0.399/4.998 (70 km)
+    #     3-4: 0.400/4.504 (80 km)    4-5: 0.500/4.500 (100 km)
+    #     5-6: 0.495/4.499 (110 km)   2-6: 0.396/4.500 (90 km)
+    #     1-6: 0.500/5.000 (100 km)
+    # Shunt susceptance is zero for every line in the source (short-line
+    # model, no line charging) -> b_pu = 0.0.
+    #
+    # Transformer branches 1<->7 and 6<->8 (150 MVA, 10 kV generator side /
+    # 150 kV network side, x = 4% on the transformer's own 150 MVA base):
+    #   x_pu(100 MVA base) = 0.04 * (100/150) = 0.0266667, r not published
+    #   -> 0.0. mva_limit = 150 is the transformer's own rating, which
+    #   PandapowerNetwork reverses back into vk_percent = 4% exactly.
+    #   `ratio = 1.0` marks these as transformer branches (same convention
+    #   as get_39bus()'s tap column); the HV/network bus is written first
+    #   because _build_network() maps from_bus -> hv_bus. This codebase's
+    #   pandapower model gives every bus the single `base_voltage`, so the
+    #   10 kV generator terminals are modeled at 150 kV with a
+    #   unity-ratio transformer -- the series impedance (what power flow
+    #   actually needs) is exact; the 10 kV terminal voltage level itself
+    #   is not represented. The two generators behind them (bus 7 and bus
+    #   8, each 150 MVA, x = 15% -> 0.1 pu on 100 MVA base) are likewise
+    #   NOT added as power-flow sources here: this system's stiff source
+    #   is the external grid at bus 4 (below), and adding generators is a
+    #   separate, deliberate scope decision.
+    #
+    # KNOWN GAP -- mva_limit is an ENGINEERING ESTIMATE, not sourced.
+    # Neither source paper publishes a thermal rating (both are relay-
+    # coordination studies giving impedance and length only). 155.9 MVA
+    # = sqrt(3) * 150 kV * 0.6 kA is a round, mid-range value for a
+    # 150 kV subtransmission overhead line of this era/region (commonly
+    # cited conductor ampacities span roughly 400-800 A), applied
+    # uniformly because no source differentiates conductor size per line.
+    # Any loading-percent result computed from it inherits that
+    # uncertainty; "data_provenance" below records this machine-readably
+    # so downstream disclosure tooling can flag it without re-reading
+    # this comment.
+    line_data = {
+        "lines": [
+            # from, to, r_pu, x_pu, b_pu, mva_limit, ratio
+            {"from_bus": 1, "to_bus": 2, "r_pu": 0.0017778, "x_pu": 0.0222222,
+             "b_pu": 0.0, "mva_limit": 155.9, "ratio": 0.0},
+            {"from_bus": 1, "to_bus": 3, "r_pu": 0.0017733, "x_pu": 0.0222133,
+             "b_pu": 0.0, "mva_limit": 155.9, "ratio": 0.0},
+            {"from_bus": 3, "to_bus": 4, "r_pu": 0.0017778, "x_pu": 0.0200178,
+             "b_pu": 0.0, "mva_limit": 155.9, "ratio": 0.0},
+            {"from_bus": 4, "to_bus": 5, "r_pu": 0.0022222, "x_pu": 0.0200000,
+             "b_pu": 0.0, "mva_limit": 155.9, "ratio": 0.0},
+            {"from_bus": 5, "to_bus": 6, "r_pu": 0.0022000, "x_pu": 0.0199956,
+             "b_pu": 0.0, "mva_limit": 155.9, "ratio": 0.0},
+            {"from_bus": 2, "to_bus": 6, "r_pu": 0.0017600, "x_pu": 0.0200000,
+             "b_pu": 0.0, "mva_limit": 155.9, "ratio": 0.0},
+            {"from_bus": 1, "to_bus": 6, "r_pu": 0.0022222, "x_pu": 0.0222222,
+             "b_pu": 0.0, "mva_limit": 155.9, "ratio": 0.0},
+            # Generator step-up transformers (ratio != 0 -> transformer branch)
+            {"from_bus": 1, "to_bus": 7, "r_pu": 0.0, "x_pu": 0.0266667,
+             "b_pu": 0.0, "mva_limit": 150.0, "ratio": 1.0},
+            {"from_bus": 6, "to_bus": 8, "r_pu": 0.0, "x_pu": 0.0266667,
+             "b_pu": 0.0, "mva_limit": 150.0, "ratio": 1.0},
+        ],
+        # Table IV: only buses 2/3/4/5 carry load; buses 1, 6, 7, 8 carry
+        # none. Total 240 MW / 150 MVAr.
+        "loads": [
+            {"bus": 2, "p_mw": 40.0, "q_mvar": 20.0},
+            {"bus": 3, "p_mw": 60.0, "q_mvar": 40.0},
+            {"bus": 4, "p_mw": 70.0, "q_mvar": 40.0},
+            {"bus": 5, "p_mw": 70.0, "q_mvar": 50.0},
+        ],
+        # Case-2's external grid (400 MVA short-circuit capacity) sits at
+        # bus 4, and the existing relay/fault-current data above matches
+        # that Case-2 variant -- so bus 4, not the default bus 1, is this
+        # system's stiff source point.
+        "slack_bus": 4,
+        # Machine-readable provenance so downstream consumers can separate
+        # cited data from estimates without parsing comments.
+        "data_provenance": {
+            "lines": "cited_verified",       # impedance + length, Table II
+            "loads": "cited_verified",       # Table IV
+            "transformers": "cited_verified",  # Table III/V ratings + x%
+            "mva_limit": "engineering_estimate",  # NOT in either source
+            "source": (
+                "Rajput & Pandya, 'On 8-Bus Test System for Solving Challenges "
+                "in Relay Coordination', IEEE 2016, Tables II-V (Case-1 data "
+                "with Case-2 external-grid link); Birla, Maheshwari & Gupta "
+                "lineage"
+            ),
+            "mva_limit_note": (
+                "155.9 MVA = sqrt(3)*150kV*0.6kA, a disclosed mid-range "
+                "estimate for a 150 kV subtransmission overhead line; no "
+                "thermal rating is published in either source paper"
+            ),
+            "loading_percent_calibrated": False,
+        },
+    }
+
     return NetworkData(
         "IEEE-8Bus", 14, pairs, Iload_max, If_min,
-        n_buses=8, base_voltage=11.0, base_mva=100.0,
-        dg_buses=dg_buses
+        # base_voltage is 150 kV: the 7-line network operates at 150 kV per
+        # the source above, not the 11 kV this field previously assumed
+        # (an uncited placeholder that, combined with the generic
+        # low-voltage cable fallback in PandapowerNetwork, produced the
+        # 865-886% line loadings reported by exp_reverse_power_flow.py).
+        # Buses 7/8 are 10 kV generator terminals in the real system; see
+        # line_data's transformer note for how that is (not) represented.
+        n_buses=8, base_voltage=150.0, base_mva=100.0,
+        dg_buses=dg_buses, line_data=line_data,
     )
 
 
@@ -513,11 +751,12 @@ def get_30bus() -> NetworkData:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # IEEE 39-BUS  New England Test System
-# 46 directional relays (one per line end), 56 primary/backup pairs
+# 92 directional relays (one per end of all 46 real branches), 86 primary/
+# backup pairs.  All 39 buses carry at least one relay.
 #
 # Topology source: Pai, "Energy Function Analysis for Power System Stability",
-#   Kluwer 1989; line list identical to MATPOWER case39.
-# Relay placement: one relay at each end of every transmission line (standard
+#   Kluwer 1989; branch list identical to MATPOWER case39.
+# Relay placement: one relay at each end of every branch (standard
 #   directional overcurrent protection practice for meshed networks).
 # Fault currents: computed analytically from the standard 345 kV system with
 #   Thevenin impedances scaled from the MATPOWER bus/line data (r+jx in pu,
@@ -530,58 +769,147 @@ def get_30bus() -> NetworkData:
 # If_min: minimum fault current = 60% of three-phase maximum (accounts for
 #   line-end fault and system minimum generation dispatch).
 #
-# 39-bus line list (from-bus, to-bus, r pu, x pu, MVA limit):
-#   The 46 relay indices follow the ordering: relay 2k   → from-bus end of line k
-#                                              relay 2k+1 → to-bus   end of line k
-#   for k = 0 … 22  (23 lines), then the remaining bus-coupler lines 23-45.
+# Relay indexing: relay 2k   → from-bus end of branch k
+#                 relay 2k+1 → to-bus   end of branch k
+#   for k = 0 … 45 over _39BUS_FULL_BRANCHES below (34 transmission lines +
+#   12 transformer branches = 46 branches → 92 relays).
 # ─────────────────────────────────────────────────────────────────────────────
-def get_39bus() -> NetworkData:
-    """
-    IEEE 39-Bus New England Test System.
-    46 directional relays (2 per line), 56 primary/backup pairs.
 
-    Relay pair data derived deterministically from the standard IEEE 39-bus
-    line topology and Thevenin-based short-circuit calculations.  No random
-    generation is used; all values are reproducible from published network data.
+# ── The complete, authoritative 39-bus branch list ───────────────────────────
+# (from_bus, to_bus, r_pu, x_pu, b_pu, mva_limit, ratio); 1-indexed buses,
+# 100 MVA / 345 kV base.
+# Source: https://github.com/MATPOWER/matpower/blob/master/data/case39.m
+#
+# This single table is the source of truth for BOTH the relay/pair graph
+# (via the 5-tuple view get_39bus() derives from it, dropping `b_pu`/`ratio`)
+# AND PandapowerNetwork's power-flow model (via line_data, which is the only
+# consumer of `b_pu`/`ratio`).
+#
+# History — why the two graphs are now unified: relay/pair construction used
+# to run off a separate, abbreviated 23-line list, and a comment here used to
+# assert that split was deliberate and must not be changed (to protect
+# already-cached n_relays=46 results). That rationale was inverted: the
+# abbreviated relay graph left 17 of the 39 buses — including ALL 10 real
+# generator buses (30-39) — with zero relay and therefore zero N-1 coverage,
+# so Core G's "N-1 contingency on 39-bus" sweep could never outage a single
+# generator-connected branch, and the system's protection graph described a
+# different network than the one power flow was solved on. Relay placement
+# now derives from this same full branch list, giving 92 relays / 86 pairs
+# with all 39 buses covered. The old abbreviated graph is preserved verbatim
+# as get_39bus_reduced() ("39bus_reduced" in NETWORKS) so the previously
+# published reduced-graph results stay reproducible and citable as a named
+# provenance variant.
+#
+# The 7th column is MATPOWER's tap `ratio` -- 0.0 for a plain line, a nonzero
+# value (including exactly 1.0, a unity-ratio isolation transformer) marks a
+# transformer branch. pandapower's Newton-Raphson solver is numerically
+# ill-conditioned by these branches' near-zero series resistance when modeled
+# as plain lines (confirmed via pp.diagnostic() -- see PandapowerNetwork.
+# _build_network()'s transformer-branch handling), so they need
+# pp.create_transformer_from_parameters, not create_line_from_parameters.
+_39BUS_FULL_BRANCHES: List[Tuple] = [
+    (1, 2, 0.0035, 0.0411, 0.6987, 600, 0.0), (1, 39, 0.0010, 0.0250, 0.7500, 1000, 0.0),
+    (2, 3, 0.0013, 0.0151, 0.2572, 500, 0.0), (2, 25, 0.0070, 0.0086, 0.1460, 500, 0.0),
+    (2, 30, 0.0000, 0.0181, 0.0000, 900, 1.025), (3, 4, 0.0013, 0.0213, 0.2214, 500, 0.0),
+    (3, 18, 0.0011, 0.0133, 0.2138, 500, 0.0), (4, 5, 0.0008, 0.0128, 0.1342, 600, 0.0),
+    (4, 14, 0.0008, 0.0129, 0.1382, 500, 0.0), (5, 6, 0.0002, 0.0026, 0.0434, 1200, 0.0),
+    (5, 8, 0.0008, 0.0112, 0.1476, 900, 0.0), (6, 7, 0.0006, 0.0092, 0.1130, 900, 0.0),
+    (6, 11, 0.0007, 0.0082, 0.1389, 480, 0.0), (6, 31, 0.0000, 0.0250, 0.0000, 1800, 1.07),
+    (7, 8, 0.0004, 0.0046, 0.0780, 900, 0.0), (8, 9, 0.0023, 0.0363, 0.3804, 900, 0.0),
+    (9, 39, 0.0010, 0.0250, 1.2000, 900, 0.0), (10, 11, 0.0004, 0.0043, 0.0729, 600, 0.0),
+    (10, 13, 0.0004, 0.0043, 0.0729, 600, 0.0), (10, 32, 0.0000, 0.0200, 0.0000, 900, 1.07),
+    (12, 11, 0.0016, 0.0435, 0.0000, 500, 1.006), (12, 13, 0.0016, 0.0435, 0.0000, 500, 1.006),
+    (13, 14, 0.0009, 0.0101, 0.1723, 600, 0.0), (14, 15, 0.0018, 0.0217, 0.3660, 600, 0.0),
+    (15, 16, 0.0009, 0.0094, 0.1710, 600, 0.0), (16, 17, 0.0007, 0.0089, 0.1342, 600, 0.0),
+    (16, 19, 0.0016, 0.0195, 0.3040, 600, 0.0), (16, 21, 0.0008, 0.0135, 0.2548, 600, 0.0),
+    (16, 24, 0.0003, 0.0059, 0.0680, 600, 0.0), (17, 18, 0.0007, 0.0082, 0.1319, 600, 0.0),
+    (17, 27, 0.0013, 0.0173, 0.3216, 600, 0.0), (19, 20, 0.0007, 0.0138, 0.0000, 900, 1.06),
+    (19, 33, 0.0007, 0.0142, 0.0000, 900, 1.07), (20, 34, 0.0009, 0.0180, 0.0000, 900, 1.009),
+    (21, 22, 0.0008, 0.0140, 0.2565, 900, 0.0), (22, 23, 0.0006, 0.0096, 0.1846, 600, 0.0),
+    (22, 35, 0.0000, 0.0143, 0.0000, 900, 1.025), (23, 24, 0.0022, 0.0350, 0.3610, 600, 0.0),
+    (23, 36, 0.0005, 0.0272, 0.0000, 900, 1.0), (25, 26, 0.0032, 0.0323, 0.5310, 600, 0.0),
+    (25, 37, 0.0006, 0.0232, 0.0000, 900, 1.025), (26, 27, 0.0014, 0.0147, 0.2396, 600, 0.0),
+    (26, 28, 0.0043, 0.0474, 0.7802, 600, 0.0), (26, 29, 0.0057, 0.0625, 1.0290, 600, 0.0),
+    (28, 29, 0.0014, 0.0151, 0.2490, 600, 0.0), (29, 38, 0.0008, 0.0156, 0.0000, 1200, 1.025),
+]
+
+# Real per-bus loads (MATPOWER case39.m mpc.bus Pd/Qd columns). An earlier
+# hand-derived list had transcription errors relative to the authoritative
+# source (bus 1: 0 -> actually 97.6 MW; bus 9: 0 -> actually 6.5/-66.6;
+# bus 20: 628 -> actually 680) -- corrected below.
+_39BUS_REAL_LOADS: List[Tuple] = [
+    (1, 97.6, 44.2), (2, 0.0, 0.0), (3, 322.0, 2.4), (4, 500.0, 184.0),
+    (5, 0.0, 0.0), (6, 0.0, 0.0), (7, 233.8, 84.0), (8, 522.0, 176.6),
+    (9, 6.5, -66.6), (10, 0.0, 0.0), (11, 0.0, 0.0), (12, 8.53, 88.0),
+    (13, 0.0, 0.0), (14, 0.0, 0.0), (15, 320.0, 153.0), (16, 329.0, 32.3),
+    (17, 0.0, 0.0), (18, 158.0, 30.0), (19, 0.0, 0.0), (20, 680.0, 103.0),
+    (21, 274.0, 115.0), (22, 0.0, 0.0), (23, 247.5, 84.6), (24, 308.6, -92.2),
+    (25, 224.0, 47.2), (26, 139.0, 17.0), (27, 281.0, 75.5), (28, 206.0, 27.6),
+    (29, 283.5, 26.9), (30, 0.0, 0.0), (31, 9.2, 4.6), (32, 0.0, 0.0),
+    (33, 0.0, 0.0), (34, 0.0, 0.0), (35, 0.0, 0.0), (36, 0.0, 0.0),
+    (37, 0.0, 0.0), (38, 0.0, 0.0), (39, 1104.0, 250.0),
+]
+
+# ── Provenance-only: the abbreviated 23-line relay graph ─────────────────────
+# (from_bus, to_bus, r_pu, x_pu, mva_limit)
+# This is the graph get_39bus() used to build relays/pairs from (46 relays,
+# 42 pairs, 22 of 39 buses covered). It is kept ONLY so
+# get_39bus_reduced() can reproduce the already-published reduced-graph
+# results bit-for-bit; new work should use get_39bus(). Note its MVA limits
+# also differ from the authoritative table above for a few branches (e.g.
+# 1-39: 900 here vs 1000 in case39.m), which is part of why the two graphs
+# are not interchangeable.
+_39BUS_REDUCED_BRANCHES: List[Tuple] = [
+    #  from  to      r       x      MVA     (line_idx)
+    (  1,  2, 0.0035, 0.0411,  600),   #  0  R0,R1
+    (  1, 39, 0.0010, 0.0250,  900),   #  1  R2,R3
+    (  2,  3, 0.0013, 0.0151,  500),   #  2  R4,R5
+    (  2, 25, 0.0070, 0.0086,  500),   #  3  R6,R7
+    (  3,  4, 0.0013, 0.0213,  500),   #  4  R8,R9
+    (  3, 18, 0.0011, 0.0133,  500),   #  5  R10,R11
+    (  4,  5, 0.0008, 0.0128,  600),   #  6  R12,R13
+    (  4, 14, 0.0008, 0.0129,  500),   #  7  R14,R15
+    (  5,  6, 0.0002, 0.0026,  900),   #  8  R16,R17
+    (  5,  8, 0.0008, 0.0112,  900),   #  9  R18,R19
+    (  6,  7, 0.0006, 0.0092,  600),   # 10  R20,R21
+    (  6, 11, 0.0007, 0.0082,  600),   # 11  R22,R23
+    (  7,  8, 0.0004, 0.0046,  600),   # 12  R24,R25
+    (  8,  9, 0.0023, 0.0363,  600),   # 13  R26,R27
+    ( 10, 11, 0.0004, 0.0043,  600),   # 14  R28,R29
+    ( 10, 13, 0.0004, 0.0043,  600),   # 15  R30,R31
+    ( 13, 14, 0.0009, 0.0101,  600),   # 16  R32,R33
+    ( 14, 15, 0.0018, 0.0217,  600),   # 17  R34,R35
+    ( 15, 16, 0.0009, 0.0094,  600),   # 18  R36,R37
+    ( 16, 17, 0.0007, 0.0089,  600),   # 19  R38,R39
+    ( 16, 19, 0.0016, 0.0195,  600),   # 20  R40,R41
+    ( 16, 21, 0.0008, 0.0135,  600),   # 21  R42,R43
+    ( 16, 24, 0.0003, 0.0059,  600),   # 22  R44,R45
+]
+
+
+def _build_39bus(relay_branches: List[Tuple], name: str = "IEEE-39Bus",
+                  label: str = "get_39bus") -> NetworkData:
+    """
+    Shared builder for the 39-bus system.
+
+    `relay_branches` is the (from_bus, to_bus, r_pu, x_pu, mva_limit) list the
+    relay/pair graph is built from — the full 46-branch topology for
+    get_39bus(), or the abbreviated 23-line list for get_39bus_reduced().
+    Everything else (fault-current model, generator/PV data, and the
+    line_data table handed to PandapowerNetwork) is identical either way:
+    line_data is always built from _39BUS_FULL_BRANCHES / _39BUS_REAL_LOADS,
+    so power-flow behavior does not depend on which relay graph is chosen.
+    `name` is the NetworkData name; `label` only names the caller in
+    _ensure_feasible_ps_bounds()'s warning text.
 
     Reference:
         Pai, M.A. (1989). Energy Function Analysis for Power System Stability.
         Kluwer Academic Publishers.  Line data identical to MATPOWER case39.
     """
-    # ── IEEE 39-bus line list ─────────────────────────────────────────────────
-    # (from_bus, to_bus, r_pu, x_pu, mva_limit)
-    # Bus numbering: 1-indexed as per standard; relay index = 2*line_idx for
-    # from-bus relay, 2*line_idx+1 for to-bus relay.
-    # Base: 100 MVA, 345 kV
-    lines = [
-        #  from  to      r       x      MVA     (line_idx)
-        (  1,  2, 0.0035, 0.0411,  600),   #  0  R0,R1
-        (  1, 39, 0.0010, 0.0250,  900),   #  1  R2,R3
-        (  2,  3, 0.0013, 0.0151,  500),   #  2  R4,R5
-        (  2, 25, 0.0070, 0.0086,  500),   #  3  R6,R7
-        (  3,  4, 0.0013, 0.0213,  500),   #  4  R8,R9
-        (  3, 18, 0.0011, 0.0133,  500),   #  5  R10,R11
-        (  4,  5, 0.0008, 0.0128,  600),   #  6  R12,R13
-        (  4, 14, 0.0008, 0.0129,  500),   #  7  R14,R15
-        (  5,  6, 0.0002, 0.0026,  900),   #  8  R16,R17
-        (  5,  8, 0.0008, 0.0112,  900),   #  9  R18,R19
-        (  6,  7, 0.0006, 0.0092,  600),   # 10  R20,R21
-        (  6, 11, 0.0007, 0.0082,  600),   # 11  R22,R23
-        (  7,  8, 0.0004, 0.0046,  600),   # 12  R24,R25
-        (  8,  9, 0.0023, 0.0363,  600),   # 13  R26,R27
-        ( 10, 11, 0.0004, 0.0043,  600),   # 14  R28,R29
-        ( 10, 13, 0.0004, 0.0043,  600),   # 15  R30,R31
-        ( 13, 14, 0.0009, 0.0101,  600),   # 16  R32,R33
-        ( 14, 15, 0.0018, 0.0217,  600),   # 17  R34,R35
-        ( 15, 16, 0.0009, 0.0094,  600),   # 18  R36,R37
-        ( 16, 17, 0.0007, 0.0089,  600),   # 19  R38,R39
-        ( 16, 19, 0.0016, 0.0195,  600),   # 20  R40,R41
-        ( 16, 21, 0.0008, 0.0135,  600),   # 21  R42,R43
-        ( 16, 24, 0.0003, 0.0059,  600),   # 22  R44,R45
-    ]
+    lines = list(relay_branches)
     # n_relays = 2 * n_lines
     n_lines  = len(lines)
-    n_relays = 2 * n_lines   # = 46
+    n_relays = 2 * n_lines   # 92 for the full graph, 46 for the reduced one
 
     # ── Base voltage and current ──────────────────────────────────────────────
     V_base_kv  = 345.0          # kV
@@ -690,8 +1018,10 @@ def get_39bus() -> NetworkData:
                                  If_line[k] * 0.55)
                 raw_pairs.append((r_to, r_from_j, If_pri_val, If_bkp_val, tb, fb_j))
 
-    # Deduplicate and cap to a representative subset (thesis typically uses ~56 pairs
-    # for the 39-bus; keep all unique pairs up to that count)
+    # Deduplicate: keep every unique (primary, backup) relay pair produced
+    # above. No cap is applied (an earlier comment here claimed a "~56 pair"
+    # target; the code never capped anything and the reduced graph actually
+    # yielded 42). The full 46-branch graph yields 86 pairs.
     seen = set()
     pairs: List[RelayPair] = []
     for pri, bkp, ip, ib, bp, bb in raw_pairs:
@@ -742,7 +1072,7 @@ def get_39bus() -> NetworkData:
     # ── Genuine distributed PV: small additions at a few major load buses,
     # scaled 0-60% by pv_penetration (unlike the base generators above).
     # Sized at ~10% of each bus's real load -- matching get_14bus()'s DG
-    # total (27.24 MW) relative to its system load (~259 MW), the same
+    # total (~27.2 MW) relative to its system load (~259 MW), the same
     # ~10.5% ratio -- so the PV sweep represents a comparable relative
     # penetration level here to the other active-scope systems, not an
     # arbitrary transmission-scale number. Deliberately load-only buses
@@ -759,72 +1089,19 @@ def get_39bus() -> NetworkData:
         for b, p in pv_dg_data
     ]
 
-    If_min = _ensure_feasible_ps_bounds(If_min, Iload_max, "get_39bus")
+    If_min = _ensure_feasible_ps_bounds(If_min, Iload_max, label)
 
     # PandapowerNetwork._build_network() needs a fully-CONNECTED,
-    # fully-accurate topology to solve real power flow (see
-    # get_14bus()'s identical comment for the general rationale). The
-    # abbreviated 23-line `lines` list above is deliberately kept as-is
-    # for relay-pair generation (n_relays=46, matching every other Core's
-    # cached 39bus result already generated this session) -- changing it
-    # would double n_relays and invalidate all of that. Instead,
-    # line_data below carries the COMPLETE, separate 46-branch topology
-    # (verified against MATPOWER's actual case39.m, not hand-recalled --
-    # the abbreviated 23-line list above turned out to leave 17 of 39
-    # buses, including most of the generator buses, with no connection
-    # to the rest of the network at all) plus the real per-bus loads and
-    # generator dispatch, for pandapower's power-flow use only.
-    # Source: https://github.com/MATPOWER/matpower/blob/master/data/case39.m
-    # 7th column is MATPOWER's tap `ratio` -- 0.0 for a plain line, a
-    # nonzero value (including exactly 1.0, a unity-ratio isolation
-    # transformer) marks a transformer branch. pandapower's Newton-
-    # Raphson solver is numerically ill-conditioned by these branches'
-    # near-zero series resistance when modeled as plain lines (confirmed
-    # via pp.diagnostic() -- see PandapowerNetwork._build_network()'s
-    # transformer-branch handling below), so they need pp.create_
-    # transformer_from_parameters, not create_line_from_parameters.
-    full_branches = [
-        (1, 2, 0.0035, 0.0411, 0.6987, 600, 0.0), (1, 39, 0.0010, 0.0250, 0.7500, 1000, 0.0),
-        (2, 3, 0.0013, 0.0151, 0.2572, 500, 0.0), (2, 25, 0.0070, 0.0086, 0.1460, 500, 0.0),
-        (2, 30, 0.0000, 0.0181, 0.0000, 900, 1.025), (3, 4, 0.0013, 0.0213, 0.2214, 500, 0.0),
-        (3, 18, 0.0011, 0.0133, 0.2138, 500, 0.0), (4, 5, 0.0008, 0.0128, 0.1342, 600, 0.0),
-        (4, 14, 0.0008, 0.0129, 0.1382, 500, 0.0), (5, 6, 0.0002, 0.0026, 0.0434, 1200, 0.0),
-        (5, 8, 0.0008, 0.0112, 0.1476, 900, 0.0), (6, 7, 0.0006, 0.0092, 0.1130, 900, 0.0),
-        (6, 11, 0.0007, 0.0082, 0.1389, 480, 0.0), (6, 31, 0.0000, 0.0250, 0.0000, 1800, 1.07),
-        (7, 8, 0.0004, 0.0046, 0.0780, 900, 0.0), (8, 9, 0.0023, 0.0363, 0.3804, 900, 0.0),
-        (9, 39, 0.0010, 0.0250, 1.2000, 900, 0.0), (10, 11, 0.0004, 0.0043, 0.0729, 600, 0.0),
-        (10, 13, 0.0004, 0.0043, 0.0729, 600, 0.0), (10, 32, 0.0000, 0.0200, 0.0000, 900, 1.07),
-        (12, 11, 0.0016, 0.0435, 0.0000, 500, 1.006), (12, 13, 0.0016, 0.0435, 0.0000, 500, 1.006),
-        (13, 14, 0.0009, 0.0101, 0.1723, 600, 0.0), (14, 15, 0.0018, 0.0217, 0.3660, 600, 0.0),
-        (15, 16, 0.0009, 0.0094, 0.1710, 600, 0.0), (16, 17, 0.0007, 0.0089, 0.1342, 600, 0.0),
-        (16, 19, 0.0016, 0.0195, 0.3040, 600, 0.0), (16, 21, 0.0008, 0.0135, 0.2548, 600, 0.0),
-        (16, 24, 0.0003, 0.0059, 0.0680, 600, 0.0), (17, 18, 0.0007, 0.0082, 0.1319, 600, 0.0),
-        (17, 27, 0.0013, 0.0173, 0.3216, 600, 0.0), (19, 20, 0.0007, 0.0138, 0.0000, 900, 1.06),
-        (19, 33, 0.0007, 0.0142, 0.0000, 900, 1.07), (20, 34, 0.0009, 0.0180, 0.0000, 900, 1.009),
-        (21, 22, 0.0008, 0.0140, 0.2565, 900, 0.0), (22, 23, 0.0006, 0.0096, 0.1846, 600, 0.0),
-        (22, 35, 0.0000, 0.0143, 0.0000, 900, 1.025), (23, 24, 0.0022, 0.0350, 0.3610, 600, 0.0),
-        (23, 36, 0.0005, 0.0272, 0.0000, 900, 1.0), (25, 26, 0.0032, 0.0323, 0.5310, 600, 0.0),
-        (25, 37, 0.0006, 0.0232, 0.0000, 900, 1.025), (26, 27, 0.0014, 0.0147, 0.2396, 600, 0.0),
-        (26, 28, 0.0043, 0.0474, 0.7802, 600, 0.0), (26, 29, 0.0057, 0.0625, 1.0290, 600, 0.0),
-        (28, 29, 0.0014, 0.0151, 0.2490, 600, 0.0), (29, 38, 0.0008, 0.0156, 0.0000, 1200, 1.025),
-    ]
-
-    # Real per-bus loads (MATPOWER case39.m mpc.bus Pd/Qd columns). The
-    # earlier hand-derived list here had transcription errors relative to
-    # the authoritative source (bus 1: 0 -> actually 97.6 MW; bus 9: 0 ->
-    # actually 6.5/-66.6; bus 20: 628 -> actually 680) -- corrected below.
-    real_loads = [
-        (1, 97.6, 44.2), (2, 0.0, 0.0), (3, 322.0, 2.4), (4, 500.0, 184.0),
-        (5, 0.0, 0.0), (6, 0.0, 0.0), (7, 233.8, 84.0), (8, 522.0, 176.6),
-        (9, 6.5, -66.6), (10, 0.0, 0.0), (11, 0.0, 0.0), (12, 8.53, 88.0),
-        (13, 0.0, 0.0), (14, 0.0, 0.0), (15, 320.0, 153.0), (16, 329.0, 32.3),
-        (17, 0.0, 0.0), (18, 158.0, 30.0), (19, 0.0, 0.0), (20, 680.0, 103.0),
-        (21, 274.0, 115.0), (22, 0.0, 0.0), (23, 247.5, 84.6), (24, 308.6, -92.2),
-        (25, 224.0, 47.2), (26, 139.0, 17.0), (27, 281.0, 75.5), (28, 206.0, 27.6),
-        (29, 283.5, 26.9), (30, 0.0, 0.0), (31, 9.2, 4.6), (32, 0.0, 0.0),
-        (33, 0.0, 0.0), (34, 0.0, 0.0), (35, 0.0, 0.0), (36, 0.0, 0.0),
-        (37, 0.0, 0.0), (38, 0.0, 0.0), (39, 1104.0, 250.0),
-    ]
+    # fully-accurate topology to solve real power flow (see get_14bus()'s
+    # identical comment for the general rationale), so line_data always
+    # carries the COMPLETE 46-branch topology plus the real per-bus loads,
+    # regardless of which relay graph was passed in above. get_39bus()
+    # now builds its relay/pair graph from this same table (see
+    # _39BUS_FULL_BRANCHES' history note); get_39bus_reduced() keeps the
+    # old abbreviated relay graph while still solving power flow on the
+    # full topology, which is exactly the pre-unification behavior.
+    full_branches = _39BUS_FULL_BRANCHES
+    real_loads = _39BUS_REAL_LOADS
 
     line_data = {
         "lines": [
@@ -844,12 +1121,54 @@ def get_39bus() -> NetworkData:
     }
 
     return NetworkData(
-        "IEEE-39Bus", n_relays, pairs, Iload_max, If_min,
+        name, n_relays, pairs, Iload_max, If_min,
         n_buses=39, base_voltage=345.0, base_mva=100.0,
         dg_buses=dg_buses, relay_bus=relay_bus, line_data=line_data,
     )
 
 
+def get_39bus() -> NetworkData:
+    """
+    IEEE 39-Bus New England Test System (active-scope variant).
+
+    92 directional relays (2 per branch over all 46 real branches),
+    86 primary/backup pairs, all 39 buses covered.
+
+    The relay/pair graph and PandapowerNetwork's power-flow model are built
+    from the SAME 46-branch table (_39BUS_FULL_BRANCHES) -- see that table's
+    history note for why the two were unified. `b_pu`/`ratio` are dropped
+    here: they are reserved for line_data/pandapower's transformer detection
+    and play no role in relay placement or fault-current estimation.
+
+    Two relays on the bus-6→31 transformer branch have their naive per-line
+    If_min floored by _ensure_feasible_ps_bounds() (that branch's x=0.025 pu
+    with r=0 gives a fault-current estimate below its own 1800 MVA-rated load
+    current); this is a disclosed limitation of the simplified per-line
+    estimate, not a claim of a real short-circuit study value.
+    """
+    relay_branches = [
+        (fb, tb, r, x, mva_lim)
+        for (fb, tb, r, x, _b_pu, mva_lim, _ratio) in _39BUS_FULL_BRANCHES
+    ]
+    return _build_39bus(relay_branches, name="IEEE-39Bus")
+
+
+def get_39bus_reduced() -> NetworkData:
+    """
+    IEEE 39-Bus New England Test System, ABBREVIATED relay graph
+    (provenance variant -- registered as "39bus_reduced").
+
+    Reproduces the pre-unification 39-bus behavior exactly: 46 directional
+    relays and 42 primary/backup pairs over the abbreviated 23-line graph
+    (_39BUS_REDUCED_BRANCHES), covering only 22 of the 39 buses and none of
+    the 10 real generator buses. line_data (and therefore all power-flow
+    behavior) is identical to get_39bus()'s.
+
+    Kept solely so already-published reduced-graph results remain
+    reproducible and citable; new work should use get_39bus().
+    """
+    return _build_39bus(_39BUS_REDUCED_BRANCHES, name="IEEE-39Bus-Reduced",
+                        label="get_39bus_reduced")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -988,10 +1307,64 @@ def get_14bus() -> NetworkData:
 
     # Generator buses: 1 (slack), 2, 3, 6, 8 (PV buses)
     gen_data = [(1, 232.4), (2, 40.0), (3, 0.0), (6, 0.0), (8, 0.0)]
+    # `p > 0` deliberately drops buses 3/6/8: in the real IEEE 14-bus case
+    # those are zero-real-power synchronous CONDENSERS (reactive support
+    # only). Under this codebase's P-scaled DG model (PandapowerNetwork
+    # scales sgen.p_mw by pv_penetration), a p_mw=0 entry would inject
+    # exactly nothing at every PV level while still counting as a DG bus
+    # in marl_env's `is_dg_bus` observation and dynamic_network's
+    # fault-current contribution -- i.e. inert, misleading entries.
+    # Representing them properly needs a reactive-only DG model
+    # (pp.create_gen with p_mw=0 and a vm_pu setpoint, plus a
+    # short-circuit-contribution decision) that does not exist here yet;
+    # that is a logged follow-up, deliberately NOT implemented now.
+    #
+    # `b != 1` excludes bus 1, this system's slack bus: 14bus's line_data
+    # below carries no "slack_bus" key, so PandapowerNetwork defaults its
+    # ext_grid to bus 0 (1-indexed bus 1). 23.24 of the 27.24 MW of
+    # distributed PV used to sit exactly there, where an ideal infinite
+    # source absorbs it: it never appeared in any line loading, flow
+    # direction or reversal metric, making the entire 14-bus PV sweep
+    # nearly inert. That capacity is relocated to real load buses in
+    # pv_dg_data below (same fix pattern, and the same "deliberately
+    # load-only buses" reasoning, as get_39bus()'s pv_dg_data).
     dg_buses = [
         DGConfig(bus_idx=b, p_mw=p * 0.10, pv_penetration=0.0,
                  inverter_model="simplified_linear_frt")
-        for b, p in gen_data if p > 0
+        for b, p in gen_data if p > 0 and b != 1
+    ]
+
+    # ── Relocated distributed PV (was 23.24 MW on the slack bus) ──────────
+    # Deliberately load-only buses: none of 1/2/3/6/8 (this system's
+    # generator + synchronous-condenser buses) appears here, mirroring
+    # get_39bus()'s pv_dg_data comment -- a second DG entry at a bus that
+    # already has one would create two sgens/gens sharing the same
+    # "PV_Bus{n}" name, which update_pv_penetration() matches on exactly.
+    # Bus 1 is additionally excluded as the resolved slack bus (above).
+    #
+    # Sizing: each entry is ~17.5% of that bus's own real load (the 14-bus
+    # load table in line_data below), which is what redistributing the
+    # existing 23.24 MW across the eight remaining load buses in
+    # proportion to their load comes to -- the same relative-to-local-load
+    # rule get_39bus() uses, just at this system's own ratio. Bus 2 keeps
+    # its 4.0 MW (18.4% of its 21.7 MW load), so the whole allocation is
+    # uniform at ~18% of local load. Total distributed PV is unchanged in
+    # magnitude: 27.2 MW here vs 27.24 MW before (~10.5% of the system's
+    # ~259 MW load) -- this is a relocation, not a capacity increase.
+    pv_dg_data = [
+        (4, 8.4),   # 47.8 MW load
+        (9, 5.2),   # 29.5 MW load
+        (14, 2.6),  # 14.9 MW load
+        (13, 2.4),  # 13.5 MW load
+        (10, 1.6),  # 9.0 MW load
+        (5, 1.3),   # 7.6 MW load
+        (12, 1.1),  # 6.1 MW load
+        (11, 0.6),  # 3.5 MW load
+    ]
+    dg_buses += [
+        DGConfig(bus_idx=b, p_mw=p, pv_penetration=0.0,
+                 inverter_model="simplified_linear_frt", always_on=False)
+        for b, p in pv_dg_data
     ]
 
     If_min = _ensure_feasible_ps_bounds(If_min, Iload_max, "get_14bus")
@@ -1506,7 +1879,9 @@ _NETWORK_DESCRIPTIONS = {
     "8bus":   "IEEE 8-Bus Distribution (14 relays, 20 P/B pairs) — small-scale MARL",
     "14bus":  "IEEE 14-Bus Meshed (40 relays, 52 P/B pairs) — standard benchmark",
     "30bus":  "IEEE 30-Bus Meshed (42 relays, 70 P/B pairs) — medium-scale MARL",
-    "39bus":  "IEEE 39-Bus New England (46 relays, 42 P/B pairs) — stability studies",
+    "39bus":  "IEEE 39-Bus New England (92 relays, 86 P/B pairs) — stability studies",
+    "39bus_reduced": "IEEE 39-Bus, abbreviated 23-line relay graph (46 relays, "
+                      "42 P/B pairs) — provenance variant for pre-unification results",
     "57bus":  "IEEE 57-Bus Meshed (156 relays, 192 P/B pairs) — large-scale MARL",
     "118bus": "IEEE 118-Bus Backbone (318 relays, 440 P/B pairs) — very large-scale",
 }
@@ -1517,6 +1892,9 @@ NETWORKS = {
     "14bus": get_14bus,  # Phase 2 addition
     "30bus": get_30bus,
     "39bus": get_39bus,
+    # Provenance variant, out of active scope: the pre-unification
+    # abbreviated 39-bus relay graph (see get_39bus_reduced()).
+    "39bus_reduced": get_39bus_reduced,
     "57bus": get_57bus,  # Phase 2 addition
     "118bus": get_118bus,  # Phase 2 addition
 }
