@@ -46,8 +46,28 @@ from pathlib import Path
 from typing import List
 
 REPO_ROOT = Path(__file__).resolve().parent
-CACHE_DIR = REPO_ROOT / "results" / "core_cache"
-LOG_DIR = REPO_ROOT / "results" / "logs"
+DEFAULT_CACHE_DIR = REPO_ROOT / "results" / "core_cache"
+
+
+def _status_path(cache_dir: Path) -> Path:
+    """Campaign checkpoint file, written next to the cache so both live on
+    the same storage -- if --cache-root points at a mounted network
+    volume, this survives pod loss right along with the cached results.
+    Not required for resumption (CacheManager's content-addressed cache
+    already makes re-running the same command a fast cache-hit replay),
+    but gives a watchdog or a human a real signal for "is this campaign
+    actually done" instead of a guessed sleep duration."""
+    return cache_dir.parent / "campaign_status.json"
+
+
+def _write_status(cache_dir: Path, phase: str, **extra) -> None:
+    status_path = _status_path(cache_dir)
+    status = json.loads(status_path.read_text()) if status_path.exists() else {"phases": []}
+    status["phases"].append({"phase": phase, "timestamp": time.time(), **extra})
+    status["last_phase"] = phase
+    status["complete"] = phase == "campaign_complete"
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(json.dumps(status, indent=2))
 
 
 def _base_flags(args: argparse.Namespace) -> List[str]:
@@ -74,41 +94,46 @@ def _run_blocking(cmd: List[str], description: str) -> None:
     print(f">>> {description} done in {elapsed:.1f}s", flush=True)
 
 
-def phase_a_train_base_system(base_system: str, n_workers: int, args: argparse.Namespace) -> None:
-    """Base system alone, full workers, default cache dir -- populates
-    every shared/8bus-only Core cache (A, D, E, F, G, H, I, J, K) plus
-    this system's own Core B/C. --n-runs is deliberately never passed
-    here: leaving it unset lets run_core_training.py's _n_runs_for_wave
-    auto-scale to n_workers instead of a fixed constant."""
+def phase_a_train_base_system(base_system: str, n_workers: int, cache_dir: Path,
+                               args: argparse.Namespace) -> None:
+    """Base system alone, full workers -- populates every shared/8bus-only
+    Core cache (A, D, E, F, G, H, I, J, K) plus this system's own Core
+    B/C. --n-runs is deliberately never passed here: leaving it unset
+    lets run_core_training.py's _n_runs_for_wave auto-scale to n_workers
+    instead of a fixed constant (fast mode only; full mode uses its own
+    fixed statistical-power constants regardless)."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
     cmd = ([sys.executable, "run_core_training.py", "--all",
-            "--system", base_system, "--n-workers", str(n_workers)]
+            "--system", base_system, "--n-workers", str(n_workers),
+            "--cache-dir", str(cache_dir)]
            + _base_flags(args))
     _run_blocking(cmd, f"Phase A: train {base_system} (base system, full workers)")
 
 
-def phase_b_train_remaining_concurrently(systems: List[str], n_workers: int,
+def phase_b_train_remaining_concurrently(systems: List[str], n_workers: int, cache_dir: Path,
                                           args: argparse.Namespace) -> List[Path]:
     """Core B/C training for the remaining systems, launched at the same
     time, each in its own --cache-dir. Returns the temporary cache dirs
     for phase_c to merge. Each process's output is redirected to its own
     log file (concurrent stdout from 2 long-running processes interleaved
     on one terminal is unreadable otherwise)."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_dir = cache_dir.parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     per_system_workers = max(1, n_workers // len(systems))
     cache_dirs = []
     procs = []
     for system in systems:
-        cache_dir = REPO_ROOT / "results" / f"core_cache_{system}"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_dirs.append(cache_dir)
-        log_path = LOG_DIR / f"campaign_phaseB_{system}_{int(time.time())}.log"
+        sub_cache_dir = cache_dir.parent / f"core_cache_{system}"
+        sub_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_dirs.append(sub_cache_dir)
+        log_path = log_dir / f"campaign_phaseB_{system}_{int(time.time())}.log"
         cmd = ([sys.executable, "run_core_training.py", "--all",
                 "--cores", "B", "C", "--system", system,
                 "--n-workers", str(per_system_workers),
-                "--cache-dir", str(cache_dir)]
+                "--cache-dir", str(sub_cache_dir)]
                + _base_flags(args))
         print(f"\n{'=' * 70}\n>>> Phase B: launching {system} "
-              f"(cache-dir={cache_dir}, n-workers={per_system_workers})\n"
+              f"(cache-dir={sub_cache_dir}, n-workers={per_system_workers})\n"
               f"CMD: {' '.join(cmd)}\nLOG: {log_path}\n{'=' * 70}", flush=True)
         log_file = open(log_path, "w", encoding="utf-8")
         proc = subprocess.Popen(cmd, cwd=REPO_ROOT, stdout=log_file, stderr=subprocess.STDOUT)
@@ -143,18 +168,18 @@ def phase_b_train_remaining_sequentially(systems: List[str], n_workers: int,
         _run_blocking(cmd, f"Phase B (sequential): train {system}")
 
 
-def phase_c_merge_caches(cache_dirs: List[Path]) -> None:
+def phase_c_merge_caches(main_cache_dir: Path, cache_dirs: List[Path]) -> None:
     """Union-merge each temporary cache dir's cache_index.json + .pkl
-    files into the main results/core_cache/. A plain union is safe here
-    (not the "prefer newer" conflict resolution this session's earlier,
-    unrelated cache-pull needed for genuinely overlapping stale/fresh
-    entries): Core B/C's cache config always includes "system", so
-    entries from different systems can never collide with each other or
-    with the base system's own -- a duplicate key showing up below would
-    mean something violated that assumption, not an expected merge
-    conflict to resolve."""
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    index_path = CACHE_DIR / "cache_index.json"
+    files into the main cache dir. A plain union is safe here (not the
+    "prefer newer" conflict resolution this session's earlier, unrelated
+    cache-pull needed for genuinely overlapping stale/fresh entries):
+    Core B/C's cache config always includes "system", so entries from
+    different systems can never collide with each other or with the base
+    system's own -- a duplicate key showing up below would mean something
+    violated that assumption, not an expected merge conflict to
+    resolve."""
+    main_cache_dir.mkdir(parents=True, exist_ok=True)
+    index_path = main_cache_dir / "cache_index.json"
     index = json.loads(index_path.read_text()) if index_path.exists() else {}
 
     merged_count = 0
@@ -174,7 +199,7 @@ def phase_c_merge_caches(cache_dirs: List[Path]) -> None:
             if not pkl_src.exists():
                 print(f"  WARNING: {pkl_src} referenced by {sub_index_path} but missing -- skipping")
                 continue
-            shutil.copy2(pkl_src, CACHE_DIR / f"{key}.pkl")
+            shutil.copy2(pkl_src, main_cache_dir / f"{key}.pkl")
             index[key] = meta
             merged_count += 1
 
@@ -255,20 +280,34 @@ def main():
         parser.error("--systems must list at least one system")
     base_system, remaining = systems[0], systems[1:]
 
+    cache_dir = DEFAULT_CACHE_DIR
+    status_path = _status_path(cache_dir)
+    if status_path.exists():
+        prior = json.loads(status_path.read_text())
+        print(f">>> Found existing {status_path} (last phase: {prior.get('last_phase')}, "
+              f"complete={prior.get('complete')}). Re-running is safe -- every phase below "
+              f"re-invokes run_core_training.py's content-addressed cache, so already-cached "
+              f"work replays as a near-instant cache hit instead of retraining.", flush=True)
+
     t_start = time.time()
-    phase_a_train_base_system(base_system, args.n_workers, args)
+    phase_a_train_base_system(base_system, args.n_workers, cache_dir, args)
+    _write_status(cache_dir, "phase_a", system=base_system)
 
     if remaining:
         if args.no_concurrent_tail:
             phase_b_train_remaining_sequentially(remaining, args.n_workers, args)
         else:
-            cache_dirs = phase_b_train_remaining_concurrently(remaining, args.n_workers, args)
-            phase_c_merge_caches(cache_dirs)
+            cache_dirs = phase_b_train_remaining_concurrently(remaining, args.n_workers, cache_dir, args)
+            phase_c_merge_caches(cache_dir, cache_dirs)
+        _write_status(cache_dir, "phase_b_c", systems=remaining)
 
     phase_d_figures_sequential(systems, args.n_workers, args)
+    _write_status(cache_dir, "phase_d")
     phase_e_reverse_power_flow(args)
+    _write_status(cache_dir, "phase_e")
 
     total = time.time() - t_start
+    _write_status(cache_dir, "campaign_complete", total_seconds=total)
     print(f"\n{'=' * 70}\nCAMPAIGN COMPLETE in {total / 60:.1f} min ({total:.0f}s)\n{'=' * 70}")
 
 
