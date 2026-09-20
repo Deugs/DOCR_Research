@@ -1,13 +1,13 @@
 {
   "fig_num": 58,
   "data": {
-    "of": 147.31486228613196,
-    "cti_ok": false,
-    "pv_variability": 0.06967516931855865
+    "of": 98.94031097251097,
+    "cti_ok": true,
+    "pv_variability": 0.23225056439519548
   },
   "metadata": {
     "method": "_eval_seasonal",
-    "duration": 0.36120033264160156,
+    "duration": 2.4172379970550537,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -77,10 +77,10 @@
       "adversarial_attack": null,
       "attack_epsilon": 0.01,
       "adversarial_eval": false,
-      "season": "winter",
+      "season": "summer",
       "seasonal_temperature": 35.0
     },
-    "base_of": 55.08287320208595
+    "base_of": 66.7274903242306
   },
-  "timestamp": 1788639744.88317
+  "timestamp": 1789926843.5881233
 }
