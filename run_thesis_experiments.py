@@ -154,6 +154,14 @@ logger = logging.getLogger(__name__)
 LOG_FILE = LOG_DIR / f"experiment_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 REPORT_FILE = REPORT_DIR / f"experiment_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
+# setup_directories() below also creates LOG_DIR, but only runs once main()
+# calls it with a config -- this module-level FileHandler opens LOG_FILE
+# immediately at import time, before that ever happens. On a completely
+# fresh results/ directory (a fresh clone, container, or mounted volume
+# with no prior local history to have already created it) this crashed
+# with FileNotFoundError before a single line of the script could run.
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 # File handler for persistent logging
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
 file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s"))

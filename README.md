@@ -192,7 +192,7 @@ other Core training runs feed single-condition figures better read via
 ## 7. Tests
 
 ```bash
-python3 -m pytest tests/ -q          # full suite (165 tests as of this writing)
+python3 -m pytest tests/ -q          # full suite (~210 tests as of 2026-10-15, growing)
 python3 -m pytest tests/test_phase4.py -q   # one phase's tests
 ```
 

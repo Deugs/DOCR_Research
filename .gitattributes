@@ -1,0 +1,7 @@
+# Shell scripts must keep LF line endings regardless of the checkout
+# platform's core.autocrlf setting -- a CRLF shebang line breaks exec()
+# at container runtime with a misleading "no such file or directory"
+# error (confirmed: docker/entrypoint.sh silently got CRLF-converted on
+# a Windows checkout with core.autocrlf=true, and the resulting image's
+# ENTRYPOINT failed every run until this was fixed).
+*.sh text eol=lf

@@ -1104,17 +1104,18 @@ each script default to sequential.
 **First run seeds the cache automatically, if there's anything to seed.**
 `results/core_cache/` is where Core A–K results get cached (§2.2 Phase 2)
 so later phases and figure generation don't retrain from scratch. It was
-cleared on 2026-08-08 (see §2.2.1) and ships empty today — but the
-mechanism stays in place for whenever it's populated again: bind-mounting
-an empty host `results/` directory over `/app/results` would otherwise
-shadow whatever was baked into the image at build time and silently force
-a full retrain. `docker/entrypoint.sh` prevents that: on container start,
-if the mounted `results/core_cache/` is empty, it's populated from
-whatever the image had baked in (nothing, right now) before your command
-runs. The first time you actually run Core training against a mounted
-volume, its output persists there and every subsequent container start
-sees it — this is a no-op once your host's `results/` directory has real
-content.
+cleared on 2026-08-08 (see §2.2.1) and shipped empty for a while — Cores
+have since been re-run, and as of this writing it holds 50 real cached
+entries (~3.6MB). Bind-mounting an empty host `results/` directory over
+`/app/results` would otherwise shadow whatever was baked into the image
+at build time and silently force a full retrain. `docker/entrypoint.sh`
+prevents that: on container start, if the mounted `results/core_cache/`
+is empty, it's populated from whatever the image had baked in before your
+command runs — confirmed working end-to-end (all 50 entries correctly
+seeded into a fresh volume). The first time you actually run Core
+training against a mounted volume, its output persists there and every
+subsequent container start sees it — this is a no-op once your host's
+`results/` directory has real content.
 
 ### 11.3 On a remote server / cloud VM
 
@@ -1150,13 +1151,45 @@ its contents were deleted from the repo on 2026-08-08, so there's nothing
 left for it to exclude. Left in place in case Programme 2 content ever
 returns to this path.
 
-### 11.5 Verifying this in your own environment
+### 11.5 Verified end-to-end (2026-10-15)
 
-This Dockerfile was authored and its pieces individually verified
-(a from-scratch `pip install -r requirements.txt` into a clean venv, the
-full `pytest tests/` suite passing against it, the entrypoint's seeding
-logic exercised standalone, and `docker compose config` validating the
-compose file) in a sandbox whose network policy blocks pulls from Docker
-Hub's CDN, so the actual `docker build` could not be executed end-to-end
-here. Run `docker build -t docr-marl .` once in your own environment
-before relying on it for a real cloud run.
+This Dockerfile was originally authored and its pieces individually
+verified (a from-scratch `pip install -r requirements.txt` into a clean
+venv, the full `pytest tests/` suite passing against it, the entrypoint's
+seeding logic exercised standalone, and `docker compose config` validating
+the compose file) in a sandbox whose network policy blocks pulls from
+Docker Hub's CDN, so the actual `docker build` could not be executed
+end-to-end at the time.
+
+It has since been run for real -- `docker build`, then `docker run` against
+a completely fresh named volume -- and three real bugs surfaced that no
+amount of "individually verified pieces" caught, because each only shows
+up in a genuinely fresh environment:
+
+1. **`.dockerignore` didn't exclude `.venv/`** (or `venv/`/`env/`/`ENV/`),
+   so a local virtual environment (1.6GB in the environment that found
+   this) got included in every build context, massively slowing `docker
+   build`'s context-transfer step for no benefit. Fixed by adding those
+   patterns to `.dockerignore`.
+2. **`docker/entrypoint.sh` had CRLF line endings** after a Windows
+   checkout with `core.autocrlf=true` (no `.gitattributes` existed to
+   override it for shell scripts), which breaks its `#!/bin/sh` shebang
+   at container runtime with a misleading `exec: no such file or
+   directory` error. Fixed by normalizing the file to LF and adding
+   `.gitattributes` (`*.sh text eol=lf`) so this can't regress.
+3. **`run_thesis_experiments.py` crashed on any completely fresh
+   `results/` directory** -- its module-level `logging.FileHandler` opens
+   a log file before `setup_directories()` (which creates `logs/`) ever
+   runs, so a fresh clone, fresh container, or freshly bind-mounted empty
+   volume all crashed with `FileNotFoundError` before printing even
+   `--help`. This only stayed hidden because every local dev machine
+   already had a populated `results/logs/` from prior runs. Fixed with an
+   explicit `LOG_DIR.mkdir(parents=True, exist_ok=True)` before the
+   handler is constructed.
+
+With all three fixed, a full `docker build -t docr-marl .` followed by
+`docker run --rm -v <fresh-volume>:/app/results -v <fresh-volume>:/app/outputs
+docr-marl` succeeds cleanly: non-root `docr` user confirmed, all core
+dependencies (`numpy`, `scipy`, `pandapower`, `shap`, `scikit-learn`, etc.)
+import correctly, and the entrypoint correctly seeds all 50 of the baked-in
+`core_cache` entries into the fresh volume.

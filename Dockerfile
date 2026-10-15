@@ -65,7 +65,8 @@ WORKDIR /app
 
 # Copies app code plus results/core_cache if present at build time (it's
 # not excluded by .dockerignore — everything else under results/ and
-# outputs/ is). A second copy is stashed at /opt/seed-cache so
+# outputs/ is; .venv/ and similar local virtualenvs are excluded too, see
+# .dockerignore). A second copy is stashed at /opt/seed-cache so
 # docker/entrypoint.sh can still seed a fresh volume even after something
 # else gets bind-mounted over /app/results. `mkdir -p` on the source
 # first means this is a harmless no-op when core_cache is empty/absent

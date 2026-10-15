@@ -7,7 +7,7 @@
   },
   "metadata": {
     "method": "_eval_seasonal",
-    "duration": 2.4172379970550537,
+    "duration": 2.7452945709228516,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -82,5 +82,5 @@
     },
     "base_of": 66.7274903242306
   },
-  "timestamp": 1789926843.5881233
+  "timestamp": 1792088982.4689221
 }

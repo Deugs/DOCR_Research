@@ -6,6 +6,16 @@
 **/*.pyo
 .DS_Store
 
+# Local Python virtual environments -- Docker builds its own venv in the
+# builder stage (see Dockerfile); these are host-local dev environments
+# that .gitignore excludes via venv's own auto-generated nested
+# .gitignore (git honors nested .gitignore files; .dockerignore does not
+# read them at all, so each of these needs its own explicit entry here).
+.venv/
+venv/
+env/
+ENV/
+
 # Not needed to run experiments — the USS v2.0 paper drafts are a
 # separate research programme (see CLAUDE.md) with no code dependency
 # on this container.

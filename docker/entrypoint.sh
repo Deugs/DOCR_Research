@@ -2,7 +2,8 @@
 # Seeds /app/results/core_cache from the image's baked-in copy on first run.
 #
 # Why this exists: results/core_cache holds the already-trained Core A/B/C
-# results (~668KB, checked into git — see EXPERIMENT_GUIDE.md §2.2.1). When
+# results (~3.6MB across 50 entries as of 2026-10-15, checked into git —
+# see EXPERIMENT_GUIDE.md §2.2.1). When
 # you bind-mount a host directory over /app/results for persistence (so
 # training output survives past the container's life), an empty host
 # directory shadows that baked-in cache and the pipeline would silently
