@@ -22,11 +22,17 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-`pandapower` and `torch` in `requirements.txt` are optional: `pandapower`
-is only used for Fig 44 (falls back to an analytical fault-current model
-without it); `torch` only activates a GPU backend for the ES update when
-a CUDA device is present, and is a no-op otherwise. Everything else runs
-on plain NumPy/SciPy.
+`pandapower` in `requirements.txt` is optional — it's only used for Fig 44
+(falls back to an analytical fault-current model without it). `torch` is
+**required** as of the 2026-10-22 ES-to-backprop rewrite: MAPPO/GNN/
+single-agent-PPO training now runs real autograd + Adam, not hand-rolled
+NumPy evolution strategies. Training runs on CPU by default; GPU is an
+explicit opt-in (`DOCR_USE_GPU=1`) because re-benchmarking the new
+backprop update showed it is actually *slower* than CPU on this project's
+test hardware (small per-call compute dominated by GPU kernel-launch
+overhead) — see `EXPERIMENT_GUIDE.md` §2.2.4 before enabling it on a new
+machine. CPU multiprocessing (`--n-workers`) remains the real scaling
+lever regardless.
 
 Verify the install:
 
@@ -192,7 +198,7 @@ other Core training runs feed single-condition figures better read via
 ## 7. Tests
 
 ```bash
-python3 -m pytest tests/ -q          # full suite (~210 tests as of 2026-10-15, growing)
+python3 -m pytest tests/ -q          # full suite (221 tests as of 2026-10-22, growing)
 python3 -m pytest tests/test_phase4.py -q   # one phase's tests
 ```
 

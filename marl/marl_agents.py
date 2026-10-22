@@ -91,9 +91,29 @@ def _fault_type_idx(fault_type: str) -> int:
 # you ever write a new script, notebook, or REPL session that touches this
 # project, import something from network/environment/marl BEFORE import
 # torch, not after.
+import os
 import torch
 _TORCH_AVAILABLE = True
-_GPU_AVAILABLE = torch.cuda.is_available()
+_CUDA_PRESENT = torch.cuda.is_available()  # pure hardware fact, always accurate
+
+# GPU does NOT auto-activate just because CUDA is present -- requires
+# explicit opt-in (DOCR_USE_GPU=1). Re-benchmarked after the ES-to-backprop
+# rewrite above (2026-10-22, same GTX 1050 as the ES-era numbers in
+# EXPERIMENT_GUIDE.md section 2.2.4): real backprop's one lean forward+
+# backward pass per call is so much cheaper than ES's old 2*n_pert forward
+# passes that GPU's fixed per-call overhead (kernel launch, sync, host-
+# device transfer) now DOMINATES even more than before, flipping the
+# verdict entirely -- actor update measured 0.45x-0.67x (i.e. SLOWER) on
+# GPU at both 8-bus and 39-bus, not the 1.3x-1.6x the old ES-population-
+# batching path achieved (that code no longer exists). Auto-enabling GPU
+# whenever present would make training slower by default on any machine
+# with a GPU -- the opposite of this rewrite's goal. If you're on
+# different hardware (a much more powerful GPU, or far larger batch
+# sizes) where you have reason to believe this verdict flips, opt in
+# explicitly: `DOCR_USE_GPU=1 python ...`. Re-measure before trusting it;
+# this exact mistake (assuming a port helps without checking) is why this
+# comment exists.
+_GPU_AVAILABLE = _CUDA_PRESENT and os.environ.get("DOCR_USE_GPU") == "1"
 _GPU_DEVICE = torch.device("cuda") if _GPU_AVAILABLE else None
 
 

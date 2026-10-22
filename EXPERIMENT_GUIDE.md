@@ -538,86 +538,95 @@ trainable methods × 50 runs × 5000 episodes); Core E adds a further chunk
 3.7x-4.2x-on-4-workers figures above) — on a 16-32 core cloud VM (see
 §11), this becomes on the order of days rather than weeks.
 
-**Optional GPU backend.** `marl/marl_agents.py`'s ES actor/critic update
-(`_update_actor_es`/`_update_critic_es` — the same hot path vectorized in
-§2.2.2) has a second, GPU-only implementation that additionally batches
-across the 2×n_pert perturbation *population*, not just across the T-step
-rollout, via `torch.einsum`. It activates automatically — nothing to
-configure — when both `torch` is importable and `torch.cuda.is_available()`
-is true; otherwise (including "torch is installed but no GPU," the common
-case) every existing code path is exactly what it was before.
+**GPU support (2026-10-22 rewrite — supersedes everything this
+subsection said before that date).** The ES-based actor/critic update
+this subsection used to describe (`_update_actor_es`/`_update_critic_es`
+and their GPU-only population-batched variants) no longer exists.
+`marl/marl_agents.py`'s `SharedGaussianActor`/`MAPPOCentralCritic` (and
+`marl/comm_graph.py`'s GNN, and `marl/single_agent_ppo.py`'s centralized
+baseline) are now real `torch.nn.Module`s trained via backprop + Adam —
+see `marl/marl_agents.py`'s module docstring for the full history. This
+is a much bigger change than swapping an optimizer: real backprop does
+one lean forward+backward pass per update call, versus ES's old
+`2×n_pert` forward passes, which matters a lot for the GPU verdict below.
 
-This is *not* also used as the CPU implementation, on purpose: benchmarked
-directly, the same batched-population reformulation measured **slower**
-than the existing per-perturbation loop on CPU (0.51x–0.68x — building the
-`(T, 2×n_pert, hidden)` intermediate tensors costs more than the loop's
-small per-perturbation BLAS calls save). This is the same category of
-result as `marl/comm_graph.py`'s negative vectorization finding in
-§2.2.2 — a batching strategy that looks like a strict improvement on paper
-can lose on CPU once you account for allocation cost, so it isn't assumed
-to help without measuring it.
-
-**Update: benchmarked on real GPU hardware for the first time (2026-10-21)**,
-on an NVIDIA GTX 1050 (4GB, a weak/entry-level 2017 card — not a
-best-case result). Measured directly against the real per-agent update
-loop (`n_agents × n_epochs` calls per rollout, matching `train()`'s actual
-call pattern), using real rollouts (not synthetic data), at both ends of
-this project's system-size range:
+**GPU no longer auto-activates, and is opt-in for a specific reason.**
+Earlier (2026-10-21), the ES-era GPU path was benchmarked for the first
+time on real hardware (an NVIDIA GTX 1050, 4GB) and measured as a real
+1.32x–1.58x speedup on the actor update. After the backprop rewrite, the
+same benchmark was repeated against the new code and the verdict
+**reversed**:
 
 | System | Agents | CPU actor sweep | GPU actor sweep | Speedup |
 |---|---|---|---|---|
-| 8-bus | 14 | 0.50s | 0.38s | 1.32x |
-| 39-bus | 92 | 2.84s | 1.80s | 1.58x |
+| 8-bus | 14 | 0.253s | 0.563s | 0.449x (slower) |
+| 39-bus | 92 | 2.215s | 3.298s | 0.672x (slower) |
 
-Critic speedup was much smaller (1.04x–1.14x) — expected, since the critic
-only updates `n_epochs` (4) times per rollout regardless of system size,
-so there's far less to batch than the actor's `n_agents × n_epochs` calls.
-**The GPU path genuinely helps, more so on larger systems** (the actor
-update dominates total update cost on 39-bus specifically because of the
-`n_agents` multiplier) — the "untested, treat with caution" framing above
-no longer applies to the sequential (`--n-workers 1`) case.
+Mechanistically this makes sense even though it's the opposite of the
+ES-era result: real backprop's per-call compute is already so much
+cheaper than ES's old `2×n_pert`-forward-pass pattern that GPU's fixed
+per-call overhead (kernel launch, synchronization, host-device transfer)
+now dominates even more heavily than before, on a *smaller* total compute
+budget. The critic showed a small, inconsistent edge at 39-bus (1.164x)
+but the critic update is tiny in absolute terms either way (~0.03s) and
+not a load-bearing result. Both this and the original ES-era benchmark
+agree on one thing: on this exact hardware, GPU is not a default win —
+only the *direction* of the verdict changed when the algorithm did.
 
-Also tested and rejected: switching the GPU path's tensors from `float64`
-to `float32`, on the theory that consumer GPUs usually cripple
-double-precision throughput. Measured **slower** (0.72x–0.76x, i.e.
-24–28% slower) — at tensor sizes this small, the extra cast from the
-RNG's native `float64` numpy arrays costs more than any float32 compute
-throughput gain. Don't make this change without re-measuring; it looks
-like an obvious win and isn't one here.
+Because of this, GPU use requires an explicit environment variable,
+`DOCR_USE_GPU=1`, checked once at `marl/marl_agents.py` import time
+(`_GPU_AVAILABLE = torch.cuda.is_available() and
+os.environ.get("DOCR_USE_GPU") == "1"`). Without it, every actor/critic/
+GNN module defaults to `device="cpu"` regardless of what hardware is
+physically present — auto-enabling GPU whenever it happened to exist was
+the previous (now corrected) behavior, and would silently make training
+*slower* by default on any machine with a GPU, which is the opposite of
+what this subsection is about. **If you're on different hardware** (a
+much more powerful GPU, larger batch/population sizes, or both) **where
+you have real reason to expect this verdict flips, set
+`DOCR_USE_GPU=1` and re-measure with the same methodology before trusting
+it** — this project's own experience (twice now, in opposite directions)
+is the reason this guide keeps saying not to assume a GPU/vectorization
+port helps without checking.
 
-**Real risk found while building this benchmark, not present in any
-actual call site in this codebase, but worth knowing:** importing `torch`
+Also re-confirmed under the new algorithm (unchanged from the ES-era
+finding): switching tensors from `float64` to `float32` on the theory
+that consumer GPUs cripple double-precision throughput measured
+**slower** (0.72x–0.76x) — the RNG's native `float64` numpy arrays cost
+more to cast than any float32 throughput gain recovers, at tensor sizes
+this small. float64 stays.
+
+**Real risk found while benchmarking this, not present in any actual
+call site in this codebase, but worth knowing:** importing `torch`
 before `pandapower` in the same process segfaults immediately (zero
-Python traceback, zero diagnostic output) on this machine — a native
-OpenMP/MKL runtime conflict between torch's and pandapower's (via numba)
-bundled runtimes. Confirmed reproducible, and order-dependent:
-`pandapower` → `torch` is safe, `torch` → `pandapower` crashes. Every real
-entry point in this codebase (`run_core_training.py` et al.) imports
-`network`/`marl.marl_env` — which transitively imports `pandapower` via
+Python traceback, zero diagnostic output) on at least one real
+development machine used on this project — a native OpenMP/MKL runtime
+conflict between torch's and pandapower's (via numba) bundled runtimes.
+Confirmed reproducible, and order-dependent: `pandapower` → `torch` is
+safe, `torch` → `pandapower` crashes. Every real entry point in this
+codebase (`run_core_training.py` et al.) imports `network`/`marl.marl_env`
+— which transitively imports `pandapower` via
 `environment/dynamic_network.py` — before `marl.marl_agents` — which
-conditionally imports `torch` — so this is **not currently triggered** by
-any real code path. It would be triggered by any new script, notebook, or
+imports `torch` — so this is **not currently triggered** by any real
+code path. It would be triggered by any new script, notebook, or
 interactive session that imports `torch` first for an unrelated reason
 before importing anything from this project. If you ever see Python exit
 with no traceback at all while this project's modules are involved, check
 import order before assuming it's a hardware fault.
 
-**Why this doesn't change the project's actual scaling strategy:** this
-project's real speed lever for the full campaign is CPU multiprocessing
-(§2.2.4 above, 3.7x–4.2x on just 4 workers, scaling further with more
-cores) — not GPU. GPU is explicitly and deliberately disabled inside
-`run_core_training.py`'s multi-worker pools (`_disable_gpu_in_worker()`,
-run under Windows' spawn start method) because every worker process would
-independently open its own CUDA context on the same physical device; on
-this exact machine's 4GB card, that already caused a real
-`torch.AcceleratorError: CUDA error: out of memory` crash in a past test
-run. That reasoning stands regardless of today's benchmark — a small
-consumer GPU can't be safely time-sliced across N worker processes the
-way CPU cores can. The 1.3x–1.6x speedup measured above therefore only
-applies to single-process (`--n-workers 1`) runs, e.g. local development
-or debugging on a machine with a GPU — not to the 32-64-worker CPU-pod
-campaigns this project actually uses for full-scale training, which never
-touch the GPU path at all (by design, not by oversight).
+**This project's real speed lever for the full campaign is still CPU
+multiprocessing** (§2.2.4 above, 3.7x–4.2x on just 4 workers, scaling
+further with more cores) — not GPU, now more clearly than ever given the
+benchmark above. `run_core_training.py`'s multi-worker pools no longer
+blanket-disable GPU (`_disable_gpu_in_worker()` has been superseded by
+`_adaptive_gpu_in_worker()` + `_max_safe_gpu_workers()`, which cap how
+many concurrent workers may each open their own CUDA context based on
+real free VRAM — preventing the `torch.AcceleratorError: CUDA error: out
+of memory` crash already hit once on this project's 4GB card from
+multiple workers contending for one small GPU). That cap only matters at
+all once `DOCR_USE_GPU=1` is set; by default every worker stays on CPU,
+which — per the benchmark above — is also currently the *faster* choice
+on top of being the always-safe one.
 
 Numerical correctness of both the batched-population reformulation and its
 GPU/torch port were verified by comparing against the original
@@ -904,17 +913,19 @@ The figure depends on training data from Phase 2. Either:
 - Or run the figure's standalone script directly (see §6)
 
 ### Results differ between runs
-The ES-based trainer (OpenAI-ES style, numpy-only) is stochastic.
+The PPO trainer (real PyTorch autograd + Adam as of 2026-10-22, see
+§2.2.4 — previously OpenAI-ES style, numpy-only) is stochastic.
 Run with `--n-runs 30` or higher for 8/14-bus, 10+ for 39-bus, and
 report mean ± std across seeds. The `stat_analysis.py` Wilcoxon tests
 and Cliff's delta already account for variance across seeds.
 
 ### 39-bus training is very slow
 39-bus has 92 agents (rebuilt from the real topology — see "Topology
-provenance" below; was 46 before 2026-09-09); each ES perturbation does
-10×92 = 920 forward passes. Measured directly: an env-step benchmark at
-92 agents runs ~2.05x the per-step cost of the old 46-agent graph.
-Reduce `--n-runs` to 10 for exploratory runs.
+provenance" below; was 46 before 2026-09-09); each PPO update does one
+forward+backward pass across all 92 agents' rollout data. Measured
+directly: an env-step benchmark at 92 agents runs ~2.05x the per-step
+cost of the old 46-agent graph. Reduce `--n-runs` to 10 for exploratory
+runs.
 
 ### Topology provenance: 39bus's relay graph, and what changed on 2026-09-09
 
@@ -1093,13 +1104,15 @@ Before submitting results, verify:
 
 ## 11. Running in Docker / on the cloud (2026-08-08)
 
-The codebase runs entirely on CPU by default (hand-rolled NumPy/SciPy MLPs
-trained via evolution strategies) — no PyTorch/TensorFlow required — so any
-machine that can run Docker can run these experiments. As of 2026-08-08
-there's also an optional, auto-detected GPU backend (§2.2.4); the default
-image build below deliberately does not include it (see §11.1a). `Dockerfile`,
-`docker-compose.yml`, `.dockerignore`, and `docker/entrypoint.sh` at the
-repo root package the whole pipeline.
+The codebase runs entirely on CPU by default. As of 2026-10-22, training
+is real PyTorch autograd + Adam (previously hand-rolled NumPy/SciPy MLPs
+trained via evolution strategies — see §2.2.4), so `torch` is a required
+dependency and the default image build below always installs its
+CPU-only wheel. GPU is an explicit opt-in (`DOCR_USE_GPU=1`, §2.2.4,
+§11.1a) — it does not auto-activate, because re-benchmarking the real
+backprop update showed it is actually slower than CPU on this project's
+test hardware. `Dockerfile`, `docker-compose.yml`, `.dockerignore`, and
+`docker/entrypoint.sh` at the repo root package the whole pipeline.
 
 ### 11.1 Build
 
@@ -1115,28 +1128,32 @@ plain `python:3.11-slim` with just that venv and the app code copied in
 
 ### 11.1a GPU build (optional)
 
-The default build above skips `torch` even though it's listed in
-`requirements.txt` — its CUDA-bundled wheel is large, and per §2.2.4 the
-plain CPU path already benchmarks faster on this workload's problem sizes,
-so most deployments gain nothing from paying that download cost. If you're
-deploying to a machine that actually has a GPU and want
-`marl/marl_agents.py`'s GPU backend to activate:
+`torch` is **required** as of the 2026-10-22 ES-to-backprop rewrite (§2.2.4)
+— training now runs real autograd + Adam, not hand-rolled NumPy ES — so the
+default build above always installs it, via the CPU-only wheel
+(`--index-url https://download.pytorch.org/whl/cpu`) to keep the image
+small. If you're deploying to a machine with a GPU and want the
+CUDA-bundled wheel instead:
 
 ```bash
-docker build --build-arg INSTALL_TORCH=true -t docr-marl-gpu .
+docker build --build-arg INSTALL_TORCH_CUDA=true -t docr-marl-gpu .
 docker run --gpus all --rm \
+    -e DOCR_USE_GPU=1 \
     -v "$(pwd)/results:/app/results" -v "$(pwd)/outputs:/app/outputs" \
     docr-marl-gpu python3 run_thesis_experiments.py --all --preset thesis_sweep_fast
 ```
 
 `--gpus all` requires the NVIDIA Container Toolkit installed on the host
 (most GPU cloud VM images — AWS Deep Learning AMIs, GCP's GPU-optimized
-images, etc. — already have it). Without `--gpus all` at `docker run` time,
-a GPU-build image still runs correctly — `torch.cuda.is_available()` just
-comes back `False` inside the container and everything uses the CPU path,
-same as the default build. As documented in §2.2.4, actual GPU speedup for
-this workload was not benchmarked (no GPU was available while writing this)
-— treat this as untested until you've measured it on your own hardware.
+images, etc. — already have it). The `DOCR_USE_GPU=1` env var is also
+required at runtime — GPU does **not** auto-activate just because CUDA is
+present (see §2.2.4): re-benchmarking the real-backprop update showed it is
+actually *slower* than CPU on this project's test hardware, so the default
+everywhere, container or not, is CPU. Without `DOCR_USE_GPU=1`, a GPU build
+still runs correctly on CPU, same as the default build. Treat GPU timing as
+untested on your own hardware until you've re-measured it per §2.2.4's
+methodology — the slowdown was specific to a GTX 1050 and may not hold on a
+more capable card.
 
 ### 11.2 Run
 

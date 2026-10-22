@@ -169,10 +169,36 @@ class ONNXExporter:
         ``TypeError`` if ``self.model`` doesn't expose a recognizable
         network structure (a ``SharedGaussianActor``-like wrapper with a
         ``.net``, or a raw MLP-like object with ``W1..b3`` directly).
+
+        2026-10-22: the old hand-rolled ``MLP`` (``W1/b1/W2/b2/W3/b3``
+        NumPy arrays) was replaced by a real ``torch.nn.Module``
+        (``_TorchMLP``, with ``fc1/fc2/fc3`` ``nn.Linear`` layers) as part
+        of the ES-to-backprop rewrite -- this broke ONNX export outright
+        (confirmed: raised TypeError on any post-rewrite actor) until this
+        branch was added. ``nn.Linear(in, out).weight`` has shape
+        ``(out, in)`` and ``.bias`` has shape ``(out,)``, exactly matching
+        the old ``W1``/``b1`` convention, so no transpose is needed -- this
+        is a direct, shape-compatible extraction, not a reinterpretation.
         """
         model = self.model
-        # A SharedGaussianActor-style wrapper stores the real MLP on `.net`
-        # and applies tanh() on top of the raw output in get_mean().
+        # A SharedGaussianActor-style wrapper stores the real network on
+        # `.net` and applies tanh() on top of the raw output in get_mean().
+        if hasattr(model, "net") and all(
+            hasattr(model.net, attr) for attr in ("fc1", "fc2", "fc3")
+        ):
+            torch_net = model.net
+            apply_tanh = hasattr(model, "get_mean")
+            import torch as _torch
+            with _torch.no_grad():
+                return {
+                    "W1": torch_net.fc1.weight.detach().cpu().numpy().astype(np.float32),
+                    "b1": torch_net.fc1.bias.detach().cpu().numpy().astype(np.float32),
+                    "W2": torch_net.fc2.weight.detach().cpu().numpy().astype(np.float32),
+                    "b2": torch_net.fc2.bias.detach().cpu().numpy().astype(np.float32),
+                    "W3": torch_net.fc3.weight.detach().cpu().numpy().astype(np.float32),
+                    "b3": torch_net.fc3.bias.detach().cpu().numpy().astype(np.float32),
+                    "apply_tanh": apply_tanh,
+                }
         if hasattr(model, "net") and all(
             hasattr(model.net, attr) for attr in ("W1", "b1", "W2", "b2", "W3", "b3")
         ):
@@ -185,9 +211,9 @@ class ONNXExporter:
         else:
             raise TypeError(
                 "ONNXExporter requires a model exposing real weight matrices "
-                "(a SharedGaussianActor with a `.net` MLP, or an MLP-like "
-                "object with W1/b1/W2/b2/W3/b3 attributes directly). Got "
-                f"{type(model)!r} which has neither."
+                "(a SharedGaussianActor with a `.net` MLP/torch module, or "
+                "an MLP-like object with W1/b1/W2/b2/W3/b3 attributes "
+                f"directly). Got {type(model)!r} which has neither."
             )
 
         return {

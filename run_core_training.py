@@ -577,7 +577,16 @@ def _max_safe_gpu_workers(assumed_overhead_mb: float = 400.0, safety_factor: flo
     footprint itself is negligible next to that fixed per-context cost,
     and the real constraint is simply "how many contexts fit." Returns
     0 if CUDA isn't available at all (the common case on a CPU-only
-    pod, and the correct answer there regardless of VRAM math).
+    pod, and the correct answer there regardless of VRAM math), AND 0
+    if GPU use hasn't been explicitly opted into (DOCR_USE_GPU=1) --
+    see marl/marl_agents.py's module-level comment: auto-enabling GPU
+    is no longer this codebase's default policy at all, after the real
+    backprop rewrite measured GPU as *slower* than CPU for the actor
+    update (0.45x-0.67x) on this project's own test hardware. Computing
+    a nonzero cap when the user hasn't opted in would be pointless --
+    _adaptive_gpu_in_worker would just end up leaving every worker at
+    the already-disabled default anyway, so returning 0 here directly
+    is clearer than letting that happen indirectly.
     safety_factor further derates the naive free-VRAM/overhead
     division, since other processes (the main process, other workers
     starting concurrently) may also be claiming VRAM during the same
@@ -585,7 +594,7 @@ def _max_safe_gpu_workers(assumed_overhead_mb: float = 400.0, safety_factor: flo
     a precise accounting."""
     try:
         import marl.marl_agents as _ma
-        if not _ma.torch.cuda.is_available():
+        if not _ma._GPU_AVAILABLE:
             return 0
         free_bytes, _total_bytes = _ma.torch.cuda.mem_get_info()
         free_mb = free_bytes / (1024 ** 2)
@@ -604,12 +613,18 @@ def _adaptive_gpu_in_worker(max_gpu_workers: int):
     worker identity), forcing every other worker onto the CPU path.
     Replaces the blanket _disable_gpu_in_worker() for callers that want
     CPU multiprocessing to remain the primary, uncapped scaling lever
-    (every worker still runs, none are skipped) while letting a safe
-    number of them additionally get the real, measured GPU speedup on
-    the actor update (1.3x-1.6x in single-process mode -- see
-    marl/marl_agents.py's 2026-10-21 benchmark in EXPERIMENT_GUIDE.md
-    section 2.2.4) rather than leaving the GPU completely idle.
-    max_gpu_workers=0 behaves exactly like the old blanket disable.
+    (every worker still runs, none are skipped) while safely capping how
+    many may ALSO use GPU, for whoever has opted into it via
+    DOCR_USE_GPU=1 (see marl/marl_agents.py's _GPU_AVAILABLE policy).
+    max_gpu_workers=0 behaves exactly like the old blanket disable, and
+    is also what _max_safe_gpu_workers() always returns when GPU hasn't
+    been opted into -- which is the realistic default. Note that GPU is
+    NOT a default speedup for the current backprop-based training: it
+    was measured SLOWER than CPU for the actor update on this project's
+    own test hardware (0.45x-0.67x, EXPERIMENT_GUIDE.md section 2.2.4) --
+    this function's job is purely to make opting into GPU *safe* (no
+    concurrent-CUDA-context OOM) for whoever has verified it helps on
+    their own, different hardware, not to make it the recommended path.
 
     Relies on multiprocessing.current_process()._identity, a
     semi-private but long-stable API that gives each pool worker a
@@ -631,15 +646,16 @@ def _disable_gpu_in_worker():
     # method, every pool worker would independently open its OWN CUDA
     # context on the SAME physical device. On a small card (this machine
     # has 4GB) that's exactly the `torch.AcceleratorError: CUDA error: out
-    # of memory` already hit this session running the test suite. Since
-    # then the GPU path HAS been benchmarked as genuinely faster in
-    # single-process mode (1.3x-1.6x on the actor update -- see
-    # EXPERIMENT_GUIDE.md section 2.2.4's 2026-10-21 update) -- but that
-    # doesn't change this function's reasoning: a small consumer GPU still
-    # can't be safely time-sliced across N worker processes the way CPU
-    # cores can, so forcing the CPU path here still costs nothing (it's
-    # already numerically verified bit-identical) and avoids the same OOM
-    # crash recurring. Monkeypatching the live
+    # of memory` already hit this session running the test suite. GPU is
+    # opt-in now anyway (DOCR_USE_GPU=1, see marl/marl_agents.py's
+    # _GPU_AVAILABLE policy) after the real backprop rewrite measured it
+    # as *slower* than CPU for the actor update on this project's own
+    # test hardware (0.45x-0.67x -- EXPERIMENT_GUIDE.md section 2.2.4),
+    # so forcing the CPU path here costs nothing by default either way --
+    # this function (and the adaptive cap that calls it for ranks beyond
+    # max_gpu_workers) exists purely to make an explicit GPU opt-in safe
+    # on different, more powerful hardware where it might actually help,
+    # not because GPU is itself the goal. Monkeypatching the live
     # module globals (rather than e.g. env-var CUDA_VISIBLE_DEVICES) works
     # regardless of whether torch/marl_agents was already imported by the
     # time this initializer runs in the child process.

@@ -1,13 +1,13 @@
 {
   "fig_num": 58,
   "data": {
-    "of": 98.94031097251097,
-    "cti_ok": true,
+    "of": 1383.6422513905402,
+    "cti_ok": false,
     "pv_variability": 0.23225056439519548
   },
   "metadata": {
     "method": "_eval_seasonal",
-    "duration": 2.7452945709228516,
+    "duration": 8.862102031707764,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -80,7 +80,7 @@
       "season": "summer",
       "seasonal_temperature": 35.0
     },
-    "base_of": 66.7274903242306
+    "base_of": 75.71697685321797
   },
-  "timestamp": 1792088982.4689221
+  "timestamp": 1792686304.674264
 }

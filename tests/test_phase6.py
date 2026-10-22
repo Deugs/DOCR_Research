@@ -190,6 +190,46 @@ def test_inference_engine_reports_synthetic_fallback():
     print("    OK")
 
 
+def test_onnx_exporter_reads_real_torch_actor_weights():
+    """Test 7: ONNXExporter._get_architecture() against a REAL trained
+    SharedGaussianActor (not synthetic data -- nothing in this file, or
+    anywhere else in the suite, previously exercised this against an
+    actual actor instance). Added 2026-10-22 as a regression test: the
+    ES-to-backprop rewrite replaced the old hand-rolled MLP
+    (W1/b1/W2/b2/W3/b3 NumPy arrays) with a real torch.nn.Module
+    (fc1/fc2/fc3 nn.Linear layers), which broke this exporter outright --
+    confirmed it raised TypeError on any post-rewrite actor until
+    _get_architecture() was updated to also recognize the new structure.
+    Verifies both that extraction succeeds and that the extracted weights
+    reproduce the actor's real get_mean() output exactly (up to float32
+    rounding), not just that no exception is raised."""
+    print("  Test 7: ONNXExporter reads real torch actor weights...")
+    import numpy as np
+    from network.network_data import get_8bus
+    from marl.marl_env import DynamicDOCREnv
+    from marl.marl_agents import MAPPOMARLTrainer
+    from deployment.inference_engine import ONNXExporter
+
+    net = get_8bus()
+    env = DynamicDOCREnv(net, seed=1, use_pandapower=False, fault_type="3ph", curriculum_stage=3)
+    trainer = MAPPOMARLTrainer(env, use_comm=False, seed=1)
+    exporter = ONNXExporter(trainer.actor, input_shape=(env.OBS_DIM,))
+
+    arch = exporter._get_architecture()
+    for key in ("W1", "b1", "W2", "b2", "W3", "b3"):
+        assert key in arch and arch[key].size > 0
+    assert arch["apply_tanh"] is True
+
+    obs = np.random.default_rng(0).normal(size=env.OBS_DIM).astype(np.float32)
+    ref = trainer.actor.get_mean(obs)
+    h1 = np.maximum(0, arch["W1"] @ obs + arch["b1"])
+    h2 = np.maximum(0, arch["W2"] @ h1 + arch["b2"])
+    out = np.tanh(arch["W3"] @ h2 + arch["b3"])
+    assert np.allclose(ref, out, atol=1e-5), (
+        f"extracted weights don't reproduce the real actor's output: {ref} vs {out}")
+    print("    OK")
+
+
 if __name__ == "__main__":
     test_phase6_figure_set_matches_guide()
     test_fig18_runs_and_saves_real_file()
@@ -197,4 +237,5 @@ if __name__ == "__main__":
     test_fig18_warns_on_missing_cache()
     test_fig18_no_warning_with_real_cache()
     test_inference_engine_reports_synthetic_fallback()
+    test_onnx_exporter_reads_real_torch_actor_weights()
     print("All Phase 6 tests passed.")

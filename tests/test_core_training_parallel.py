@@ -205,24 +205,22 @@ def test_disable_gpu_in_worker_real_pool_workers():
 
 
 def test_max_safe_gpu_workers_sane_bounds():
-    """_max_safe_gpu_workers() must return 0 when CUDA isn't available
-    (the common case on a CPU-only Runpod pod, and the only correct
-    answer there regardless of any VRAM math), and a non-negative int
-    bounded by a loose sanity check when it is -- this is a conservative
-    estimate (see its own docstring), not an exact figure, so this only
-    checks the result is in a plausible range, not a specific value."""
+    """_max_safe_gpu_workers() must return 0 whenever GPU use hasn't been
+    explicitly opted into (DOCR_USE_GPU=1) regardless of whether CUDA
+    hardware is physically present (see marl/marl_agents.py's
+    _GPU_AVAILABLE policy -- auto-enabling GPU was removed after being
+    measured as a net slowdown for the real backprop training path), and
+    must also be 0 when CUDA genuinely isn't available at all. This test
+    runs without DOCR_USE_GPU set (the realistic default for a pytest
+    run), so 0 is the only correct answer here regardless of this
+    machine's actual hardware -- a separate, explicit opt-in test below
+    exercises the nonzero/VRAM-bounded path."""
     import marl.marl_agents as ma
     n = rct._max_safe_gpu_workers()
     assert isinstance(n, int) and n >= 0
-    if not ma.torch.cuda.is_available():
-        assert n == 0
-    else:
-        free_bytes, _ = ma.torch.cuda.mem_get_info()
-        free_mb = free_bytes / (1024 ** 2)
-        # Loose upper bound: even with zero safety derating and the
-        # smallest plausible per-context overhead, this many workers
-        # couldn't possibly fit in the free VRAM reported right now.
-        assert n <= max(1, int(free_mb // 100))
+    assert os.environ.get("DOCR_USE_GPU") != "1", (
+        "this test assumes GPU opt-in is NOT set in the test environment")
+    assert n == 0, "must be 0 without the explicit DOCR_USE_GPU=1 opt-in"
 
 
 def _gpu_flag_with_rank_job(_):
@@ -263,9 +261,17 @@ def test_adaptive_gpu_in_worker_real_pool_caps_correctly():
     of whether this machine actually has a GPU (that part is
     deterministic either way); workers within the cap retain the
     machine's natural state, which this test independently confirms
-    against torch.cuda.is_available() rather than assuming either value."""
+    against marl.marl_agents._GPU_AVAILABLE rather than assuming either
+    value. Deliberately NOT torch.cuda.is_available(): since the
+    2026-10-22 policy change, _GPU_AVAILABLE also requires the explicit
+    DOCR_USE_GPU=1 opt-in (GPU auto-activation was removed after being
+    measured as a net slowdown for the real backprop training path on
+    this project's own hardware), so it can be False even when CUDA
+    hardware is physically present and torch.cuda.is_available() is
+    True -- that's the actual contract _adaptive_gpu_in_worker preserves
+    or overrides, not raw hardware presence."""
     import marl.marl_agents as ma
-    natural_gpu_state = ma.torch.cuda.is_available()
+    natural_gpu_state = ma._GPU_AVAILABLE
 
     results = list(rct._run_pool([1, 2, 3], _gpu_flag_with_rank_job, 3,
                                   initializer=rct._adaptive_gpu_in_worker, initargs=(1,)))
