@@ -79,29 +79,34 @@ class DataFlowLogger:
         self.records = []
         self._original_update = None
         self._original_rollout = None
+        self._original_actor_update = None
 
     def install_hooks(self):
         """Monkey-patch the trainer to capture intermediate tensors.
 
-        MAPPOMARLTrainer has no `_update_policy` method -- it trains via
-        evolution strategies (see `_update_critic_es`/`_update_actor_es`),
-        not gradient-based PPO, so a `hasattr(trainer, '_update_policy')`
-        guard was always False and this logger silently fell back to
-        `_generate_synthetic_records()` on every real run. Hook the two
-        methods that actually exist and are unconditionally called every
-        training iteration.
+        2026-10-22: the ES-to-backprop rewrite renamed `_update_critic_es`/
+        `_update_actor_es` to `_update_critic`/`_update_actor` -- this
+        logger previously hooked the old names, so `install_hooks()` raised
+        AttributeError immediately on any post-rewrite trainer. Now hooks
+        the real names, plus `_update_actor` (not hooked before) so real
+        PPO diagnostics (entropy, clip fraction, approx KL) can be read off
+        instead of recorded as NaN -- see `_patched_actor_update`.
         """
         self._original_rollout = self.trainer._collect_rollout
         self.trainer._collect_rollout = self._patched_rollout
-        self._original_update = self.trainer._update_critic_es
-        self.trainer._update_critic_es = self._patched_update
+        self._original_update = self.trainer._update_critic
+        self.trainer._update_critic = self._patched_update
+        self._original_actor_update = self.trainer._update_actor
+        self.trainer._update_actor = self._patched_actor_update
         logger.info("Data-flow hooks installed.")
 
     def uninstall_hooks(self):
         if self._original_rollout:
             self.trainer._collect_rollout = self._original_rollout
         if self._original_update:
-            self.trainer._update_critic_es = self._original_update
+            self.trainer._update_critic = self._original_update
+        if self._original_actor_update:
+            self.trainer._update_actor = self._original_actor_update
 
     def _patched_rollout(self, *args, **kwargs):
         """Intercept rollout to log observation/action shapes.
@@ -143,25 +148,58 @@ class DataFlowLogger:
         self._critic_before_iter = self.trainer.critic.get_params().copy()
         self._actor_before_iter = self.trainer.actor.get_all_params().copy()
         self._update_time_ms_this_iter = 0.0
+        self._actor_entropy_sum = 0.0
+        self._actor_approx_kl_sum = 0.0
+        self._actor_clip_frac_sum = 0.0
+        self._actor_update_count = 0
+        self._ret_batch_for_ev = None
         return result
 
-    def _patched_update(self, *args, **kwargs):
-        """Intercept the critic ES update to log per-step diagnostics.
+    def _patched_actor_update(self, agent_idx, obs_batch, act_batch, adv_batch, old_lp, *args, **kwargs):
+        """Intercept the (shared) actor's real PPO-clip update to capture
+        entropy/approx-KL/clip-fraction. 2026-10-22: these are now genuinely
+        computable (real backprop, see marl/marl_agents.py's
+        SharedGaussianActor.update()) -- previously recorded as NaN only
+        because the ES-era trainer had no such quantities to read off.
+        Entropy of this architecture's diagonal Gaussian doesn't depend on
+        obs (log_std is a single shared parameter, not network output), so
+        it's one cheap closed-form value per call, not a per-sample one.
+        """
+        result = self._original_actor_update(agent_idx, obs_batch, act_batch, adv_batch, old_lp, *args, **kwargs)
 
-        This trainer optimizes via OpenAI-ES (finite-difference parameter
-        perturbations), not backprop -- there is no loss tensor, gradient,
-        KL divergence, or PPO clip fraction to read off anywhere. Rather
-        than fabricate those PPO-specific fields as 0.0 (which would read
-        as "computed and zero" instead of "not applicable"), they are
-        recorded as NaN. `grad_norm_actor`/`grad_norm_critic` are real,
-        computed as the L2 norm of the actual parameter update accumulated
-        across this training step's epochs.
+        new_lp = self.trainer.actor.log_prob(obs_batch, act_batch)
+        log_ratio = new_lp - np.asarray(old_lp)
+        approx_kl = float(np.mean(-log_ratio))
+        clip_frac = float(np.mean(np.abs(np.exp(log_ratio) - 1.0) > self.trainer.clip_eps))
+        log_std = self.trainer.actor.log_std.detach().cpu().numpy()
+        entropy = float(np.sum(log_std) + 0.5 * self.trainer.actor.act_dim * np.log(2 * np.pi * np.e))
+
+        self._actor_entropy_sum += entropy
+        self._actor_approx_kl_sum += approx_kl
+        self._actor_clip_frac_sum += clip_frac
+        self._actor_update_count += 1
+        return result
+
+    def _patched_update(self, obs_batch, ret_batch, *args, **kwargs):
+        """Intercept the critic's real MSE update to log per-step
+        diagnostics.
+
+        2026-10-22: this trainer now optimizes via real backprop + Adam
+        (see marl/marl_agents.py), not OpenAI-ES -- entropy/clip-fraction/
+        approx-KL (captured by `_patched_actor_update` above, averaged
+        across this iteration's actor updates) and explained-variance
+        (computed here from the rollout's pre-update value estimates vs.
+        the GAE returns) are real PPO diagnostics now, not NaN. EWC/CTI
+        fields stay NaN/0 -- this script's `main()` doesn't wrap the env in
+        Safe RL or an EWC trainer, so those are genuinely not applicable
+        here, not unavailable due to a missing hook.
         """
         import time
         t0 = time.perf_counter()
-        result = self._original_update(*args, **kwargs)
+        result = self._original_update(obs_batch, ret_batch, *args, **kwargs)
         dt = (time.perf_counter() - t0) * 1000
         self._update_time_ms_this_iter += dt
+        self._ret_batch_for_ev = np.asarray(ret_batch)
         self._epoch_calls_this_iter += 1
 
         if self._epoch_calls_this_iter < self.trainer.n_epochs:
@@ -169,6 +207,26 @@ class DataFlowLogger:
 
         grad_norm_critic = float(np.linalg.norm(self.trainer.critic.get_params() - self._critic_before_iter))
         grad_norm_actor = float(np.linalg.norm(self.trainer.actor.get_all_params() - self._actor_before_iter))
+
+        n_updates = max(self._actor_update_count, 1)
+        entropy = self._actor_entropy_sum / n_updates
+        approx_kl = self._actor_approx_kl_sum / n_updates
+        clip_fraction = self._actor_clip_frac_sum / n_updates
+
+        # Explained variance against the PRE-update value estimates
+        # (buffer.values, computed during rollout) vs. this iteration's
+        # GAE returns -- the standard PPO monitoring convention (how well
+        # last rollout's critic predicted the returns it's about to be
+        # trained on), not the post-update critic (which would require an
+        # extra forward pass this hook has no cheap access to).
+        T = len(self._ret_batch_for_ev) if self._ret_batch_for_ev is not None else 0
+        if T > 0:
+            pre_values = self.trainer.buffer.values[:T]
+            returns_mean = self._ret_batch_for_ev.mean(axis=1) if self._ret_batch_for_ev.ndim > 1 else self._ret_batch_for_ev
+            var_ret = np.var(returns_mean)
+            explained_variance = float(1.0 - np.var(returns_mean - pre_values) / var_ret) if var_ret > 1e-12 else float('nan')
+        else:
+            explained_variance = float('nan')
 
         n_pairs = self.trainer.env.net.n_pairs
         rb = self._last_rollout
@@ -193,10 +251,10 @@ class DataFlowLogger:
             value_pred=rb.get('value_mean', 0.0),
             advantage=float('nan'),
             log_prob=rb.get('log_prob_mean', 0.0),
-            entropy=float('nan'),
-            clip_fraction=float('nan'),
-            approx_kl=float('nan'),
-            explained_variance=float('nan'),
+            entropy=entropy,
+            clip_fraction=clip_fraction,
+            approx_kl=approx_kl,
+            explained_variance=explained_variance,
             grad_norm_actor=grad_norm_actor,
             grad_norm_critic=grad_norm_critic,
             grad_norm_gnn=float('nan'),

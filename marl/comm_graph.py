@@ -588,5 +588,6 @@ def build_relay_adjacency(net) -> np.ndarray:
 # a real PPO-clip backprop step through the actual downstream policy
 # objective instead of an ES-estimated advantage-weighted-alignment proxy.
 # See git history for the removed class if the old math is ever needed for
-# reference. marl/comm_graph_gradient.py's own, separate GNNCommTrainer
-# (a dormant fork, unaffected by this change) is untouched.
+# reference. The dormant marl/comm_graph_gradient.py fork (its own,
+# separate GNNCommTrainer) was retired the same day, now fully superseded
+# by this module -- see git history for that file too if ever needed.
