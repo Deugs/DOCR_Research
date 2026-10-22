@@ -204,6 +204,78 @@ def test_disable_gpu_in_worker_real_pool_workers():
     assert flags == [False, False, False]
 
 
+def test_max_safe_gpu_workers_sane_bounds():
+    """_max_safe_gpu_workers() must return 0 when CUDA isn't available
+    (the common case on a CPU-only Runpod pod, and the only correct
+    answer there regardless of any VRAM math), and a non-negative int
+    bounded by a loose sanity check when it is -- this is a conservative
+    estimate (see its own docstring), not an exact figure, so this only
+    checks the result is in a plausible range, not a specific value."""
+    import marl.marl_agents as ma
+    n = rct._max_safe_gpu_workers()
+    assert isinstance(n, int) and n >= 0
+    if not ma.torch.cuda.is_available():
+        assert n == 0
+    else:
+        free_bytes, _ = ma.torch.cuda.mem_get_info()
+        free_mb = free_bytes / (1024 ** 2)
+        # Loose upper bound: even with zero safety derating and the
+        # smallest plausible per-context overhead, this many workers
+        # couldn't possibly fit in the free VRAM reported right now.
+        assert n <= max(1, int(free_mb // 100))
+
+
+def _gpu_flag_with_rank_job(_):
+    import marl.marl_agents as ma
+    import multiprocessing as mp
+    identity = mp.current_process()._identity
+    rank = identity[0] if identity else 1
+    return rank, ma._GPU_AVAILABLE
+
+
+def test_adaptive_gpu_in_worker_sequential_path():
+    """_adaptive_gpu_in_worker(max_gpu_workers) must force _GPU_AVAILABLE
+    False once the (1-indexed) worker rank exceeds max_gpu_workers --
+    verified via the sequential path (same-process monkeypatch, always
+    safe to run). The sequential path's "worker" is rank 1 by convention
+    (see _adaptive_gpu_in_worker's identity-less fallback), so
+    max_gpu_workers=0 must disable it.
+
+    Deliberately does NOT also assert the "stays enabled within the cap"
+    case here: _adaptive_gpu_in_worker is a one-shot per-process
+    initializer with no re-enable path by design (matching real usage --
+    it only ever runs once per real process, at that process's startup),
+    so calling it twice in the same process with different
+    max_gpu_workers values would just observe this test's own first call's
+    leftover monkeypatch, not a fresh natural state. That case is instead
+    verified correctly in test_adaptive_gpu_in_worker_real_pool_caps_correctly,
+    where each worker genuinely starts in its own fresh process."""
+    results = list(rct._run_pool([1], _gpu_flag_job, 1,
+                                  initializer=rct._adaptive_gpu_in_worker, initargs=(0,)))
+    assert results[0][1] is False
+
+
+@_skip_if_low_ram
+def test_adaptive_gpu_in_worker_real_pool_caps_correctly():
+    """Inside a real 3-worker pool, only the workers whose rank falls
+    within max_gpu_workers may retain CUDA -- every worker beyond the cap
+    must be deterministically forced to _GPU_AVAILABLE=False regardless
+    of whether this machine actually has a GPU (that part is
+    deterministic either way); workers within the cap retain the
+    machine's natural state, which this test independently confirms
+    against torch.cuda.is_available() rather than assuming either value."""
+    import marl.marl_agents as ma
+    natural_gpu_state = ma.torch.cuda.is_available()
+
+    results = list(rct._run_pool([1, 2, 3], _gpu_flag_with_rank_job, 3,
+                                  initializer=rct._adaptive_gpu_in_worker, initargs=(1,)))
+    by_rank = dict(results)
+    assert set(by_rank.keys()) == {1, 2, 3}
+    assert by_rank[1] is natural_gpu_state, "rank within the cap should keep the natural GPU state"
+    assert by_rank[2] is False, "rank beyond the cap must be forced off"
+    assert by_rank[3] is False, "rank beyond the cap must be forced off"
+
+
 @_skip_if_low_ram
 def test_core_k_season_sweep_parallel_matches_sequential():
     """Real end-to-end check of the exact pattern Cores G/H/K all share:

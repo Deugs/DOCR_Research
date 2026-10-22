@@ -131,6 +131,73 @@ def objective_function(
     return OF, sum_top, penalty
 
 
+def objective_function_batch_gpu(net, TMS_batch, PS_batch, alpha1=1.0, alpha2=100.0,
+                                  beta=50.0, fault_type="3ph", device=None):
+    """GPU-batched counterpart of objective_function(): evaluates a whole
+    POPULATION of (TMS, PS) candidates at once via torch tensors, for
+    population-based metaheuristics (baselines/ga_sqp.py,
+    baselines/metaheuristics.py) -- 2026-10-22 GPU-port addition, part of
+    the same ES-to-backprop/GPU rewrite as marl/marl_agents.py (see its
+    module docstring), though this specific function has nothing to do
+    with gradients -- it's a plain batched forward evaluation, since
+    GA/WOA/HHO/JAYA/EEO are gradient-free population search by design.
+
+    Only supports the static-fault-current path (no topology_state);
+    callers needing dynamic/topology-aware fault currents should fall
+    back to the per-individual objective_function() loop, same as before
+    this addition. Identical closed-form math to idmt_time_vec/
+    objective_function above, just batched over a population dimension.
+
+    TMS_batch/PS_batch: (pop_size, n_relays) numpy arrays. Returns
+    (pop_size,) numpy array of OF values.
+
+    Lazy torch import (not module-level): this file is imported very
+    early in the real dependency chain (network/pandapower_network.py
+    imports it before its own pandapower import), and torch-before-
+    pandapower segfaults with zero diagnostic output on at least one real
+    development machine used on this project (see marl/marl_agents.py's
+    module-level comment) -- a lazy import here means relay_physics.py
+    itself never forces an import order; only whatever actually calls
+    this function does, and every real caller already has pandapower
+    loaded by then (baselines/ga_sqp.py and baselines/metaheuristics.py
+    both import network.network_data first).
+    """
+    import torch
+    dev = torch.device(device) if device is not None else torch.device("cpu")
+
+    primary = np.array([p.primary for p in net.pairs])
+    backup = np.array([p.backup for p in net.pairs])
+    ft_scale = FAULT_TYPE_WEIGHTS.get(fault_type, 1.0)
+    If_pri = np.array([p.If_pri for p in net.pairs]) * ft_scale
+    If_bkp = np.array([p.If_bkp for p in net.pairs]) * ft_scale
+
+    TMS_t = torch.as_tensor(TMS_batch, dtype=torch.float32, device=dev)  # (P, n_relays)
+    PS_t = torch.as_tensor(PS_batch, dtype=torch.float32, device=dev)
+    If_pri_t = torch.as_tensor(If_pri, dtype=torch.float32, device=dev)  # (n_pairs,)
+    If_bkp_t = torch.as_tensor(If_bkp, dtype=torch.float32, device=dev)
+    primary_t = torch.as_tensor(primary, dtype=torch.long, device=dev)
+    backup_t = torch.as_tensor(backup, dtype=torch.long, device=dev)
+
+    def idmt_batch(If, PS_sel, TMS_sel):
+        """Batched counterpart of idmt_time_vec, same formula/floors."""
+        ratio = If[None, :] / PS_sel  # (P, n_pairs)
+        safe = torch.where(ratio > 1.0, ratio, torch.full_like(ratio, 1.0 + 1e-9))
+        t = A_COEFF * TMS_sel / (safe ** B_COEFF - 1.0)
+        t = torch.where(ratio > 1.0, t, torch.full_like(t, TOP_MAX))
+        return torch.clamp(t, TOP_MIN, TOP_MAX)
+
+    t_pri = idmt_batch(If_pri_t, PS_t[:, primary_t], TMS_t[:, primary_t])
+    t_bkp = idmt_batch(If_bkp_t, PS_t[:, backup_t], TMS_t[:, backup_t])
+
+    sum_top = t_pri.sum(dim=1)  # (P,)
+    delta = t_bkp - t_pri - CTI
+    viol_coord = torch.clamp(delta, max=0.0).pow(2).sum(dim=1)
+    viol_mintime = torch.clamp(t_bkp - CTI, max=0.0).pow(2).sum(dim=1)
+    penalty = alpha2 * viol_coord + beta * viol_mintime
+    OF = sum_top + alpha1 * penalty
+    return OF.cpu().numpy()
+
+
 def check_constraints(
     net: NetworkData,
     TMS: np.ndarray,

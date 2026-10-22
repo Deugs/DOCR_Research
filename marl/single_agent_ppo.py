@@ -34,57 +34,45 @@ from network.relay_physics import (
 )
 from environment.dynamic_network import DistributionNetwork
 
+# torch required as of 2026-10-22 -- see marl/marl_agents.py's module-level
+# comment for the full ES-to-backprop rewrite this file is part of,
+# including the import-order warning (import something from network/
+# environment/marl before torch, not after -- satisfied here already by
+# the NetworkData/DistributionNetwork imports above).
+import torch
+
 
 def relu(x): return np.maximum(0, x)
 def tanh(x): return np.tanh(x)
 
 
-class MLP:
-    """2-hidden-layer MLP: in -> h1 -> h2 -> out."""
+def _default_device():
+    """Mirrors marl/marl_agents.py's _default_device -- resolves at call
+    time so a CUDA-disabling monkeypatch (e.g.
+    run_core_training.py's _disable_gpu_in_worker) still works."""
+    import marl.marl_agents as _ma
+    return _ma._GPU_DEVICE if _ma._GPU_AVAILABLE else torch.device("cpu")
+
+
+class _TorchMLP(torch.nn.Module):
+    """2-hidden-layer MLP: in -> h1 -> h2 -> out. See
+    marl/marl_agents.py's _TorchMLP for the rationale (real backprop +
+    Adam replacing OpenAI-ES, 2026-10-22)."""
 
     def __init__(self, in_dim, hidden, out_dim, seed=0):
-        rng = np.random.default_rng(seed)
-        s = lambda a: np.sqrt(2.0 / a)
-        self.W1 = rng.normal(0, s(in_dim), (hidden, in_dim))
-        self.b1 = np.zeros(hidden)
-        self.W2 = rng.normal(0, s(hidden), (hidden, hidden))
-        self.b2 = np.zeros(hidden)
-        self.W3 = rng.normal(0, s(hidden), (out_dim, hidden))
-        self.b3 = np.zeros(out_dim)
+        super().__init__()
+        gen = torch.Generator().manual_seed(seed)
+        self.fc1 = torch.nn.Linear(in_dim, hidden)
+        self.fc2 = torch.nn.Linear(hidden, hidden)
+        self.fc3 = torch.nn.Linear(hidden, out_dim)
+        for layer, fan_in in ((self.fc1, in_dim), (self.fc2, hidden), (self.fc3, hidden)):
+            torch.nn.init.normal_(layer.weight, mean=0.0, std=(2.0 / fan_in) ** 0.5, generator=gen)
+            torch.nn.init.zeros_(layer.bias)
 
     def forward(self, x):
-        """x: (in_dim,) single input, or (T, in_dim) batch — see
-        marl/marl_agents.py's MLP.forward for why batching this matters
-        (ES perturbation evaluation re-scores a whole rollout at once)."""
-        x = np.asarray(x)
-        if x.ndim == 1:
-            h1 = relu(self.W1 @ x + self.b1)
-            h2 = relu(self.W2 @ h1 + self.b2)
-            return self.W3 @ h2 + self.b3
-        else:
-            h1 = relu(x @ self.W1.T + self.b1)
-            h2 = relu(h1 @ self.W2.T + self.b2)
-            return h2 @ self.W3.T + self.b3
-
-    def get_params(self):
-        return np.concatenate([
-            self.W1.ravel(), self.b1,
-            self.W2.ravel(), self.b2,
-            self.W3.ravel(), self.b3,
-        ])
-
-    def set_params(self, p):
-        sizes = [self.W1.size, self.b1.size, self.W2.size, self.b2.size, self.W3.size, self.b3.size]
-        chunks = np.split(p, np.cumsum(sizes[:-1]))
-        self.W1 = chunks[0].reshape(self.W1.shape)
-        self.b1 = chunks[1]
-        self.W2 = chunks[2].reshape(self.W2.shape)
-        self.b2 = chunks[3]
-        self.W3 = chunks[4].reshape(self.W3.shape)
-        self.b3 = chunks[5]
-
-    def n_params(self):
-        return sum(p.size for p in [self.W1, self.b1, self.W2, self.b2, self.W3, self.b3])
+        h1 = torch.relu(self.fc1(x))
+        h2 = torch.relu(self.fc2(h1))
+        return self.fc3(h2)
 
 
 class CentralizedGaussianActor:
@@ -94,49 +82,89 @@ class CentralizedGaussianActor:
     Action: [TMS_1..N, PS_1..N] -> mapped to valid ranges
     """
 
-    def __init__(self, obs_dim, n_relays, hidden=64, seed=0):
+    def __init__(self, obs_dim, n_relays, hidden=64, seed=0, device=None, lr=3e-4):
         self.n_relays = n_relays
         self.act_dim = n_relays * 2  # TMS + PS for each relay
-        self.net = MLP(obs_dim, hidden, self.act_dim, seed)
-        self.log_std = np.full(self.act_dim, -1.5)
+        self.device = torch.device(device) if device is not None else _default_device()
+        self.net = _TorchMLP(obs_dim, hidden, self.act_dim, seed).to(self.device)
+        self.log_std = torch.nn.Parameter(torch.full((self.act_dim,), -1.5, device=self.device))
+        self.optimizer = torch.optim.Adam(list(self.net.parameters()) + [self.log_std], lr=lr)
 
         # Action bounds
         self.tms_min = TMS_MIN
         self.tms_max = TMS_MAX
 
     def get_mean(self, obs):
-        """Get mean action in normalized space [-1, 1]."""
-        return tanh(self.net.forward(obs))
+        """Get mean action in normalized space [-1, 1]. NumPy in/out,
+        no-grad -- the rollout-collection hot path."""
+        obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            mean = torch.tanh(self.net(obs_t))
+        return mean.cpu().numpy()
 
     def sample(self, obs, rng) -> Tuple[np.ndarray, float]:
         """Sample action and compute log probability."""
         mean = self.get_mean(obs)
-        std = np.exp(np.clip(self.log_std, -4, 0))
+        log_std_np = self.log_std.detach().cpu().numpy()
+        std = np.exp(np.clip(log_std_np, -4, 0))
         noise = rng.normal(0, 1, self.act_dim)
         action_norm = np.clip(mean + std * noise, -1.0, 1.0)
-
-        # Log prob
         log_prob = float(np.sum(
-            -0.5 * (noise**2 + 2*self.log_std + np.log(2*np.pi))))
-
+            -0.5 * (noise**2 + 2*log_std_np + np.log(2*np.pi))))
         return action_norm, log_prob
 
+    def _log_prob_t(self, obs_t, act_t):
+        """Differentiable log-prob, used by both log_prob() (no_grad) and
+        update() (with grad tracking)."""
+        mean = torch.tanh(self.net(obs_t))
+        std = torch.exp(torch.clamp(self.log_std, -4, 0))
+        z = (act_t - mean) / (std + 1e-8)
+        terms = -0.5 * (z**2 + 2 * self.log_std + np.log(2 * np.pi))
+        return terms.sum(dim=-1)
+
     def log_prob(self, obs, action_norm):
-        """Compute log probability of action(s).
+        """Compute log probability of action(s). NumPy in, NumPy/float
+        out, no-grad.
 
         obs/action_norm of shape (obs_dim,)/(act_dim,) -> scalar float.
-        obs/action_norm of shape (T, obs_dim)/(T, act_dim) -> (T,) array,
-        replacing what used to require a Python loop of T individual
-        log_prob() calls at every ES perturbation evaluation.
+        obs/action_norm of shape (T, obs_dim)/(T, act_dim) -> (T,) array.
         """
-        obs = np.asarray(obs)
-        mean = self.get_mean(obs)
-        std = np.exp(np.clip(self.log_std, -4, 0))
-        z = (action_norm - mean) / (std + 1e-8)
-        terms = -0.5 * (z**2 + 2 * self.log_std + np.log(2 * np.pi))
-        if obs.ndim == 1:
-            return float(np.sum(terms))
-        return np.sum(terms, axis=-1)
+        obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=self.device)
+        act_t = torch.as_tensor(np.asarray(action_norm), dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            lp = self._log_prob_t(obs_t, act_t)
+        return float(lp.item()) if obs_t.ndim == 1 else lp.cpu().numpy()
+
+    def update(self, obs_batch, act_batch, adv_batch, old_lp_batch, clip_eps=0.2):
+        """One real PPO-clip gradient step via backprop + Adam, replacing
+        _update_actor_es's one ES generation."""
+        obs_t = torch.as_tensor(np.asarray(obs_batch), dtype=torch.float32, device=self.device)
+        act_t = torch.as_tensor(np.asarray(act_batch), dtype=torch.float32, device=self.device)
+        adv_t = torch.as_tensor(np.asarray(adv_batch), dtype=torch.float32, device=self.device)
+        old_lp_t = torch.as_tensor(np.asarray(old_lp_batch), dtype=torch.float32, device=self.device)
+
+        self.optimizer.zero_grad()
+        new_lp = self._log_prob_t(obs_t, act_t)
+        ratio = torch.exp(torch.clamp(new_lp - old_lp_t, -5, 5))
+        clip_r = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
+        loss = -torch.minimum(ratio * adv_t, clip_r * adv_t).mean()
+        loss.backward()
+        self.optimizer.step()
+        return float(loss.item())
+
+    def get_all_params(self):
+        """Flat parameter vector -- kept for backward compatibility with
+        ES-era tests/fixtures, see marl_agents.SharedGaussianActor's
+        equivalent note."""
+        with torch.no_grad():
+            flat = torch.cat([p.reshape(-1) for p in self.net.parameters()] + [self.log_std.reshape(-1)])
+        return flat.cpu().numpy()
+
+    def set_all_params(self, p):
+        p_t = torch.as_tensor(np.asarray(p), dtype=torch.float32, device=self.device)
+        torch.nn.utils.vector_to_parameters(p_t[:-self.act_dim], self.net.parameters())
+        with torch.no_grad():
+            self.log_std.copy_(p_t[-self.act_dim:])
 
     def decode_action(self, action_norm, ps_min, ps_max):
         """
@@ -166,38 +194,54 @@ class CentralizedGaussianActor:
         ps_norm = 2 * (PS - ps_min) / (ps_max - ps_min) - 1
         return np.concatenate([tms_norm, ps_norm])
 
-    def get_all_params(self):
-        return np.concatenate([self.net.get_params(), self.log_std])
-
-    def set_all_params(self, p):
-        n = self.net.n_params()
-        self.net.set_params(p[:n])
-        self.log_std = p[n:n + self.act_dim]
-
 
 class CentralizedCritic:
     """Centralized value function on global state."""
 
-    def __init__(self, obs_dim, hidden=64, seed=0):
-        self.net = MLP(obs_dim, hidden, 1, seed)
+    def __init__(self, obs_dim, hidden=64, seed=0, device=None, lr=1e-3):
+        self.device = torch.device(device) if device is not None else _default_device()
+        self.net = _TorchMLP(obs_dim, hidden, 1, seed).to(self.device)
+        self.optimizer = torch.optim.Adam(self.net.parameters(), lr=lr)
 
     def value(self, obs) -> float:
-        return float(self.net.forward(obs)[0])
+        """NumPy in, float out, no-grad -- the rollout-collection hot path."""
+        obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            return float(self.net(obs_t)[0].item())
 
     def value_batch(self, obs_batch: np.ndarray) -> np.ndarray:
-        """Batched form of value(): obs_batch (T, obs_dim) -> (T,) predictions
-        via one vectorized MLP.forward call instead of a Python loop over T
-        individual value() calls (used by the ES critic update)."""
-        return self.net.forward(obs_batch).ravel()
+        """Batched form of value(). NumPy in, NumPy out, no-grad (see
+        update() for the differentiable path)."""
+        obs_t = torch.as_tensor(np.asarray(obs_batch), dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            return self.net(obs_t).cpu().numpy().ravel()
+
+    def update(self, obs_batch, ret_batch):
+        """One real MSE gradient step via backprop + Adam, replacing the
+        old ES generation."""
+        obs_t = torch.as_tensor(np.asarray(obs_batch), dtype=torch.float32, device=self.device)
+        ret_t = torch.as_tensor(np.asarray(ret_batch), dtype=torch.float32, device=self.device)
+
+        self.optimizer.zero_grad()
+        pred = self.net(obs_t)[:, 0]
+        loss = torch.mean((ret_t - pred) ** 2)
+        loss.backward()
+        self.optimizer.step()
+        return float(loss.item())
 
     def get_params(self):
-        return self.net.get_params()
+        """Flat parameter vector -- kept for backward compatibility with
+        ES-era tests/fixtures."""
+        with torch.no_grad():
+            flat = torch.cat([p.reshape(-1) for p in self.net.parameters()])
+        return flat.cpu().numpy()
 
     def set_params(self, p):
-        self.net.set_params(p)
+        p_t = torch.as_tensor(np.asarray(p), dtype=torch.float32, device=self.device)
+        torch.nn.utils.vector_to_parameters(p_t, self.net.parameters())
 
     def n_params(self):
-        return self.net.n_params()
+        return sum(p.numel() for p in self.net.parameters())
 
 
 class CentralizedPPOEnvironment:
@@ -345,8 +389,8 @@ class SinglePPOTrainer:
         env: CentralizedPPOEnvironment,
         hidden_actor: int = 128,
         hidden_critic: int = 128,
-        lr_actor: float = 0.01,
-        lr_critic: float = 0.01,
+        lr_actor: float = 3e-4,
+        lr_critic: float = 1e-3,
         clip_eps: float = 0.2,
         gamma: float = 0.99,
         lam: float = 0.95,
@@ -366,9 +410,9 @@ class SinglePPOTrainer:
         self.rng = np.random.default_rng(seed)
 
         self.actor = CentralizedGaussianActor(
-            env.OBS_DIM, self.n_relays, hidden_actor, seed
+            env.OBS_DIM, self.n_relays, hidden_actor, seed, lr=lr_actor
         )
-        self.critic = CentralizedCritic(env.OBS_DIM, hidden_critic, seed + 999)
+        self.critic = CentralizedCritic(env.OBS_DIM, hidden_critic, seed + 999, lr=lr_critic)
 
         # Buffers
         self.obs_buf = np.zeros((rollout_len, env.OBS_DIM))
@@ -378,56 +422,15 @@ class SinglePPOTrainer:
         self.lp_buf = np.zeros(rollout_len)
         self.done_buf = np.zeros(rollout_len, dtype=bool)
 
-    def _update_actor_es(self, obs_batch, act_batch, adv_batch, old_lp, n_pert=10, sigma=0.02):
-        """OpenAI-ES surrogate policy gradient with PPO-clip.
+    def _update_actor(self, obs_batch, act_batch, adv_batch, old_lp):
+        """One real PPO-clip gradient step via backprop + Adam, replacing
+        the old ES generation (_update_actor_es)."""
+        self.actor.update(obs_batch, act_batch, adv_batch, old_lp, clip_eps=self.clip_eps)
 
-        `eps` below is already sigma-scaled (~N(0, sigma^2)), not unit
-        noise, so the standard antithetic ES gradient estimate
-        (1/(2*n*sigma)) * sum[(r+ - r-) * unit_eps_i] normalizes to
-        sigma**2 in the denominator here, not sigma — dividing by plain
-        sigma left the gradient magnitude inflated by 1/sigma (50x at
-        the default sigma=0.02). marl/comm_graph.py's ES update already
-        uses the correct sigma**2 form; this now matches it.
-        """
-        theta = self.actor.get_all_params()
-        noises, rewards = [], []
-
-        for _ in range(n_pert):
-            eps = self.rng.normal(0, sigma, len(theta))
-            for sign in (+1, -1):
-                self.actor.set_all_params(theta + sign * eps)
-                new_lp = self.actor.log_prob(obs_batch, act_batch)
-                ratio = np.exp(np.clip(new_lp - old_lp, -5, 5))
-                clip_r = np.clip(ratio, 1 - self.clip_eps, 1 + self.clip_eps)
-                surr = float(np.mean(np.minimum(ratio * adv_batch, clip_r * adv_batch)))
-                noises.append(sign * eps)
-                rewards.append(surr)
-
-        r_arr = np.array(rewards)
-        r_norm = (r_arr - r_arr.mean()) / (r_arr.std() + 1e-8)
-        grad = sum(r * n for r, n in zip(r_norm, noises))
-        grad /= (2 * n_pert * sigma ** 2)
-        self.actor.set_all_params(theta + self.lr_actor * grad)
-
-    def _update_critic(self, obs_batch, ret_batch, n_pert=10, sigma=0.02):
-        """Update critic with ES."""
-        theta = self.critic.get_params()
-        noises, losses = [], []
-
-        for _ in range(n_pert):
-            eps = self.rng.normal(0, sigma, len(theta))
-            for sign in (+1, -1):
-                self.critic.set_params(theta + sign * eps)
-                pred = self.critic.value_batch(obs_batch)
-                loss = -float(np.mean((ret_batch - pred) ** 2))
-                noises.append(sign * eps)
-                losses.append(loss)
-
-        l_arr = np.array(losses)
-        l_norm = (l_arr - l_arr.mean()) / (l_arr.std() + 1e-8)
-        grad = sum(l * n for l, n in zip(l_norm, noises))
-        grad /= (2 * n_pert * sigma ** 2)
-        self.critic.set_params(theta + self.lr_critic * grad)
+    def _update_critic(self, obs_batch, ret_batch):
+        """One real MSE gradient step via backprop + Adam, replacing the
+        old ES generation."""
+        self.critic.update(obs_batch, ret_batch)
 
     def _collect_rollout(self, obs):
         """Collect one rollout of experience."""
@@ -513,7 +516,7 @@ class SinglePPOTrainer:
 
             # Update actor
             for _ in range(self.n_epochs):
-                self._update_actor_es(
+                self._update_actor(
                     self.obs_buf, self.act_buf, advs, self.lp_buf
                 )
 

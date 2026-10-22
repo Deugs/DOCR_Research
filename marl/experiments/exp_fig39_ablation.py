@@ -113,14 +113,19 @@ def run_config(name, use_comm, use_safe, use_ewc, use_curriculum, seed=42):
 
     def _estimate_fisher_for_task(n_params, n_samples=200):
         """
-        Real finite-difference Fisher diagonal: F_i ≈ E[(d log π(a|o)/dθ_i)²],
-        estimated by sampling fresh trajectories from the CURRENT (about
-        to be superseded) policy and perturbing each parameter slightly.
-        Replaces the placeholder np.ones(n_params)*0.1 that
-        EWCRegularizer._consolidate_current_task uses by default when
-        update_fisher() is never called.
+        Real Fisher diagonal: F_i = E[(d log pi(a|o)/dtheta_i)^2], estimated
+        by sampling fresh trajectories from the CURRENT (about to be
+        superseded) policy and computing exact per-sample gradients via
+        SharedGaussianActor.estimate_fisher_diagonal() (real
+        torch.autograd.grad, added 2026-10-22). This replaces a prior
+        finite-difference approximation (perturb each parameter by h=1e-3,
+        measure log-prob change) that was needed only because no real
+        gradients existed before that rewrite -- the new version is exact
+        (no truncation error) and estimates ALL n_params at once instead of
+        a random 300-parameter subset. Replaces the placeholder
+        np.ones(n_params)*0.1 that EWCRegularizer._consolidate_current_task
+        uses by default when update_fisher() is never called.
         """
-        theta = base_trainer.actor.get_all_params()
         obs = env.reset(seed=seed + 6000)
         sample_obs, sample_act = [], []
         done = False
@@ -144,26 +149,12 @@ def run_config(name, use_comm, use_safe, use_ewc, use_curriculum, seed=42):
 
         n_use = min(n_samples, len(sample_obs))
         idx = rng_fisher.choice(len(sample_obs), size=n_use, replace=False)
-        h = 1e-3
-        fisher = np.zeros(n_params)
-        # Diagonal-only finite difference: perturb each param block
-        # (sampled subset for tractability) and measure log-prob sensitivity.
-        param_subset = rng_fisher.choice(n_params, size=min(n_params, 300), replace=False)
-        for p_idx in param_subset:
-            base_lp = np.mean([
-                base_trainer.actor.log_prob(sample_obs[j], sample_act[j])
-                for j in idx
-            ])
-            bumped = theta.copy()
-            bumped[p_idx] += h
-            base_trainer.actor.set_all_params(bumped)
-            bumped_lp = np.mean([
-                base_trainer.actor.log_prob(sample_obs[j], sample_act[j])
-                for j in idx
-            ])
-            grad_i = (bumped_lp - base_lp) / h
-            fisher[p_idx] = grad_i ** 2
-        base_trainer.actor.set_all_params(theta)  # restore
+        obs_arr = np.array([sample_obs[j] for j in idx])
+        act_arr = np.array([sample_act[j] for j in idx])
+        fisher = base_trainer.actor.estimate_fisher_diagonal(obs_arr, act_arr)
+        assert len(fisher) == n_params, (
+            f"Fisher diagonal length {len(fisher)} != expected n_params {n_params} "
+            "-- actor parameter layout must match get_all_params()'s.")
         return fisher
 
     if use_curriculum:

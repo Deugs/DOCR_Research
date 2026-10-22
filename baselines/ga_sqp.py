@@ -33,13 +33,54 @@ def pack(TMS, PS):       return np.concatenate([TMS, PS])
 def unpack(x, n):        return x[:n], x[n:]
 
 
-def fitness(x, net, alpha1=1.0, alpha2=100.0, beta=50.0, 
+def fitness(x, net, alpha1=1.0, alpha2=100.0, beta=50.0,
             fault_type="3ph", topology_state=None):
     """Phase 1: Enhanced fitness with fault type and topology support."""
     TMS, PS = unpack(x, net.n_relays)
     OF, _, _ = objective_function(net, TMS, PS, alpha1, alpha2, beta,
                                    fault_type=fault_type, topology_state=topology_state)
     return OF
+
+
+def fitness_batch(pop, net, alpha1=1.0, alpha2=100.0, beta=50.0,
+                   fault_type="3ph", topology_state=None, use_gpu_batch=False):
+    """Evaluates a whole population at once via
+    relay_physics.objective_function_batch_gpu (2026-10-22 GPU-port
+    addition) instead of a Python loop over fitness(), when possible.
+    Falls back to the per-individual loop when topology_state is given
+    (dynamic fault currents aren't supported by the batched path yet) or
+    when use_gpu_batch=False (the default -- see below). pop:
+    (pop_size, 2*n_relays).
+
+    use_gpu_batch defaults to False because it measured SLOWER than the
+    plain per-individual loop at every realistic problem size in this
+    project, benchmarked directly on this project's own GPU: 0.07x at
+    8-bus (pop_size=60, n_gen=40) and 0.63x even at 39-bus (pop_size=100,
+    n_gen=100, this codebase's largest system and a realistic full-mode
+    population size) -- per-call tensor creation/transfer/kernel-launch
+    overhead dominates at these population sizes regardless of system
+    size. Both results were bit-for-bit/converged-identical to the loop
+    path, so this is purely a speed verdict, not a correctness concern.
+    Same category of finding as EXPERIMENT_GUIDE.md section 2.2.2's GNN
+    attention layer ("measured slower when batched") and section 2.2.4's
+    GPU ES note ("benchmark before assuming a vectorization helps") --
+    kept available as an opt-in for a future setup with a much larger
+    population size or a substantially more powerful GPU, where the
+    crossover point this project's own hardware never reached might
+    actually be crossed."""
+    if topology_state is None and use_gpu_batch:
+        from network.relay_physics import objective_function_batch_gpu
+        import torch
+        n = net.n_relays
+        TMS_batch, PS_batch = pop[:, :n], pop[:, n:]
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        return objective_function_batch_gpu(
+            net, TMS_batch, PS_batch, alpha1, alpha2, beta,
+            fault_type=fault_type, device=device)
+    return np.array([
+        fitness(ind, net, alpha1, alpha2, beta, fault_type, topology_state)
+        for ind in pop
+    ])
 
 
 # ── Genetic Algorithm ─────────────────────────────────────────────────────────
@@ -68,8 +109,7 @@ def run_ga(
     hi = np.maximum(hi, lo + 1e-6)
 
     pop   = rng.uniform(0, 1, (pop_size, 2*n)) * (hi - lo) + lo
-    f_pop = np.array([fitness(ind, net, alpha1, alpha2, beta, fault_type, topology_state) 
-                      for ind in pop])
+    f_pop = fitness_batch(pop, net, alpha1, alpha2, beta, fault_type, topology_state)
 
     best_idx = int(np.argmin(f_pop))
     best_ind = pop[best_idx].copy()
@@ -100,8 +140,7 @@ def run_ga(
 
         new_pop[0] = best_ind          # elitism
         pop   = new_pop
-        f_pop = np.array([fitness(ind, net, alpha1, alpha2, beta, fault_type, topology_state) 
-                          for ind in pop])
+        f_pop = fitness_batch(pop, net, alpha1, alpha2, beta, fault_type, topology_state)
 
         bi = int(np.argmin(f_pop))
         if f_pop[bi] < best_fit:

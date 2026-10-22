@@ -27,6 +27,17 @@ import numpy as np
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
 
+# torch is required as of 2026-10-22 (see marl/marl_agents.py's
+# module-level comment for the full history of the ES-to-backprop
+# rewrite this module is part of). Import order matters on at least one
+# real development machine used on this project: torch imported before
+# pandapower segfaults with zero diagnostic output (native OpenMP/MKL
+# runtime conflict) — every real entry point already imports
+# network/marl_env (which transitively imports pandapower) before this
+# module, so this is safe in practice, but a fresh script/notebook must
+# preserve that order too.
+import torch
+
 
 @dataclass
 class CommConfig:
@@ -46,65 +57,77 @@ def softmax(x, axis=-1):
     return e / np.sum(e, axis=axis, keepdims=True)
 
 
-class GNNMessageEncoder:
+class _FlatParamsMixin:
+    """get_params()/set_params()/n_params adapters over a torch.nn.Module's
+    real parameters -- kept for backward compatibility with ES-era
+    tests/fixtures written against GNNMessageEncoder/GNNAttention/
+    GNNMessageDecoder's old hand-rolled-NumPy flat-vector API (see
+    tests/test_phase2.py). n_params is a plain attribute-style property
+    (no parens at call sites), matching the old code's `self.n_params = ...`
+    set once in __init__ rather than a method."""
+
+    def get_params(self) -> np.ndarray:
+        with torch.no_grad():
+            return torch.nn.utils.parameters_to_vector(self.parameters()).cpu().numpy()
+
+    def set_params(self, params: np.ndarray):
+        p_t = torch.as_tensor(np.asarray(params), dtype=torch.float32)
+        torch.nn.utils.vector_to_parameters(p_t, self.parameters())
+
+    @property
+    def n_params(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+
+    @property
+    def _device(self):
+        """This module's actual parameter device -- NumPy wrapper methods
+        (encode/compute_attention/decode) must build their input tensors
+        on this device, not default to CPU, or they crash the moment the
+        module has been moved to CUDA (mismatched-device matmul)."""
+        return next(self.parameters()).device
+
+
+class GNNMessageEncoder(_FlatParamsMixin, torch.nn.Module):
     """
     Encodes local observations into compressed messages for communication.
 
     Each agent i computes: m_i = Encoder(o_i) in R^message_dim
+
+    2026-10-22: rewritten from hand-rolled NumPy to a real torch.nn.Module
+    (see marl/marl_agents.py's module-level comment for the full ES-to-
+    backprop rewrite this is part of). encode() keeps the original
+    NumPy-in/NumPy-out, no-grad public interface for the rollout-collection
+    hot path; encode_t() is the new differentiable version used by
+    CommGraph.forward_t() for joint training with the downstream policy.
     """
 
     def __init__(self, obs_dim: int, config: CommConfig = None, seed: int = 0):
+        super().__init__()
         self.config = config or CommConfig()
         self.obs_dim = obs_dim
         self.msg_dim = self.config.message_dim
         self.hidden_dim = self.config.hidden_dim
 
-        rng = np.random.default_rng(seed)
-        s = lambda a, b: np.sqrt(2.0 / a)
+        gen = torch.Generator().manual_seed(seed)
+        self.fc1 = torch.nn.Linear(obs_dim, self.hidden_dim)
+        self.fc2 = torch.nn.Linear(self.hidden_dim, self.msg_dim)
+        for layer, fan_in in ((self.fc1, obs_dim), (self.fc2, self.hidden_dim)):
+            torch.nn.init.normal_(layer.weight, mean=0.0, std=(2.0 / fan_in) ** 0.5, generator=gen)
+            torch.nn.init.zeros_(layer.bias)
 
-        # Encoder: obs -> hidden -> message
-        self.W_enc1 = rng.normal(0, s(obs_dim, self.hidden_dim), (self.hidden_dim, obs_dim))
-        self.b_enc1 = np.zeros(self.hidden_dim)
-        self.W_enc2 = rng.normal(0, s(self.hidden_dim, self.msg_dim), (self.msg_dim, self.hidden_dim))
-        self.b_enc2 = np.zeros(self.msg_dim)
-
-        self.n_params = (self.W_enc1.size + self.b_enc1.size +
-                        self.W_enc2.size + self.b_enc2.size)
+    def encode_t(self, obs_t: torch.Tensor) -> torch.Tensor:
+        """Differentiable encode: obs_t (..., obs_dim) -> message (..., msg_dim)."""
+        h = torch.relu(self.fc1(obs_t))
+        return torch.tanh(self.fc2(h))
 
     def encode(self, obs: np.ndarray) -> np.ndarray:
-        """
-        Encode observation to message.
-
-        Parameters:
-            obs: (obs_dim,) or (n_agents, obs_dim)
-
-        Returns:
-            message: (msg_dim,) or (n_agents, msg_dim)
-        """
-        if obs.ndim == 1:
-            h = relu(self.W_enc1 @ obs + self.b_enc1)
-            return np.tanh(self.W_enc2 @ h + self.b_enc2)
-        else:
-            h = relu(obs @ self.W_enc1.T + self.b_enc1)
-            return np.tanh(h @ self.W_enc2.T + self.b_enc2)
-
-    def get_params(self) -> np.ndarray:
-        return np.concatenate([
-            self.W_enc1.ravel(), self.b_enc1,
-            self.W_enc2.ravel(), self.b_enc2,
-        ])
-
-    def set_params(self, params: np.ndarray):
-        sizes = [self.W_enc1.size, self.b_enc1.size,
-                 self.W_enc2.size, self.b_enc2.size]
-        chunks = np.split(params, np.cumsum(sizes[:-1]))
-        self.W_enc1 = chunks[0].reshape(self.W_enc1.shape)
-        self.b_enc1 = chunks[1]
-        self.W_enc2 = chunks[2].reshape(self.W_enc2.shape)
-        self.b_enc2 = chunks[3]
+        """NumPy in/out, no-grad -- the rollout-collection hot path."""
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self._device)
+        with torch.no_grad():
+            return self.encode_t(obs_t).cpu().numpy()
 
 
-class GNNAttention:
+class GNNAttention(_FlatParamsMixin, torch.nn.Module):
     """
     Learned attention mechanism for graph message passing.
 
@@ -112,121 +135,76 @@ class GNNAttention:
     """
 
     def __init__(self, msg_dim: int, hidden_dim: int = 16, seed: int = 0):
+        super().__init__()
         self.msg_dim = msg_dim
         self.hidden_dim = hidden_dim
 
-        rng = np.random.default_rng(seed)
-        s = lambda a: np.sqrt(2.0 / a)
+        gen = torch.Generator().manual_seed(seed)
+        self.W_att = torch.nn.Linear(msg_dim, hidden_dim, bias=False)
+        torch.nn.init.normal_(self.W_att.weight, mean=0.0, std=(2.0 / msg_dim) ** 0.5, generator=gen)
+        self.a_vec = torch.nn.Parameter(
+            torch.empty(hidden_dim * 2).normal_(0.0, (2.0 / (hidden_dim * 2)) ** 0.5, generator=gen))
 
-        # Attention parameters
-        self.W_att = rng.normal(0, s(msg_dim), (hidden_dim, msg_dim))
-        self.a_vec = rng.normal(0, s(hidden_dim * 2), (hidden_dim * 2,))
-
-        self.n_params = self.W_att.size + self.a_vec.size
+    def compute_attention_t(self, messages_t: torch.Tensor, adjacency_t: torch.Tensor) -> torch.Tensor:
+        """Differentiable attention: messages_t (n, msg_dim), adjacency_t
+        (n, n) -> attention (n, n)."""
+        n = messages_t.shape[0]
+        h = self.W_att(messages_t)  # (n, hidden_dim)
+        h_i = h.unsqueeze(1).expand(n, n, -1)
+        h_j = h.unsqueeze(0).expand(n, n, -1)
+        h_concat = torch.cat([h_i, h_j], dim=-1)  # (n, n, 2*hidden_dim)
+        scores = (h_concat * self.a_vec).sum(dim=-1)
+        scores = torch.where(scores > 0, scores, 0.01 * scores)  # LeakyReLU
+        scores = torch.where(adjacency_t > 0, scores, torch.full_like(scores, -1e9))
+        return torch.softmax(scores, dim=1)
 
     def compute_attention(self, messages: np.ndarray, adjacency: np.ndarray) -> np.ndarray:
-        """
-        Compute attention weights for all agent pairs.
-
-        Parameters:
-            messages: (n_agents, msg_dim)
-            adjacency: (n_agents, n_agents) binary adjacency matrix
-
-        Returns:
-            attention: (n_agents, n_agents) attention weights
-        """
-        n = messages.shape[0]
-        # Transform messages
-        h = messages @ self.W_att.T  # (n_agents, hidden_dim)
-
-        # Compute pairwise attention scores
-        # [h_i || h_j] for all pairs
-        h_i = np.repeat(h[:, np.newaxis, :], n, axis=1)  # (n, n, hidden_dim)
-        h_j = np.repeat(h[np.newaxis, :, :], n, axis=0)  # (n, n, hidden_dim)
-        h_concat = np.concatenate([h_i, h_j], axis=-1)  # (n, n, 2*hidden_dim)
-
-        # LeakyReLU + linear projection
-        scores = np.sum(h_concat * self.a_vec, axis=-1)  # (n, n)
-        scores = np.where(scores > 0, scores, 0.01 * scores)  # LeakyReLU
-
-        # Mask with adjacency and apply softmax
-        scores = np.where(adjacency > 0, scores, -1e9)
-        attention = softmax(scores, axis=1)
-
-        return attention
-
-    def get_params(self) -> np.ndarray:
-        return np.concatenate([self.W_att.ravel(), self.a_vec])
-
-    def set_params(self, params: np.ndarray):
-        self.W_att = params[:self.W_att.size].reshape(self.W_att.shape)
-        self.a_vec = params[self.W_att.size:]
+        """NumPy in/out, no-grad -- the rollout-collection hot path."""
+        messages_t = torch.as_tensor(messages, dtype=torch.float32, device=self._device)
+        adjacency_t = torch.as_tensor(adjacency, dtype=torch.float32, device=self._device)
+        with torch.no_grad():
+            return self.compute_attention_t(messages_t, adjacency_t).cpu().numpy()
 
 
-class GNNMessageDecoder:
+class GNNMessageDecoder(_FlatParamsMixin, torch.nn.Module):
     """
     Decodes aggregated messages and combines with own observation.
 
     Enhanced observation: o_i^enhanced = [o_i || aggregate_j(alpha_ij * m_j)]
     """
 
-    def __init__(self, obs_dim: int, msg_dim: int, enhanced_dim: int, 
+    def __init__(self, obs_dim: int, msg_dim: int, enhanced_dim: int,
                  config: CommConfig = None, seed: int = 0):
+        super().__init__()
         self.config = config or CommConfig()
         self.obs_dim = obs_dim
         self.msg_dim = msg_dim
         self.enhanced_dim = enhanced_dim
         self.hidden_dim = self.config.hidden_dim
 
-        rng = np.random.default_rng(seed)
-        s = lambda a, b: np.sqrt(2.0 / a)
-
-        # Decoder: [obs || aggregated_msg] -> enhanced_obs
+        gen = torch.Generator().manual_seed(seed)
         in_dim = obs_dim + msg_dim
-        self.W_dec1 = rng.normal(0, s(in_dim, self.hidden_dim), (self.hidden_dim, in_dim))
-        self.b_dec1 = np.zeros(self.hidden_dim)
-        self.W_dec2 = rng.normal(0, s(self.hidden_dim, enhanced_dim), (enhanced_dim, self.hidden_dim))
-        self.b_dec2 = np.zeros(enhanced_dim)
+        self.fc1 = torch.nn.Linear(in_dim, self.hidden_dim)
+        self.fc2 = torch.nn.Linear(self.hidden_dim, enhanced_dim)
+        for layer, fan_in in ((self.fc1, in_dim), (self.fc2, self.hidden_dim)):
+            torch.nn.init.normal_(layer.weight, mean=0.0, std=(2.0 / fan_in) ** 0.5, generator=gen)
+            torch.nn.init.zeros_(layer.bias)
 
-        self.n_params = (self.W_dec1.size + self.b_dec1.size +
-                        self.W_dec2.size + self.b_dec2.size)
+    def decode_t(self, obs_t: torch.Tensor, aggregated_msg_t: torch.Tensor) -> torch.Tensor:
+        """Differentiable decode."""
+        combined = torch.cat([obs_t, aggregated_msg_t], dim=-1)
+        h = torch.relu(self.fc1(combined))
+        return torch.tanh(self.fc2(h))
 
     def decode(self, obs: np.ndarray, aggregated_msg: np.ndarray) -> np.ndarray:
-        """
-        Decode enhanced observation from own obs and aggregated messages.
-
-        Parameters:
-            obs: (obs_dim,) or (n_agents, obs_dim)
-            aggregated_msg: (msg_dim,) or (n_agents, msg_dim)
-
-        Returns:
-            enhanced_obs: (enhanced_dim,) or (n_agents, enhanced_dim)
-        """
-        combined = np.concatenate([obs, aggregated_msg], axis=-1)
-        if combined.ndim == 1:
-            h = relu(self.W_dec1 @ combined + self.b_dec1)
-            return np.tanh(self.W_dec2 @ h + self.b_dec2)
-        else:
-            h = relu(combined @ self.W_dec1.T + self.b_dec1)
-            return np.tanh(h @ self.W_dec2.T + self.b_dec2)
-
-    def get_params(self) -> np.ndarray:
-        return np.concatenate([
-            self.W_dec1.ravel(), self.b_dec1,
-            self.W_dec2.ravel(), self.b_dec2,
-        ])
-
-    def set_params(self, params: np.ndarray):
-        sizes = [self.W_dec1.size, self.b_dec1.size,
-                 self.W_dec2.size, self.b_dec2.size]
-        chunks = np.split(params, np.cumsum(sizes[:-1]))
-        self.W_dec1 = chunks[0].reshape(self.W_dec1.shape)
-        self.b_dec1 = chunks[1]
-        self.W_dec2 = chunks[2].reshape(self.W_dec2.shape)
-        self.b_dec2 = chunks[3]
+        """NumPy in/out, no-grad -- the rollout-collection hot path."""
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self._device)
+        agg_t = torch.as_tensor(aggregated_msg, dtype=torch.float32, device=self._device)
+        with torch.no_grad():
+            return self.decode_t(obs_t, agg_t).cpu().numpy()
 
 
-class CommGraph:
+class CommGraph(torch.nn.Module):
     """
     Complete GNN communication module for DOCR-MARL.
 
@@ -240,6 +218,17 @@ class CommGraph:
 
     Bandwidth: n_agents * msg_dim * 32 bits * update_freq
     Target: < 1 kbps per agent
+
+    2026-10-22: now a real torch.nn.Module (encoder/attention/decoder are
+    registered submodules), trained via backprop + Adam through update()
+    instead of the old ES-based GNNCommTrainer (removed -- see module
+    docstring history and marl/marl_agents.py's module-level comment).
+    forward() keeps its original NumPy-in/NumPy-out, no-grad interface,
+    including all its degradation knobs (packet loss, latency,
+    quantization, top-k sparsification), for the rollout-collection hot
+    path and robustness-evaluation sweeps. forward_t() is the new
+    differentiable path (no degradation -- see update()'s docstring for
+    why) used for joint training with the downstream policy.
     """
 
     def __init__(
@@ -250,26 +239,32 @@ class CommGraph:
         adjacency: Optional[np.ndarray] = None,
         config: Optional[CommConfig] = None,
         seed: int = 0,
+        device=None,
+        lr: float = 1e-3,
     ):
+        super().__init__()
         self.n_agents = n_agents
         self.obs_dim = obs_dim
         self.config = config or CommConfig()
         self.msg_dim = self.config.message_dim
+        self.device = torch.device(device) if device is not None else torch.device("cpu")
 
         # Build or use provided adjacency matrix
         if adjacency is not None:
             self.adjacency = adjacency
         else:
             self.adjacency = np.eye(n_agents)  # Default: self-loops only
+        self._adjacency_t = torch.as_tensor(self.adjacency, dtype=torch.float32, device=self.device)
 
         # Sub-modules
-        self.encoder = GNNMessageEncoder(obs_dim, self.config, seed)
+        self.encoder = GNNMessageEncoder(obs_dim, self.config, seed).to(self.device)
         if self.config.use_attention:
-            self.attention = GNNAttention(self.msg_dim, seed=seed+1)
+            self.attention = GNNAttention(self.msg_dim, seed=seed+1).to(self.device)
         else:
             self.attention = None
-        self.decoder = GNNMessageDecoder(obs_dim, self.msg_dim, enhanced_dim, 
-                                          self.config, seed+2)
+        self.decoder = GNNMessageDecoder(obs_dim, self.msg_dim, enhanced_dim,
+                                          self.config, seed+2).to(self.device)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
         # Communication statistics
         self.total_messages_sent = 0
@@ -451,28 +446,95 @@ class CommGraph:
             "limit_kbps": self.config.bandwidth_limit_bps / 1000.0,
         }
 
-    def get_all_params(self) -> np.ndarray:
-        """Get all trainable parameters concatenated."""
-        params = [self.encoder.get_params(), self.decoder.get_params()]
+    def forward_t(self, observations_t: torch.Tensor) -> torch.Tensor:
+        """Differentiable counterpart of forward(): obs_t (n_agents, obs_dim)
+        -> enhanced_obs_t (n_agents, enhanced_dim), real autograd graph
+        through encoder -> attention -> aggregate -> decode. Deliberately
+        does NOT apply forward()'s stochastic degradation knobs (packet
+        loss, latency, quantization, top-k sparsification) -- those
+        simulate channel imperfections for robustness *evaluation*, not a
+        training-time regularizer, and backprop-ing through randomly
+        zeroed/delayed/quantized messages would make the gradient signal
+        noisier without a clear benefit here. config.dropout (a real
+        training regularizer, distinct from the robustness knobs) is not
+        applied either, matching forward()'s own "rng is None" no-dropout
+        behavior; a future pass could add it back as F.dropout if desired.
+        Used only by update() below, called once per rollout -- not by
+        _collect_rollout, which still uses forward()."""
+        messages_t = self.encoder.encode_t(observations_t)  # (n_agents, msg_dim)
         if self.attention is not None:
-            params.append(self.attention.get_params())
-        return np.concatenate(params)
+            attention_t = self.attention.compute_attention_t(messages_t, self._adjacency_t)
+        else:
+            row_sums = self._adjacency_t.sum(dim=1, keepdim=True)
+            attention_t = self._adjacency_t / torch.clamp(row_sums, min=1e-8)
+        aggregated_t = attention_t @ messages_t
+        return self.decoder.decode_t(observations_t, aggregated_t)
+
+    def update(self, raw_obs_batch: np.ndarray, act_batch: np.ndarray,
+               adv_batch: np.ndarray, old_lp_batch: np.ndarray, actor,
+               clip_eps: float = 0.2) -> Dict[str, float]:
+        """Real PPO-clip gradient step for the GNN (encoder/attention/
+        decoder), via backprop through the SAME downstream objective the
+        actor itself is trained on -- replacing the old ES-based
+        GNNCommTrainer's advantage-weighted-alignment proxy objective
+        (removed; see this module's git history for the ES-era math).
+
+        Mechanics: runs the real (shared, parameter-tied) actor network
+        on this module's freshly-recomputed enhanced observations, so
+        gradients flow from the actor's own log-prob computation back
+        into this module's parameters -- but never calls actor.optimizer
+        .step(), so the actor's own weights are only ever updated by its
+        own update() calls, not by this one. This makes the GNN's
+        training signal the actual policy objective instead of a
+        hand-designed proxy.
+
+        raw_obs_batch: (T, n_agents, obs_dim). act_batch/old_lp_batch:
+        (T, n_agents, act_dim)/(T, n_agents). adv_batch: (T, n_agents).
+        actor: the SharedGaussianActor these enhanced observations feed.
+        """
+        obs_t = torch.as_tensor(raw_obs_batch, dtype=torch.float32, device=self.device)
+        act_t = torch.as_tensor(act_batch, dtype=torch.float32, device=self.device)
+        adv_t = torch.as_tensor(adv_batch, dtype=torch.float32, device=self.device)
+        old_lp_t = torch.as_tensor(old_lp_batch, dtype=torch.float32, device=self.device)
+        T = obs_t.shape[0]
+
+        self.optimizer.zero_grad()
+        # forward_t operates on one timestep's (n_agents, obs_dim) graph at
+        # a time (attention is a per-timestep graph op across agents); stack
+        # over T into one batched call via vmap-free manual looping would be
+        # O(T) Python overhead, so instead flatten T into the sequence the
+        # encoder/decoder (plain per-row MLPs) can already batch over, and
+        # only loop T for the O(n_agents^2) attention step itself.
+        enhanced_list = [self.forward_t(obs_t[t]) for t in range(T)]
+        enhanced_t = torch.stack(enhanced_list, dim=0)  # (T, n_agents, enhanced_dim)
+
+        # Shared actor is parameter-shared across agents -- one batched
+        # (T*n_agents, enhanced_dim) forward call evaluates every agent at
+        # once instead of a Python loop over agents.
+        flat_enhanced = enhanced_t.reshape(T * self.n_agents, -1)
+        flat_act = act_t.reshape(T * self.n_agents, -1)
+        new_lp = actor._log_prob_t(flat_enhanced, flat_act).reshape(T, self.n_agents)
+
+        ratio = torch.exp(torch.clamp(new_lp - old_lp_t, -5, 5))
+        clip_r = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
+        loss = -torch.minimum(ratio * adv_t, clip_r * adv_t).mean()
+        loss.backward()
+        self.optimizer.step()
+
+        return {"loss": float(loss.item()), "n_params": sum(p.numel() for p in self.parameters())}
+
+    def get_all_params(self) -> np.ndarray:
+        """Flat parameter vector -- kept for backward compatibility with
+        ES-era tests/fixtures, see SharedGaussianActor.get_all_params."""
+        with torch.no_grad():
+            return torch.nn.utils.parameters_to_vector(self.parameters()).cpu().numpy()
 
     def set_all_params(self, params: np.ndarray):
-        """Set all trainable parameters from flat array."""
-        n_enc = self.encoder.n_params
-        n_dec = self.decoder.n_params
-
-        self.encoder.set_params(params[:n_enc])
-        self.decoder.set_params(params[n_enc:n_enc+n_dec])
-        if self.attention is not None:
-            self.attention.set_params(params[n_enc+n_dec:])
+        p_t = torch.as_tensor(np.asarray(params), dtype=torch.float32, device=self.device)
+        torch.nn.utils.vector_to_parameters(p_t, self.parameters())
 
     def n_params(self) -> int:
-        total = self.encoder.n_params + self.decoder.n_params
-        if self.attention is not None:
-            total += self.attention.n_params
-        return total
+        return sum(p.numel() for p in self.parameters())
 
     def reset_stats(self):
         """Reset communication statistics."""
@@ -521,186 +583,10 @@ def build_relay_adjacency(net) -> np.ndarray:
     return adj
 
 
-class GNNCommTrainer:
-    """
-    Trains GNN communication parameters (encoder, attention, decoder) jointly
-    with the downstream policy using an Evolution-Strategy (ES) surrogate gradient.
-
-    Why ES instead of backprop
-    ──────────────────────────
-    The full codebase uses numpy (no autograd engine).  ES provides an unbiased
-    gradient estimate for any differentiable-or-not pipeline:
-
-        ∇_θ E[F(θ)] ≈ (1/2Nσ) Σ_i F(θ+σε_i)·ε_i − F(θ−σε_i)·ε_i
-
-    where F(·) is the episode return from the MARL rollout and θ are the GNN
-    parameters.  This is the OpenAI-ES antithetic estimator (Salimans et al., 2017).
-
-    The GNN weights ARE learned from interaction data: attention weights converge
-    to patterns that improve relay coordination.  The thesis claim of
-    "learned attention-based communication" is valid under this training scheme.
-
-    Parameters
-    ----------
-    comm_graph : CommGraph
-    lr : float          ES learning rate (Adam moment accumulation).
-    sigma : float       Perturbation standard deviation.
-    n_pert : int        Antithetic perturbation pairs per update.
-    seed : int
-    use_adam : bool     Use Adam rather than plain SGD.
-
-    References
-    ----------
-    Salimans et al., "Evolution Strategies as a Scalable Alternative to RL",
-    arXiv:1703.03864, 2017.
-    Jiang & Lu, "Learning Attentional Communication for Multi-Agent Cooperation",
-    NeurIPS 2018.
-    """
-
-    def __init__(
-        self,
-        comm_graph: 'CommGraph',
-        lr: float = 1e-3,
-        sigma: float = 0.02,
-        n_pert: int = 10,
-        seed: int = 0,
-        use_adam: bool = True,
-    ):
-        self.comm   = comm_graph
-        self.lr     = lr
-        self.sigma  = sigma
-        self.n_pert = n_pert
-        self.rng    = np.random.default_rng(seed)
-
-        # Adam moment accumulators
-        self.use_adam = use_adam
-        theta = self.comm.get_all_params()
-        self.m  = np.zeros_like(theta)
-        self.v  = np.zeros_like(theta)
-        self.t  = 0
-        self.beta1, self.beta2, self.eps_adam = 0.9, 0.999, 1e-8
-
-        self.loss_history:      List[float] = []
-        self.grad_norm_history: List[float] = []
-
-    # ── Adam ──────────────────────────────────────────────────────────────────
-    def _adam_step(self, grad: np.ndarray) -> np.ndarray:
-        self.t += 1
-        self.m = self.beta1 * self.m + (1 - self.beta1) * grad
-        self.v = self.beta2 * self.v + (1 - self.beta2) * grad ** 2
-        m_hat  = self.m / (1 - self.beta1 ** self.t)
-        v_hat  = self.v / (1 - self.beta2 ** self.t)
-        return self.lr * m_hat / (np.sqrt(v_hat) + self.eps_adam)
-
-    # ── Main update ───────────────────────────────────────────────────────────
-    def update(
-        self,
-        observations_batch: np.ndarray,
-        returns_batch: np.ndarray,
-    ) -> Dict[str, float]:
-        """
-        Update GNN communication weights using the ES gradient.
-
-        Fitness signal:  advantage-weighted alignment between the enhanced
-        observations produced by a perturbed θ and those produced by the
-        current θ.  High advantage ⇒ current trajectory was good ⇒
-        penalise deviation; negative advantage ⇒ reward deviation.
-
-            F(θ_pert) = −mean_t[ A_t · ||enhanced(θ_pert,o_t)
-                                         − enhanced(θ,o_t)||² ]
-
-        Parameters
-        ----------
-        observations_batch : (T, n_agents, obs_dim)
-        returns_batch       : (T, n_agents)  per-step advantages / returns
-
-        Returns
-        -------
-        dict  grad_norm, mean_fitness, n_params, step
-        """
-        theta_base = self.comm.get_all_params()
-        n_theta    = len(theta_base)
-        T          = observations_batch.shape[0]
-
-        # Baseline enhanced observations under current weights
-        baseline_enhanced = np.stack([
-            self.comm.forward(observations_batch[t])[0]
-            for t in range(T)
-        ])  # (T, n_agents, enhanced_dim)
-
-        adv = returns_batch - returns_batch.mean()  # normalise baseline
-
-        fitnesses: List[float]       = []
-        noises:    List[np.ndarray]  = []
-
-        for _ in range(self.n_pert):
-            eps = self.rng.standard_normal(n_theta) * self.sigma
-            for sign in (+1.0, -1.0):
-                self.comm.set_all_params(theta_base + sign * eps)
-                pert_enhanced = np.stack([
-                    self.comm.forward(observations_batch[t])[0]
-                    for t in range(T)
-                ])
-                diff_sq = np.mean((pert_enhanced - baseline_enhanced) ** 2, axis=-1)
-                fitness = float(-np.mean(adv * diff_sq))
-                fitnesses.append(fitness)
-                noises.append(sign * eps)
-
-        self.comm.set_all_params(theta_base)   # restore
-
-        f_arr  = np.array(fitnesses)
-        f_norm = (f_arr - f_arr.mean()) / (f_arr.std() + 1e-8)
-        grad   = sum(fn * n for fn, n in zip(f_norm, noises))
-        grad  /= (2 * self.n_pert * self.sigma ** 2)
-
-        delta = self._adam_step(grad) if self.use_adam else self.lr * grad
-        self.comm.set_all_params(theta_base + delta)
-
-        grad_norm = float(np.linalg.norm(grad))
-        self.loss_history.append(float(f_arr.mean()))
-        self.grad_norm_history.append(grad_norm)
-
-        return {
-            "grad_norm":    grad_norm,
-            "mean_fitness": float(f_arr.mean()),
-            "n_params":     n_theta,
-            "step":         self.t,
-        }
-
-    # ── Diagnostics ───────────────────────────────────────────────────────────
-    def get_attention_entropy(self, observations: np.ndarray) -> float:
-        """
-        Mean entropy of learned attention rows — proxy for selectivity.
-        Low entropy → specific attention learned; high → still uniform.
-        """
-        if self.comm.attention is None:
-            return float("nan")
-        messages  = self.comm.encoder.encode(observations)
-        attention = self.comm.attention.compute_attention(
-            messages, self.comm.adjacency
-        )
-        adj = self.comm.adjacency
-        entropies = []
-        for i in range(self.comm.n_agents):
-            p = attention[i][adj[i] > 0]
-            p = np.clip(p, 1e-9, 1.0)
-            p /= p.sum()
-            entropies.append(-float(np.sum(p * np.log(p))))
-        return float(np.mean(entropies))
-
-    def get_training_stats(self) -> Dict:
-        if not self.loss_history:
-            return {}
-        recent = self.loss_history[-10:]
-        trend = "decreasing" if (
-            len(recent) >= 3 and
-            float(np.polyfit(range(len(recent)), recent, 1)[0]) < 0
-        ) else "flat/increasing"
-        return {
-            "n_updates":      self.t,
-            "mean_loss":      float(np.mean(recent)),
-            "mean_grad_norm": float(np.mean(self.grad_norm_history[-10:])),
-            "loss_trend":     trend,
-        }
-
-
+# GNNCommTrainer (the old ES-based trainer for this module's GNN) was
+# removed 2026-10-22 -- its functionality is now CommGraph.update() above,
+# a real PPO-clip backprop step through the actual downstream policy
+# objective instead of an ES-estimated advantage-weighted-alignment proxy.
+# See git history for the removed class if the old math is ever needed for
+# reference. marl/comm_graph_gradient.py's own, separate GNNCommTrainer
+# (a dormant fork, unaffected by this change) is untouched.

@@ -557,6 +557,68 @@ result as `marl/comm_graph.py`'s negative vectorization finding in
 can lose on CPU once you account for allocation cost, so it isn't assumed
 to help without measuring it.
 
+**Update: benchmarked on real GPU hardware for the first time (2026-10-21)**,
+on an NVIDIA GTX 1050 (4GB, a weak/entry-level 2017 card — not a
+best-case result). Measured directly against the real per-agent update
+loop (`n_agents × n_epochs` calls per rollout, matching `train()`'s actual
+call pattern), using real rollouts (not synthetic data), at both ends of
+this project's system-size range:
+
+| System | Agents | CPU actor sweep | GPU actor sweep | Speedup |
+|---|---|---|---|---|
+| 8-bus | 14 | 0.50s | 0.38s | 1.32x |
+| 39-bus | 92 | 2.84s | 1.80s | 1.58x |
+
+Critic speedup was much smaller (1.04x–1.14x) — expected, since the critic
+only updates `n_epochs` (4) times per rollout regardless of system size,
+so there's far less to batch than the actor's `n_agents × n_epochs` calls.
+**The GPU path genuinely helps, more so on larger systems** (the actor
+update dominates total update cost on 39-bus specifically because of the
+`n_agents` multiplier) — the "untested, treat with caution" framing above
+no longer applies to the sequential (`--n-workers 1`) case.
+
+Also tested and rejected: switching the GPU path's tensors from `float64`
+to `float32`, on the theory that consumer GPUs usually cripple
+double-precision throughput. Measured **slower** (0.72x–0.76x, i.e.
+24–28% slower) — at tensor sizes this small, the extra cast from the
+RNG's native `float64` numpy arrays costs more than any float32 compute
+throughput gain. Don't make this change without re-measuring; it looks
+like an obvious win and isn't one here.
+
+**Real risk found while building this benchmark, not present in any
+actual call site in this codebase, but worth knowing:** importing `torch`
+before `pandapower` in the same process segfaults immediately (zero
+Python traceback, zero diagnostic output) on this machine — a native
+OpenMP/MKL runtime conflict between torch's and pandapower's (via numba)
+bundled runtimes. Confirmed reproducible, and order-dependent:
+`pandapower` → `torch` is safe, `torch` → `pandapower` crashes. Every real
+entry point in this codebase (`run_core_training.py` et al.) imports
+`network`/`marl.marl_env` — which transitively imports `pandapower` via
+`environment/dynamic_network.py` — before `marl.marl_agents` — which
+conditionally imports `torch` — so this is **not currently triggered** by
+any real code path. It would be triggered by any new script, notebook, or
+interactive session that imports `torch` first for an unrelated reason
+before importing anything from this project. If you ever see Python exit
+with no traceback at all while this project's modules are involved, check
+import order before assuming it's a hardware fault.
+
+**Why this doesn't change the project's actual scaling strategy:** this
+project's real speed lever for the full campaign is CPU multiprocessing
+(§2.2.4 above, 3.7x–4.2x on just 4 workers, scaling further with more
+cores) — not GPU. GPU is explicitly and deliberately disabled inside
+`run_core_training.py`'s multi-worker pools (`_disable_gpu_in_worker()`,
+run under Windows' spawn start method) because every worker process would
+independently open its own CUDA context on the same physical device; on
+this exact machine's 4GB card, that already caused a real
+`torch.AcceleratorError: CUDA error: out of memory` crash in a past test
+run. That reasoning stands regardless of today's benchmark — a small
+consumer GPU can't be safely time-sliced across N worker processes the
+way CPU cores can. The 1.3x–1.6x speedup measured above therefore only
+applies to single-process (`--n-workers 1`) runs, e.g. local development
+or debugging on a machine with a GPU — not to the 32-64-worker CPU-pod
+campaigns this project actually uses for full-scale training, which never
+touch the GPU path at all (by design, not by oversight).
+
 Numerical correctness of both the batched-population reformulation and its
 GPU/torch port were verified by comparing against the original
 per-perturbation-loop implementation with identical starting parameters and

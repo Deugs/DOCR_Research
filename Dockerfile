@@ -1,16 +1,18 @@
 #
 # Container for the DOCR-MARL thesis training/experimentation pipeline.
-# The codebase is a hand-rolled NumPy/SciPy stack trained via evolution
-# strategies. It runs entirely on CPU by default; marl/marl_agents.py also
-# has an optional GPU-accelerated code path (auto-detected at runtime, see
-# its module-level comment) that activates only if torch + a CUDA device
-# are both present — see EXPERIMENT_GUIDE.md for what the experiments
-# themselves do and why GPU support is opt-in at build time (below).
+# As of 2026-10-22, the MARL training stack (marl/marl_agents.py's
+# actor/critic, with the GNN comm module and EWC estimator following the
+# same pattern) is torch.nn.Module-backed and trained via real backprop +
+# Adam — torch is a REQUIRED dependency, not optional (see
+# marl/marl_agents.py's module-level comment for the ES-era history this
+# replaced). `device="cpu"` still works fine with no GPU present; the
+# build-arg below only chooses which torch WHEEL to install, not whether
+# to install it at all.
 #
-# Build (CPU-only, default — smaller image, no CUDA libraries downloaded):
+# Build (CPU-only torch wheel, default — smaller image, no CUDA libraries):
 #   docker build -t docr-marl .
-# Build (GPU-capable — pulls torch's CUDA-bundled wheel, much larger image):
-#   docker build --build-arg INSTALL_TORCH=true -t docr-marl-gpu .
+# Build (CUDA-bundled torch wheel, for a GPU host — much larger image):
+#   docker build --build-arg INSTALL_TORCH_CUDA=true -t docr-marl-gpu .
 #   docker run --gpus all ...   # requires nvidia-container-toolkit on the host
 # Run:
 #   docker run --rm -v "$(pwd)/results:/app/results" -v "$(pwd)/outputs:/app/outputs" \
@@ -19,11 +21,11 @@
 # See "Running in Docker / on the cloud" in EXPERIMENT_GUIDE.md for details.
 
 ARG PYTHON_VERSION=3.11
-ARG INSTALL_TORCH=false
+ARG INSTALL_TORCH_CUDA=false
 
 # ── Builder stage: compile any sdists into wheels in an isolated venv ───────
 FROM python:${PYTHON_VERSION}-slim AS builder
-ARG INSTALL_TORCH
+ARG INSTALL_TORCH_CUDA
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
@@ -35,15 +37,19 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /build
 COPY requirements.txt .
-# torch is listed in requirements.txt as optional (see its comment there)
-# but is excluded from the default build here — its CUDA-bundled wheel is
-# large, and on this workload the plain NumPy path already benchmarks
-# faster on CPU anyway (see EXPERIMENT_GUIDE.md §2.2.2/§2.2.4), so most
-# deployments of this image gain nothing from paying that download cost.
+# torch is REQUIRED (see requirements.txt's comment) -- the only choice
+# here is which wheel: the default CPU-only build pulls the small
+# CPU-only torch wheel (no CUDA runtime libraries bloating the image for
+# hosts that will never have a GPU); the GPU build arg instead installs
+# the default PyPI wheel, which bundles CUDA runtime libraries.
 RUN pip install --no-cache-dir --upgrade pip \
     && grep -v '^torch' requirements.txt > requirements-base.txt \
     && pip install --no-cache-dir -r requirements-base.txt \
-    && if [ "$INSTALL_TORCH" = "true" ]; then pip install --no-cache-dir torch; fi
+    && if [ "$INSTALL_TORCH_CUDA" = "true" ]; then \
+         pip install --no-cache-dir torch; \
+       else \
+         pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu; \
+       fi
 
 # ── Runtime stage: slim image, no compilers ─────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim AS runtime

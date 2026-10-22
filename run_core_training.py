@@ -565,6 +565,62 @@ def _core_pool_worker_init():
     threadpoolctl.threadpool_limits(1)
 
 
+def _max_safe_gpu_workers(assumed_overhead_mb: float = 400.0, safety_factor: float = 0.5) -> int:
+    """How many concurrent pool worker processes can safely each open
+    their own CUDA context on this machine's GPU, without risking the
+    `torch.AcceleratorError: CUDA error: out of memory` crash already
+    hit on this project's 4GB card (see _disable_gpu_in_worker's
+    history below). Each CUDA context reserves a baseline chunk of VRAM
+    (empirically ~300-500MB, independent of model size) regardless of
+    how small the model using it is -- this project's actor/critic/GNN
+    networks are tiny (a few thousand parameters each), so the MODEL
+    footprint itself is negligible next to that fixed per-context cost,
+    and the real constraint is simply "how many contexts fit." Returns
+    0 if CUDA isn't available at all (the common case on a CPU-only
+    pod, and the correct answer there regardless of VRAM math).
+    safety_factor further derates the naive free-VRAM/overhead
+    division, since other processes (the main process, other workers
+    starting concurrently) may also be claiming VRAM during the same
+    startup window -- this is a deliberately conservative estimate, not
+    a precise accounting."""
+    try:
+        import marl.marl_agents as _ma
+        if not _ma.torch.cuda.is_available():
+            return 0
+        free_bytes, _total_bytes = _ma.torch.cuda.mem_get_info()
+        free_mb = free_bytes / (1024 ** 2)
+        return max(0, int((free_mb * safety_factor) // assumed_overhead_mb))
+    except Exception:
+        # Any failure here (torch missing, mem_get_info unsupported on this
+        # backend, etc.) should degrade to "no GPU workers", not crash the
+        # whole pool -- GPU is always an optional secondary accelerant in
+        # this codebase, never required for correctness.
+        return 0
+
+
+def _adaptive_gpu_in_worker(max_gpu_workers: int):
+    """_run_pool initializer: gives CUDA to only the first
+    `max_gpu_workers` pool workers (by multiprocessing's own 1-indexed
+    worker identity), forcing every other worker onto the CPU path.
+    Replaces the blanket _disable_gpu_in_worker() for callers that want
+    CPU multiprocessing to remain the primary, uncapped scaling lever
+    (every worker still runs, none are skipped) while letting a safe
+    number of them additionally get the real, measured GPU speedup on
+    the actor update (1.3x-1.6x in single-process mode -- see
+    marl/marl_agents.py's 2026-10-21 benchmark in EXPERIMENT_GUIDE.md
+    section 2.2.4) rather than leaving the GPU completely idle.
+    max_gpu_workers=0 behaves exactly like the old blanket disable.
+
+    Relies on multiprocessing.current_process()._identity, a
+    semi-private but long-stable API that gives each pool worker a
+    1-indexed rank within its pool -- there is no public equivalent."""
+    import multiprocessing as _mp
+    identity = _mp.current_process()._identity
+    worker_rank = identity[0] if identity else 1
+    if worker_rank > max_gpu_workers:
+        _disable_gpu_in_worker()
+
+
 def _disable_gpu_in_worker():
     # Cores G/H/I/K hand a pre-trained CoreEvalBridge into each worker
     # (via _run_pool's `initargs` below) so the pool only has to run cheap
@@ -575,10 +631,15 @@ def _disable_gpu_in_worker():
     # method, every pool worker would independently open its OWN CUDA
     # context on the SAME physical device. On a small card (this machine
     # has 4GB) that's exactly the `torch.AcceleratorError: CUDA error: out
-    # of memory` already hit this session running the test suite. The GPU
-    # path was also never benchmarked as faster (EXPERIMENT_GUIDE.md), so
-    # forcing the CPU path in pooled workers costs nothing and is already
-    # numerically verified bit-identical there. Monkeypatching the live
+    # of memory` already hit this session running the test suite. Since
+    # then the GPU path HAS been benchmarked as genuinely faster in
+    # single-process mode (1.3x-1.6x on the actor update -- see
+    # EXPERIMENT_GUIDE.md section 2.2.4's 2026-10-21 update) -- but that
+    # doesn't change this function's reasoning: a small consumer GPU still
+    # can't be safely time-sliced across N worker processes the way CPU
+    # cores can, so forcing the CPU path here still costs nothing (it's
+    # already numerically verified bit-identical) and avoids the same OOM
+    # crash recurring. Monkeypatching the live
     # module globals (rather than e.g. env-var CUDA_VISIBLE_DEVICES) works
     # regardless of whether torch/marl_agents was already imported by the
     # time this initializer runs in the child process.
@@ -669,14 +730,22 @@ def _n_runs_for_wave(n_workers: int, jobs_per_run: int, minimum: int) -> int:
 _WORKER_BRIDGES: Dict[str, Any] = {}
 
 
-def _init_core_bridge_workers(bridges_by_name: Dict[str, Any]):
+def _init_core_bridge_workers(bridges_by_name: Dict[str, Any], max_gpu_workers: int = 0):
     """Shared _run_pool initializer for Cores G/H/I/K's pooled eval
     sweeps: stashes one or more already-trained CoreEvalBridge instances
     (each bridge_name -> bridge) as a per-worker-process global, and
-    forces the CPU path to avoid concurrent CUDA contention across
-    workers (see _disable_gpu_in_worker)."""
+    caps how many workers may use CUDA (see _adaptive_gpu_in_worker) to
+    avoid concurrent CUDA-context contention. max_gpu_workers must be
+    computed ONCE in the main process, before the pool starts, via
+    _max_safe_gpu_workers() -- computing it independently inside each
+    worker would race (every worker could see the same "plenty of free
+    VRAM" snapshot before any of them has actually claimed a context,
+    and all open one anyway, exactly reproducing the OOM crash this
+    exists to prevent). Defaults to 0 (equivalent to the old blanket
+    _disable_gpu_in_worker()) for any caller that hasn't opted into
+    passing a real cap yet."""
     global _WORKER_BRIDGES
-    _disable_gpu_in_worker()
+    _adaptive_gpu_in_worker(max_gpu_workers)
     _WORKER_BRIDGES = bridges_by_name
 
 
@@ -2764,7 +2833,7 @@ def run_core_G(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             for job_key, raw_data in _run_pool(
                 jobs, _core_bridge_eval_job, n_workers,
                 initializer=_init_core_bridge_workers,
-                initargs=({"main": bridge, "39bus": bridge_39, "14bus": bridge_14},),
+                initargs=({"main": bridge, "39bus": bridge_39, "14bus": bridge_14}, _max_safe_gpu_workers()),
             ):
                 raw[job_key] = raw_data
 
@@ -2969,7 +3038,7 @@ def run_core_H(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             raw = {}
             for job_key, raw_data in _run_pool(
                 jobs, _core_bridge_eval_job, n_workers,
-                initializer=_init_core_bridge_workers, initargs=({"main": bridge},),
+                initializer=_init_core_bridge_workers, initargs=({"main": bridge}, _max_safe_gpu_workers()),
             ):
                 raw[job_key] = raw_data
 
@@ -3141,12 +3210,19 @@ def run_core_I(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             # unlike G/H/K, the training itself is the expensive part
             # here, so it's what gets pooled (see _core_I_training_job),
             # capped at 2 workers since there are only 2 independent jobs.
+            # Each worker that can safely get its own CUDA context (see
+            # _max_safe_gpu_workers) benefits from the real, measured
+            # actor-update speedup (EXPERIMENT_GUIDE.md section 2.2.4) --
+            # computed once here in the main process, before the pool
+            # starts, so workers don't race each other over the same
+            # "free VRAM" snapshot (see _init_core_bridge_workers).
             logger.info("\n[Core I] Figs 18 + Claim C5: Inference Latency, 8bus + 39bus (REAL)")
             jobs = [("8bus", seed), ("39bus", seed)]
             trained = {}
+            max_gpu_workers = _max_safe_gpu_workers()
             for system, (trained_bridge, base_of_val, latency) in _run_pool(
                 jobs, _core_I_training_job, min(n_workers, len(jobs)),
-                initializer=_disable_gpu_in_worker,
+                initializer=_adaptive_gpu_in_worker, initargs=(max_gpu_workers,),
             ):
                 trained[system] = (trained_bridge, base_of_val, latency)
 
@@ -3404,7 +3480,7 @@ def run_core_K(n_runs: int = None, seed: int = None, progress: ExperimentProgres
             jobs = [(("season", season), "main", 58, dict(season=season)) for season in config["seasons"]]
             for job_key, raw_data in _run_pool(
                 jobs, _core_bridge_eval_job, min(n_workers, len(jobs)),
-                initializer=_init_core_bridge_workers, initargs=({"main": bridge},),
+                initializer=_init_core_bridge_workers, initargs=({"main": bridge}, _max_safe_gpu_workers()),
             ):
                 season = job_key[1]
                 seasonal_of = raw_data.get("of")
