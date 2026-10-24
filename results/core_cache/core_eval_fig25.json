@@ -1,13 +1,13 @@
 {
   "fig_num": 25,
   "data": {
-    "transfer_of": 125.90702689699087,
-    "cti_ok": true,
+    "transfer_of": 5137.075325369068,
+    "cti_ok": false,
     "system": "14bus"
   },
   "metadata": {
     "method": "_eval_zero_shot_transfer",
-    "duration": 1.910832166671753,
+    "duration": 28.929728984832764,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -80,7 +80,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 55.08287320208595
+    "base_of": 98.53999086605224
   },
-  "timestamp": 1788633586.7901144
+  "timestamp": 1792820851.7228153
 }

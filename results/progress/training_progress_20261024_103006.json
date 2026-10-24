@@ -1,0 +1,178 @@
+{
+  "timestamp": "2026-10-24T10:30:06.876057",
+  "fast_mode": true,
+  "total_elapsed_seconds": 149967.58690214157,
+  "core_runs": {
+    "Core A": {
+      "status": "complete",
+      "start_time": 1792687839.2901576,
+      "total_steps": 2,
+      "completed_steps": 2,
+      "desc": "MAPPO-Safe-EWC 8-Bus 60% PV \u2014 2 runs x 500 episodes",
+      "end_time": 1792699618.8841162,
+      "details": {
+        "n_runs": 2,
+        "n_episodes": 500
+      }
+    },
+    "Core B": {
+      "status": "complete",
+      "start_time": 1792699618.8881152,
+      "total_steps": 4,
+      "completed_steps": 4,
+      "desc": "Curriculum 0%->60% PV \u2014 2 runs (with/without EWC)",
+      "end_time": 1792725998.080079,
+      "details": {
+        "n_runs": 2,
+        "n_tasks": 4
+      }
+    },
+    "Core C": {
+      "status": "complete",
+      "start_time": 1792725998.0810828,
+      "total_steps": 10,
+      "completed_steps": 10,
+      "desc": "Baseline comparison (8bus) \u2014 5 methods x 2 runs",
+      "end_time": 1792763002.5040593,
+      "details": {
+        "methods": [
+          "MAPPO-Safe-EWC",
+          "MAPPO-Safe",
+          "MAPPO",
+          "IPPO",
+          "Traditional"
+        ],
+        "n_runs": 2
+      }
+    },
+    "Core D": {
+      "status": "complete",
+      "start_time": 1792763002.5062675,
+      "total_steps": 10,
+      "completed_steps": 10,
+      "desc": "Ablation study \u2014 5 configs x 2 runs",
+      "end_time": 1792798817.943406,
+      "details": {
+        "configs": [
+          "MAPPO",
+          "MAPPO+GNN",
+          "MAPPO+GNN+Safe",
+          "MAPPO+GNN+Safe+EWC",
+          "MAPPO+GNN+Safe+EWC+Curr"
+        ],
+        "n_runs": 2
+      }
+    },
+    "Core E": {
+      "status": "complete",
+      "start_time": 1792798817.9474013,
+      "total_steps": 80,
+      "completed_steps": 80,
+      "desc": "Hyperparameter grid \u2014 80 configs x 1 seeds",
+      "end_time": 1792807639.0272374,
+      "details": {
+        "grid_size": 80,
+        "n_seeds": 1
+      }
+    },
+    "Core F": {
+      "status": "complete",
+      "start_time": 1792807639.0697265,
+      "total_steps": 3,
+      "completed_steps": 3,
+      "desc": "Scalability analysis \u2014 3 test systems",
+      "end_time": 1792812048.9438717,
+      "details": {
+        "systems": [
+          "8bus",
+          "14bus",
+          "30bus"
+        ],
+        "n_systems": 3
+      }
+    },
+    "Core G": {
+      "status": "complete",
+      "start_time": 1792812048.9568827,
+      "total_steps": 6,
+      "completed_steps": 0,
+      "desc": "Robustness evaluation \u2014 6 stress types (REAL)",
+      "end_time": 1792820574.787564,
+      "details": {
+        "stress_types": [
+          "communication",
+          "byzantine",
+          "bandwidth",
+          "sensor",
+          "adversarial"
+        ],
+        "real_eval": true
+      }
+    },
+    "Core H": {
+      "status": "complete",
+      "start_time": 1792820574.7906365,
+      "total_steps": 2,
+      "completed_steps": 0,
+      "desc": "Transfer learning \u2014 unseen faults + zero-shot (REAL)",
+      "end_time": 1792835613.2333033,
+      "details": {
+        "evaluations": [
+          "unseen_faults",
+          "zero_shot_8to14"
+        ],
+        "real_eval": true
+      }
+    },
+    "Core I": {
+      "status": "complete",
+      "start_time": 1792835613.2343004,
+      "total_steps": 2,
+      "completed_steps": 0,
+      "desc": "Deployment benchmark \u2014 latency + compression (REAL)",
+      "end_time": 1792837080.826591,
+      "details": {
+        "benchmarks": [
+          "inference_latency",
+          "model_compression"
+        ],
+        "real_eval": true
+      }
+    },
+    "Core J": {
+      "status": "complete",
+      "start_time": 1792837080.8276026,
+      "total_steps": 5,
+      "completed_steps": 0,
+      "desc": "Protection engineering \u2014 5 analyses (REAL)",
+      "end_time": 1792837482.8253567,
+      "details": {
+        "analyses": [
+          "coordination",
+          "fault_contribution",
+          "daily_profile",
+          "relay_curves",
+          "sympathetic_tripping"
+        ],
+        "real_eval": true
+      }
+    },
+    "Core K": {
+      "status": "complete",
+      "start_time": 1792837482.8253567,
+      "total_steps": 4,
+      "completed_steps": 0,
+      "desc": "Seasonal generalization \u2014 4 seasons (REAL)",
+      "end_time": 1792837806.8720572,
+      "details": {
+        "seasons": [
+          "spring",
+          "summer",
+          "autumn",
+          "winter"
+        ],
+        "real_eval": true
+      }
+    }
+  }
+}

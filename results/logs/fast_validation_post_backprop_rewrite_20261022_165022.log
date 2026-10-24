@@ -1,0 +1,978 @@
+16:50:22 | INFO     | [FAST MODE] Using reduced iterations for testing.
+16:50:22 | INFO     | 
+16:50:22 | INFO     | ======================================================================
+16:50:22 | INFO     | DOCR-MARL THESIS: COMPLETE EXPERIMENT SUITE
+16:50:22 | INFO     | Strategy: 11 core training runs + unified post-processing
+16:50:22 | INFO     | System: 8BUS | PV: 60% | Fault: 3ph
+16:50:22 | INFO     | Runs: 2 | Episodes: 500
+16:50:22 | INFO     | Estimated: ~8-10 GPU-days (full) / ~1-2 hours (fast)
+16:50:22 | INFO     | ======================================================================
+16:50:22 | INFO     | 
+16:50:22 | INFO     | ======================================================================
+16:50:22 | INFO     | PHASE 1: Manual Diagrams & Architecture
+16:50:22 | INFO     | ======================================================================
+16:50:22 | INFO     | Phase 1: 14 auto-generatable + 1 truly manual figures
+16:50:22 | INFO     | Output directory: results\figures\figs_01_10
+16:50:24 | INFO     |   [Fig 01] ✓ Generated in 1.38s
+C:\Users\de1ug\Documents\Python Project\DOCR_Research\phase1_scripts\exp_fig02.py:136: UserWarning: Glyph 8477 (\N{DOUBLE-STRUCK CAPITAL R}) missing from current font.
+  plt.tight_layout()
+C:\Users\de1ug\Documents\Python Project\DOCR_Research\phase1_scripts\exp_fig02.py:137: UserWarning: Glyph 8477 (\N{DOUBLE-STRUCK CAPITAL R}) missing from current font.
+  plt.savefig(output_dir + '/fig2_data_flow.png', dpi=150, bbox_inches='tight', facecolor='white')
+16:50:24 | INFO     |   [Fig 02] ✓ Generated in 0.74s
+16:50:25 | INFO     |   [Fig 03] ✓ Generated in 0.83s
+16:50:26 | INFO     |   [Fig 04] ✓ Generated in 1.01s
+16:50:28 | INFO     |   [Fig 17] ✓ Generated in 2.25s
+16:50:29 | INFO     |   [Fig 19] ✓ Generated in 0.89s
+16:50:31 | INFO     |   [Fig 26] ✓ Generated in 1.85s
+16:50:32 | INFO     |   [Fig 27] ✓ Generated in 0.67s
+16:50:32 | INFO     |   [Fig 28] ✓ Generated in 0.59s
+16:50:33 | INFO     |   [Fig 30] ✓ Generated in 0.82s
+16:50:34 | INFO     |   [Fig 34] ✓ Generated in 1.23s
+[WARNING] SYNTHETIC DATA — NOT FROM A TRAINED MODEL OR REAL EXPERIMENT (panel (c) feature-importance bars are illustrative, not SHAP values from a trained model)
+C:\Users\de1ug\Documents\Python Project\DOCR_Research\phase1_scripts\exp_fig35.py:213: UserWarning: Glyph 8477 (\N{DOUBLE-STRUCK CAPITAL R}) missing from current font.
+  plt.savefig(output_dir + '/fig35_observation_space.png', dpi=200, bbox_inches='tight', facecolor='white')
+16:50:36 | INFO     |   [Fig 35] ✓ Generated in 1.53s
+16:50:37 | INFO     |   [Fig 51] ✓ Generated in 1.51s
+16:50:38 | INFO     |   [Fig 52] ✓ Generated in 0.82s
+16:50:38 | INFO     |   [Fig 26a] ○ Truly manual - create in docs/diagrams/ or LaTeX
+16:50:38 | INFO     | Phase 1 complete: 14 generated, 0 failed, 1 manual
+16:50:38 | INFO     | ✓ Phase 1 Manual Diagrams & Architecture: COMPLETE (0:00:16)
+16:50:38 | INFO     | 
+16:50:38 | INFO     | ======================================================================
+16:50:38 | INFO     | PHASE 2: Core Training Runs (A-K with Real Evals)
+16:50:38 | INFO     | ======================================================================
+16:50:38 | INFO     | Running unified core training via run_core_training.py...
+16:50:38 | INFO     |   System: 8BUS | PV: 60% | Fault: 3ph
+16:50:38 | INFO     |   Runs: 2 | Episodes: 500
+16:50:38 | INFO     |   Features: each of the 11 core runs (A-K) fixes/sweeps its own GNN/Safe-RL/EWC combination - see run_core_training.py per-core docs.
+16:50:38 | INFO     | 
+16:50:38 | INFO     | ──────────────────────────────────────────────────────────────────────
+16:50:38 | INFO     | ▶ Phase 2: Unified Core Training (all 11 cores A-K)
+16:50:38 | INFO     |   CMD: python run_core_training.py --all --fast --system 8bus --pv 0.6 --n-runs 2 --episodes 500 --fault-type 3ph
+
+======================================================================
+DOCR-MARL CONFIGURATION SUMMARY
+======================================================================
+
+[SYSTEM] 8BUS
+   - Relays: ...
+   - Pandapower: OFF
+
+[TRAINING]
+   - GNN Communication: OFF
+   - Safety Layer: ON
+   - EWC: ON
+   - Curriculum: OFF
+
+[EXPERIMENT]
+   - Synthetic Fallback: OFF
+
+[POST-PROCESSING]
+
+ Description: Fast smoke test: 8-bus, 0/20/40/60% PV
+======================================================================
+
+  │ 16:50:39 | INFO     | [CONFIG] Applied DOCRConfig: system=8bus, fast_mode=True, use_synthetic=False, seed=42
+  │ 16:50:39 | INFO     | [CONFIG] Applied DOCRConfig: system=8bus, fast_mode=True, use_synthetic=False, seed=42
+  │ 16:50:39 | INFO     |
+  │ ======================================================================
+  │ 16:50:39 | INFO     | DOCR-MARL: UNIFIED CORE TRAINING - ALL PHASES (A-K)
+  │ 16:50:39 | INFO     | Mode: FAST
+  │ 16:50:39 | INFO     | Synthetic Fallback: DISABLED
+  │ 16:50:39 | INFO     | System: 8bus, PV: 60%
+  │ 16:50:39 | INFO     | Actor hidden: 64, Critic hidden: 128
+  │ 16:50:39 | INFO     | LR Actor: 0.02, LR Critic: 0.01
+  │ 16:50:39 | INFO     | ======================================================================
+  │ 16:50:39 | INFO     |
+  │ ======================================================================
+  │ 16:50:39 | INFO     | STARTING: Core A — MAPPO-Safe-EWC 8-Bus 60% PV — 2 runs x 500 episodes
+  │ 16:50:39 | INFO     | ======================================================================
+  │ 16:50:39 | INFO     | ======================================================================
+  │ 16:50:39 | INFO     | CORE RUN A: MAPPO-Safe-EWC (8-Bus, 60% PV)
+  │ 16:50:39 | INFO     |   Runs: 2, Episodes: 500
+  │ 16:50:39 | INFO     |   Feeds: Figs 9,10,12,21,37,38,41,48-50,55-57
+  │ 16:50:39 | INFO     | ======================================================================
+  │ 16:50:39 | INFO     | NumExpr defaulting to 8 threads.
+  │ 16:50:54 | INFO     |   [Core A] trainer.train(total_steps=150000)...
+  │ 17:56:50 | INFO     |   [Core A] Training complete.
+  │ 17:57:06 | INFO     |   Ep     0: return=-4490.967 viol=  0
+  │ 18:08:58 | INFO     |   Ep    50: return=-176211.811 viol=  4
+  │ 18:21:37 | INFO     |   Ep   100: return=-92624.915 viol=  3
+  │ 18:32:41 | INFO     |   Ep   150: return=-220319.332 viol=  4
+  │ 18:42:04 | INFO     |   [Core A] trainer.train(total_steps=150000)...
+  │ 19:37:10 | INFO     |   [Core A] Training complete.
+  │ 19:37:20 | INFO     |   Ep     0: return=-168932.622 viol=  3
+  │ 19:44:51 | INFO     |   Ep    50: return=-184914.612 viol=  5
+  │ 19:52:19 | INFO     |   Ep   100: return=-530162.227 viol=  3
+  │ 19:59:46 | INFO     |   Ep   150: return=-43075.128 viol=  2
+  │ 20:06:58 | INFO     | [CACHE STORE] core_A_mappo_safe_ewc_8bus_60pv -> edf77c3142db7ccb (0.15 MB)
+  │ 20:06:58 | INFO     | [Core A] Complete. Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_A_unified_log.npz
+  │ 20:06:58 | INFO     |
+  │ Core A: \u2713 COMPLETE
+  │ 20:06:58 | INFO     |
+  │ ======================================================================
+  │ 20:06:58 | INFO     | STARTING: Core B — Curriculum 0%->60% PV — 2 runs (with/without EWC)
+  │ 20:06:58 | INFO     | ======================================================================
+  │ 20:06:58 | INFO     | ======================================================================
+  │ 20:06:58 | INFO     | CORE RUN B: Curriculum Training (0% -> 60% PV) [8bus]
+  │ 20:06:58 | INFO     |   Tasks: [0.0, 0.2, 0.4, 0.6], Episodes/task: 50
+  │ 20:06:58 | INFO     |   Feeds: Figs 5, 6, 7, 16, 29, 39; Claim C4 (system=8bus/14bus)
+  │ 20:06:58 | INFO     | ======================================================================
+  │ 03:26:38 | INFO     | [CACHE STORE] core_B_curriculum -> 02e7e2eb2565824b (0.16 MB)
+  │ 03:26:38 | INFO     | [Core B] Complete.
+  │ 03:26:38 | INFO     |
+  │ Core B: \u2713 COMPLETE
+  │ 03:26:38 | INFO     |
+  │ ======================================================================
+  │ 03:26:38 | INFO     | STARTING: Core C — Baseline comparison (8bus) — 5 methods x 2 runs
+  │ 03:26:38 | INFO     | ======================================================================
+  │ 03:26:38 | INFO     | ======================================================================
+  │ 03:26:38 | INFO     | CORE RUN C: Baseline Comparison (8bus)
+  │ 03:26:38 | INFO     |   Methods: ['MAPPO-Safe-EWC', 'MAPPO-Safe', 'MAPPO', 'IPPO', 'Traditional']
+  │ 03:26:38 | INFO     |   Feeds: Figs 11, 12, 31-33, 55-56
+  │ 03:26:38 | INFO     | ======================================================================
+  │ 13:43:22 | INFO     | [CACHE STORE] core_C_metrics_8bus -> c7a42d47863b721e (0.00 MB)
+  │ 13:43:22 | INFO     | [CACHE STORE] core_C_baselines_8bus -> 33415805be153c82 (0.02 MB)
+  │ 13:43:22 | INFO     | [Core C] Complete.
+  │ 13:43:22 | INFO     |
+  │ Core C: \u2713 COMPLETE
+  │ 13:43:22 | INFO     |
+  │ ======================================================================
+  │ 13:43:22 | INFO     | STARTING: Core D — Ablation study — 5 configs x 2 runs
+  │ 13:43:22 | INFO     | ======================================================================
+  │ 13:43:22 | INFO     | ======================================================================
+  │ 13:43:22 | INFO     | CORE RUN D: Ablation Study
+  │ 13:43:22 | INFO     |   Configs: ['MAPPO', 'MAPPO+GNN', 'MAPPO+GNN+Safe', 'MAPPO+GNN+Safe+EWC', 'MAPPO+GNN+Safe+EWC+Curr']
+  │ 13:43:22 | INFO     |   Feeds: Fig 39
+  │ 13:43:22 | INFO     | ======================================================================
+  │ 23:40:17 | INFO     | [CACHE STORE] core_D_ablation -> ac32d1d198a20a86 (0.00 MB)
+  │ 23:40:17 | INFO     | [Core D] Complete.
+  │ 23:40:17 | INFO     |
+  │ Core D: \u2713 COMPLETE
+  │ 23:40:17 | INFO     |
+  │ ======================================================================
+  │ 23:40:17 | INFO     | STARTING: Core E — Hyperparameter grid — 80 configs x 1 seeds
+  │ 23:40:17 | INFO     | ======================================================================
+  │ 23:40:17 | INFO     | ======================================================================
+  │ 23:40:17 | INFO     | CORE RUN E: Hyperparameter Grid
+  │ 23:40:17 | INFO     |   Grid: 80 configs x 1 seeds = 80 total runs
+  │ 23:40:17 | INFO     |   Feeds: Fig 40
+  │ 23:40:17 | INFO     | ======================================================================
+  │ 02:07:19 | INFO     | [CACHE STORE] core_E_hparam -> 21a9313c0878d8e6 (0.00 MB)
+  │ 02:07:19 | INFO     | [Core E] Complete.
+  │ 02:07:19 | INFO     |
+  │ Core E: \u2713 COMPLETE
+  │ 02:07:19 | INFO     |
+  │ ======================================================================
+  │ 02:07:19 | INFO     | STARTING: Core F — Scalability analysis — 3 test systems
+  │ 02:07:19 | INFO     | ======================================================================
+  │ 02:07:19 | INFO     | ======================================================================
+  │ 02:07:19 | INFO     | CORE RUN F: Scalability Analysis
+  │ 02:07:19 | INFO     |   Systems: ['8bus', '14bus', '30bus']
+  │ 02:07:19 | INFO     |   Feeds: Fig 15
+  │ 02:07:19 | INFO     | ======================================================================
+  │ 03:20:48 | INFO     | [CACHE STORE] core_F_scalability -> 49d1bd9031908e85 (0.00 MB)
+  │ 03:20:48 | INFO     | [Core F] Complete.
+  │ 03:20:48 | INFO     |
+  │ Core F: \u2713 COMPLETE
+  │ 03:20:48 | INFO     |
+  │ ======================================================================
+  │ 03:20:48 | INFO     | STARTING: Core G — Robustness evaluation — 6 stress types (REAL)
+  │ 03:20:48 | INFO     | ======================================================================
+  │ 03:20:48 | INFO     | ======================================================================
+  │ 03:20:48 | INFO     | CORE RUN G: Robustness Evaluation (REAL via training_pipeline)
+  │ 03:20:48 | INFO     |   Feeds: Figs 13, 14, 20, 22, 24, 54
+  │ 03:20:48 | INFO     | ======================================================================
+  │ 03:20:48 | INFO     | Training base policy (MAPPO-Safe-EWC, 8bus, 60% PV)...
+  │ 03:24:33 | INFO     | Base policy trained (5000 steps). Best OF=98.5400, CTI_ok=False, actor_params persisted (5636 weights).
+  │ 03:24:33 | INFO     | [Core G] 39bus Bandwidth base policy (REAL, Claim C5)
+  │ 03:24:33 | INFO     | Training base policy (MAPPO-Safe-EWC, 39bus, 60% PV)...
+  │ 03:41:52 | INFO     | Base policy trained (5000 steps). Best OF=675.0128, CTI_ok=False, actor_params persisted (5636 weights).
+  │ 03:41:53 | INFO     | [Core G] 14bus N-1 base policy (REAL)
+  │ 03:41:53 | INFO     | Training base policy (MAPPO-Safe-EWC, 14bus, 60% PV)...
+  │ 03:50:29 | INFO     | Base policy trained (5000 steps). Best OF=79.0722, CTI_ok=False, actor_params persisted (5636 weights).
+  │ 03:50:29 | INFO     | [Core G] Running 115 eval-sweep points (Figs 13,14,20,22,24,54) across n_workers=1...
+  │ 03:50:29 | INFO     | [Fig 13] Running real evaluation: _eval_comm_stress
+  │ 03:50:38 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig13.json
+  │ 03:50:38 | INFO     | [Fig 13] \u2713 Real evaluation complete in 9.47s
+  │ 03:50:38 | INFO     | [Fig 13] Running real evaluation: _eval_comm_stress
+  │ 03:50:48 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig13.json
+  │ 03:50:48 | INFO     | [Fig 13] \u2713 Real evaluation complete in 9.54s
+  │ 03:50:48 | INFO     | [Fig 13] Running real evaluation: _eval_comm_stress
+  │ 03:50:58 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig13.json
+  │ 03:50:58 | INFO     | [Fig 13] \u2713 Real evaluation complete in 9.65s
+  │ 03:50:58 | INFO     | [Fig 13] Running real evaluation: _eval_comm_stress
+  │ 03:51:07 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig13.json
+  │ 03:51:07 | INFO     | [Fig 13] \u2713 Real evaluation complete in 9.81s
+  │ 03:51:07 | INFO     | [Fig 13] Running real evaluation: _eval_comm_stress
+  │ 03:51:18 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig13.json
+  │ 03:51:18 | INFO     | [Fig 13] \u2713 Real evaluation complete in 10.21s
+  │ 03:51:18 | INFO     | [Fig 13] Running real evaluation: _eval_comm_stress
+  │ 03:51:27 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig13.json
+  │ 03:51:27 | INFO     | [Fig 13] \u2713 Real evaluation complete in 9.25s
+  │ 03:51:27 | INFO     | [Fig 13] Running real evaluation: _eval_comm_stress
+  │ 03:51:36 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig13.json
+  │ 03:51:36 | INFO     | [Fig 13] \u2713 Real evaluation complete in 9.28s
+  │ 03:51:36 | INFO     | [Fig 13] Running real evaluation: _eval_comm_stress
+  │ 03:51:45 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig13.json
+  │ 03:51:45 | INFO     | [Fig 13] \u2713 Real evaluation complete in 9.14s
+  │ 03:51:45 | INFO     | [Fig 13] Running real evaluation: _eval_comm_stress
+  │ 03:51:55 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig13.json
+  │ 03:51:55 | INFO     | [Fig 13] \u2713 Real evaluation complete in 9.12s
+  │ 03:51:55 | INFO     | [Fig 13] Running real evaluation: _eval_comm_stress
+  │ 03:52:04 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig13.json
+  │ 03:52:04 | INFO     | [Fig 13] \u2713 Real evaluation complete in 9.12s
+  │ 03:52:04 | INFO     | [Fig 20] Running real evaluation: _eval_byzantine
+  │ 03:52:13 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig20.json
+  │ 03:52:13 | INFO     | [Fig 20] \u2713 Real evaluation complete in 9.14s
+  │ 03:52:13 | INFO     | [Fig 20] Running real evaluation: _eval_byzantine
+  │ 03:52:21 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig20.json
+  │ 03:52:21 | INFO     | [Fig 20] \u2713 Real evaluation complete in 8.56s
+  │ 03:52:21 | INFO     | [Fig 20] Running real evaluation: _eval_byzantine
+  │ 03:52:30 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig20.json
+  │ 03:52:30 | INFO     | [Fig 20] \u2713 Real evaluation complete in 8.74s
+  │ 03:52:30 | INFO     | [Fig 22] Running real evaluation: _eval_bandwidth
+  │ 03:52:40 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig22.json
+  │ 03:52:40 | INFO     | [Fig 22] \u2713 Real evaluation complete in 9.56s
+  │ 03:52:40 | INFO     | [Fig 22] Running real evaluation: _eval_bandwidth
+  │ 03:52:49 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig22.json
+  │ 03:52:49 | INFO     | [Fig 22] \u2713 Real evaluation complete in 9.55s
+  │ 03:52:49 | INFO     | [Fig 22] Running real evaluation: _eval_bandwidth
+  │ 03:52:59 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig22.json
+  │ 03:52:59 | INFO     | [Fig 22] \u2713 Real evaluation complete in 9.61s
+  │ 03:52:59 | INFO     | [Fig 22] Running real evaluation: _eval_bandwidth
+  │ 03:53:08 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig22.json
+  │ 03:53:08 | INFO     | [Fig 22] \u2713 Real evaluation complete in 9.23s
+  │ 03:53:08 | INFO     | [Fig 24] Running real evaluation: _eval_sensor_robustness
+  │ 03:53:18 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig24.json
+  │ 03:53:18 | INFO     | [Fig 24] \u2713 Real evaluation complete in 9.47s
+  │ 03:53:18 | INFO     | [Fig 24] Running real evaluation: _eval_sensor_robustness
+  │ 03:53:27 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig24.json
+  │ 03:53:27 | INFO     | [Fig 24] \u2713 Real evaluation complete in 9.09s
+  │ 03:53:27 | INFO     | [Fig 24] Running real evaluation: _eval_sensor_robustness
+  │ 03:53:36 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig24.json
+  │ 03:53:36 | INFO     | [Fig 24] \u2713 Real evaluation complete in 9.70s
+  │ 03:53:36 | INFO     | [Fig 24] Running real evaluation: _eval_sensor_robustness
+  │ 03:53:45 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig24.json
+  │ 03:53:45 | INFO     | [Fig 24] \u2713 Real evaluation complete in 8.81s
+  │ 03:53:45 | INFO     | [Fig 24] Running real evaluation: _eval_sensor_robustness
+  │ 03:53:54 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig24.json
+  │ 03:53:54 | INFO     | [Fig 24] \u2713 Real evaluation complete in 9.14s
+  │ 03:53:54 | INFO     | [Fig 24] Running real evaluation: _eval_sensor_robustness
+  │ 03:54:04 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig24.json
+  │ 03:54:04 | INFO     | [Fig 24] \u2713 Real evaluation complete in 9.45s
+  │ 03:54:04 | INFO     | [Fig 24] Running real evaluation: _eval_sensor_robustness
+  │ 03:54:13 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig24.json
+  │ 03:54:13 | INFO     | [Fig 24] \u2713 Real evaluation complete in 9.23s
+  │ 03:54:13 | INFO     | [Fig 24] Running real evaluation: _eval_sensor_robustness
+  │ 03:54:23 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig24.json
+  │ 03:54:23 | INFO     | [Fig 24] \u2713 Real evaluation complete in 9.60s
+  │ 03:54:23 | INFO     | [Fig 24] Running real evaluation: _eval_sensor_robustness
+  │ 03:54:32 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig24.json
+  │ 03:54:32 | INFO     | [Fig 24] \u2713 Real evaluation complete in 9.46s
+  │ 03:54:32 | INFO     | [Fig 24] Running real evaluation: _eval_sensor_robustness
+  │ 03:54:42 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig24.json
+  │ 03:54:42 | INFO     | [Fig 24] \u2713 Real evaluation complete in 9.66s
+  │ 03:54:42 | INFO     | [Fig 24] Running real evaluation: _eval_sensor_robustness
+  │ 03:54:51 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig24.json
+  │ 03:54:51 | INFO     | [Fig 24] \u2713 Real evaluation complete in 9.54s
+  │ 03:54:51 | INFO     | [Fig 54] Running real evaluation: _eval_adversarial
+  │ 03:54:52 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig54.json
+  │ 03:54:52 | INFO     | [Fig 54] \u2713 Real evaluation complete in 0.97s
+  │ 03:54:52 | INFO     | [Fig 54] Running real evaluation: _eval_adversarial
+  │ 03:54:53 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig54.json
+  │ 03:54:53 | INFO     | [Fig 54] \u2713 Real evaluation complete in 1.09s
+  │ 03:54:53 | INFO     | [Fig 54] Running real evaluation: _eval_adversarial
+  │ 03:54:54 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig54.json
+  │ 03:54:54 | INFO     | [Fig 54] \u2713 Real evaluation complete in 0.99s
+  │ 03:54:54 | INFO     | [Fig 54] Running real evaluation: _eval_adversarial
+  │ 03:54:55 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig54.json
+  │ 03:54:55 | INFO     | [Fig 54] \u2713 Real evaluation complete in 1.03s
+  │ 03:54:55 | INFO     | [Fig 54] Running real evaluation: _eval_adversarial
+  │ 03:54:58 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig54.json
+  │ 03:54:58 | INFO     | [Fig 54] \u2713 Real evaluation complete in 2.73s
+  │ 03:54:58 | INFO     | [Fig 54] Running real evaluation: _eval_adversarial
+  │ 03:55:01 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig54.json
+  │ 03:55:01 | INFO     | [Fig 54] \u2713 Real evaluation complete in 2.77s
+  │ 03:55:01 | INFO     | [Fig 54] Running real evaluation: _eval_adversarial
+  │ 03:55:04 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig54.json
+  │ 03:55:04 | INFO     | [Fig 54] \u2713 Real evaluation complete in 2.68s
+  │ 03:55:04 | INFO     | [Fig 54] Running real evaluation: _eval_adversarial
+  │ 03:55:06 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig54.json
+  │ 03:55:06 | INFO     | [Fig 54] \u2713 Real evaluation complete in 2.66s
+  │ 03:55:06 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 03:55:19 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 03:55:19 | INFO     | [Fig 14] \u2713 Real evaluation complete in 12.49s
+  │ 03:55:19 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 03:55:31 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 03:55:31 | INFO     | [Fig 14] \u2713 Real evaluation complete in 12.09s
+  │ 03:55:31 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 03:55:43 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 03:55:43 | INFO     | [Fig 14] \u2713 Real evaluation complete in 12.23s
+  │ 03:55:43 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 03:55:55 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 03:55:55 | INFO     | [Fig 14] \u2713 Real evaluation complete in 12.11s
+  │ 03:55:55 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 03:56:07 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 03:56:07 | INFO     | [Fig 14] \u2713 Real evaluation complete in 12.20s
+  │ 03:56:07 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 03:56:20 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 03:56:20 | INFO     | [Fig 14] \u2713 Real evaluation complete in 12.83s
+  │ 03:56:20 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 03:56:33 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 03:56:33 | INFO     | [Fig 14] \u2713 Real evaluation complete in 12.32s
+  │ 03:56:33 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 03:56:45 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 03:56:45 | INFO     | [Fig 14] \u2713 Real evaluation complete in 12.33s
+  │ 03:56:45 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 03:56:57 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 03:56:57 | INFO     | [Fig 14] \u2713 Real evaluation complete in 12.53s
+  │ 03:56:57 | INFO     | [Fig 22] Running real evaluation: _eval_bandwidth
+  │ 03:58:25 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig22.json
+  │ 03:58:25 | INFO     | [Fig 22] \u2713 Real evaluation complete in 88.06s
+  │ 03:58:25 | INFO     | [Fig 22] Running real evaluation: _eval_bandwidth
+  │ 03:59:55 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig22.json
+  │ 03:59:55 | INFO     | [Fig 22] \u2713 Real evaluation complete in 89.06s
+  │ 03:59:55 | INFO     | [Fig 22] Running real evaluation: _eval_bandwidth
+  │ 04:01:22 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig22.json
+  │ 04:01:22 | INFO     | [Fig 22] \u2713 Real evaluation complete in 87.15s
+  │ 04:01:22 | INFO     | [Fig 22] Running real evaluation: _eval_bandwidth
+  │ 04:02:46 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig22.json
+  │ 04:02:46 | INFO     | [Fig 22] \u2713 Real evaluation complete in 84.43s
+  │ 04:02:46 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:03:25 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:03:25 | INFO     | [Fig 14] \u2713 Real evaluation complete in 39.09s
+  │ 04:03:25 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:04:04 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:04:04 | INFO     | [Fig 14] \u2713 Real evaluation complete in 38.57s
+  │ 04:04:04 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:04:43 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:04:43 | INFO     | [Fig 14] \u2713 Real evaluation complete in 39.15s
+  │ 04:04:43 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:05:22 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:05:22 | INFO     | [Fig 14] \u2713 Real evaluation complete in 39.08s
+  │ 04:05:22 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:06:01 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:06:01 | INFO     | [Fig 14] \u2713 Real evaluation complete in 39.06s
+  │ 04:06:01 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:06:41 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:06:41 | INFO     | [Fig 14] \u2713 Real evaluation complete in 39.46s
+  │ 04:06:41 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:07:20 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:07:20 | INFO     | [Fig 14] \u2713 Real evaluation complete in 39.06s
+  │ 04:07:20 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:07:59 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:07:59 | INFO     | [Fig 14] \u2713 Real evaluation complete in 38.96s
+  │ 04:07:59 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:08:38 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:08:38 | INFO     | [Fig 14] \u2713 Real evaluation complete in 39.31s
+  │ 04:08:38 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:09:16 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:09:16 | INFO     | [Fig 14] \u2713 Real evaluation complete in 38.53s
+  │ 04:09:16 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:09:54 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:09:54 | INFO     | [Fig 14] \u2713 Real evaluation complete in 37.62s
+  │ 04:09:54 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:10:32 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:10:32 | INFO     | [Fig 14] \u2713 Real evaluation complete in 38.07s
+  │ 04:10:32 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:11:11 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:11:11 | INFO     | [Fig 14] \u2713 Real evaluation complete in 38.36s
+  │ 04:11:11 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:11:48 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:11:48 | INFO     | [Fig 14] \u2713 Real evaluation complete in 37.83s
+  │ 04:11:48 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:12:27 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:12:27 | INFO     | [Fig 14] \u2713 Real evaluation complete in 38.18s
+  │ 04:12:27 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:13:05 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:13:05 | INFO     | [Fig 14] \u2713 Real evaluation complete in 38.44s
+  │ 04:13:05 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:13:43 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:13:43 | INFO     | [Fig 14] \u2713 Real evaluation complete in 38.11s
+  │ 04:13:43 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:14:21 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:14:21 | INFO     | [Fig 14] \u2713 Real evaluation complete in 38.11s
+  │ 04:14:21 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:14:59 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:14:59 | INFO     | [Fig 14] \u2713 Real evaluation complete in 38.00s
+  │ 04:14:59 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:15:38 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:15:38 | INFO     | [Fig 14] \u2713 Real evaluation complete in 38.67s
+  │ 04:15:38 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:17:31 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:17:31 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.98s
+  │ 04:17:31 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:19:24 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:19:24 | INFO     | [Fig 14] \u2713 Real evaluation complete in 113.31s
+  │ 04:19:24 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:21:21 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:21:21 | INFO     | [Fig 14] \u2713 Real evaluation complete in 116.71s
+  │ 04:21:21 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:23:24 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:23:24 | INFO     | [Fig 14] \u2713 Real evaluation complete in 122.72s
+  │ 04:23:24 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:25:19 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:25:19 | INFO     | [Fig 14] \u2713 Real evaluation complete in 115.77s
+  │ 04:25:19 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:27:10 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:27:10 | INFO     | [Fig 14] \u2713 Real evaluation complete in 110.74s
+  │ 04:27:10 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:29:02 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:29:02 | INFO     | [Fig 14] \u2713 Real evaluation complete in 111.73s
+  │ 04:29:02 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:30:55 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:30:55 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.78s
+  │ 04:30:55 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:32:48 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:32:48 | INFO     | [Fig 14] \u2713 Real evaluation complete in 113.46s
+  │ 04:32:48 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:34:41 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:34:41 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.92s
+  │ 04:34:41 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:36:39 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:36:39 | INFO     | [Fig 14] \u2713 Real evaluation complete in 117.53s
+  │ 04:36:39 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:38:31 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:38:31 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.39s
+  │ 04:38:31 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:40:24 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:40:24 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.56s
+  │ 04:40:24 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:42:19 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:42:19 | INFO     | [Fig 14] \u2713 Real evaluation complete in 115.43s
+  │ 04:42:19 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:44:18 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:44:18 | INFO     | [Fig 14] \u2713 Real evaluation complete in 118.77s
+  │ 04:44:18 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:46:11 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:46:11 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.81s
+  │ 04:46:11 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:48:04 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:48:04 | INFO     | [Fig 14] \u2713 Real evaluation complete in 113.18s
+  │ 04:48:04 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:49:55 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:49:55 | INFO     | [Fig 14] \u2713 Real evaluation complete in 110.98s
+  │ 04:49:55 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:51:47 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:51:47 | INFO     | [Fig 14] \u2713 Real evaluation complete in 111.81s
+  │ 04:51:47 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:53:39 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:53:39 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.11s
+  │ 04:53:39 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:55:31 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:55:31 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.35s
+  │ 04:55:31 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:57:22 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:57:22 | INFO     | [Fig 14] \u2713 Real evaluation complete in 110.78s
+  │ 04:57:22 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 04:59:14 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 04:59:14 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.00s
+  │ 04:59:14 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:01:10 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:01:10 | INFO     | [Fig 14] \u2713 Real evaluation complete in 116.62s
+  │ 05:01:10 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:03:08 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:03:08 | INFO     | [Fig 14] \u2713 Real evaluation complete in 117.96s
+  │ 05:03:08 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:05:06 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:05:06 | INFO     | [Fig 14] \u2713 Real evaluation complete in 117.55s
+  │ 05:05:06 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:07:03 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:07:03 | INFO     | [Fig 14] \u2713 Real evaluation complete in 116.52s
+  │ 05:07:03 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:08:59 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:08:59 | INFO     | [Fig 14] \u2713 Real evaluation complete in 116.51s
+  │ 05:08:59 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:10:53 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:10:53 | INFO     | [Fig 14] \u2713 Real evaluation complete in 114.24s
+  │ 05:10:53 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:12:46 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:12:46 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.45s
+  │ 05:12:46 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:14:39 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:14:39 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.90s
+  │ 05:14:39 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:16:31 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:16:31 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.31s
+  │ 05:16:31 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:18:25 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:18:25 | INFO     | [Fig 14] \u2713 Real evaluation complete in 113.69s
+  │ 05:18:25 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:20:21 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:20:21 | INFO     | [Fig 14] \u2713 Real evaluation complete in 116.19s
+  │ 05:20:21 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:22:15 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:22:15 | INFO     | [Fig 14] \u2713 Real evaluation complete in 114.10s
+  │ 05:22:15 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:24:07 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:24:07 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.55s
+  │ 05:24:07 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:25:58 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:25:58 | INFO     | [Fig 14] \u2713 Real evaluation complete in 110.18s
+  │ 05:25:58 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:27:50 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:27:50 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.54s
+  │ 05:27:50 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:29:42 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:29:42 | INFO     | [Fig 14] \u2713 Real evaluation complete in 111.57s
+  │ 05:29:42 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:31:33 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:31:33 | INFO     | [Fig 14] \u2713 Real evaluation complete in 111.70s
+  │ 05:31:33 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:33:27 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:33:27 | INFO     | [Fig 14] \u2713 Real evaluation complete in 113.31s
+  │ 05:33:27 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:35:21 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:35:21 | INFO     | [Fig 14] \u2713 Real evaluation complete in 114.18s
+  │ 05:35:21 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:37:17 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:37:17 | INFO     | [Fig 14] \u2713 Real evaluation complete in 115.81s
+  │ 05:37:17 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:39:08 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:39:08 | INFO     | [Fig 14] \u2713 Real evaluation complete in 111.65s
+  │ 05:39:08 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:41:01 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:41:01 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.86s
+  │ 05:41:01 | INFO     | [Fig 14] Running real evaluation: _eval_n1_contingency
+  │ 05:42:54 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig14.json
+  │ 05:42:54 | INFO     | [Fig 14] \u2713 Real evaluation complete in 112.92s
+  │ 05:42:54 | INFO     | [CACHE STORE] core_G_robustness -> 6c703205eb8e6086 (0.00 MB)
+  │ 05:42:54 | INFO     | [Core G] Complete.
+  │ 05:42:54 | INFO     |
+  │ Core G: \u2713 COMPLETE
+  │ 05:42:54 | INFO     |
+  │ ======================================================================
+  │ 05:42:54 | INFO     | STARTING: Core H — Transfer learning — unseen faults + zero-shot (REAL)
+  │ 05:42:54 | INFO     | ======================================================================
+  │ 05:42:54 | INFO     | ======================================================================
+  │ 05:42:54 | INFO     | CORE RUN H: Transfer Learning (REAL via training_pipeline)
+  │ 05:42:54 | INFO     |   Feeds: Figs 23, 25
+  │ 05:42:54 | INFO     | ======================================================================
+  │ 05:42:54 | INFO     | Training base policy (MAPPO-Safe-EWC, 8bus, 60% PV)...
+  │ 05:46:35 | INFO     | Base policy trained (5000 steps). Best OF=98.5400, CTI_ok=False, actor_params persisted (5636 weights).
+  │ 05:46:35 | INFO     |
+  │ [Core H] Figs 23/25: Unseen Faults + Zero-Shot Transfer (REAL)
+  │ 05:46:35 | INFO     | [Fig 23] Running real evaluation: _eval_unseen_faults
+  │ 05:46:44 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig23.json
+  │ 05:46:44 | INFO     | [Fig 23] \u2713 Real evaluation complete in 9.33s
+  │ 05:46:44 | INFO     | [Fig 23] Running real evaluation: _eval_unseen_faults
+  │ 05:46:53 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig23.json
+  │ 05:46:53 | INFO     | [Fig 23] \u2713 Real evaluation complete in 9.25s
+  │ 05:46:53 | INFO     | [Fig 23] Running real evaluation: _eval_unseen_faults
+  │ 05:47:02 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig23.json
+  │ 05:47:02 | INFO     | [Fig 23] \u2713 Real evaluation complete in 9.09s
+  │ 05:47:02 | INFO     | [Fig 25] Running real evaluation: _eval_zero_shot_transfer
+  │ 05:47:31 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig25.json
+  │ 05:47:31 | INFO     | [Fig 25] \u2713 Real evaluation complete in 28.93s
+  │ 05:47:31 | INFO     | [Core H] Fig 25: Cold-Start Baseline on 14-Bus (REAL, from-scratch training)
+  │ 09:53:33 | INFO     | [CACHE STORE] core_H_transfer -> 74b67e742307dbab (0.00 MB)
+  │ 09:53:33 | INFO     | [Core H] Complete.
+  │ 09:53:33 | INFO     |
+  │ Core H: \u2713 COMPLETE
+  │ 09:53:33 | INFO     |
+  │ ======================================================================
+  │ 09:53:33 | INFO     | STARTING: Core I — Deployment benchmark — latency + compression (REAL)
+  │ 09:53:33 | INFO     | ======================================================================
+  │ 09:53:33 | INFO     | ======================================================================
+  │ 09:53:33 | INFO     | CORE RUN I: Deployment Benchmark (REAL via training_pipeline)
+  │ 09:53:33 | INFO     |   Feeds: Figs 18, 53; Claim C5 (39bus latency)
+  │ 09:53:33 | INFO     | ======================================================================
+  │ 09:53:33 | INFO     |
+  │ [Core I] Figs 18 + Claim C5: Inference Latency, 8bus + 39bus (REAL)
+  │ 09:53:33 | INFO     | Training base policy (MAPPO-Safe-EWC, 8bus, 60% PV)...
+  │ 09:57:14 | INFO     | Base policy trained (5000 steps). Best OF=98.5400, CTI_ok=False, actor_params persisted (5636 weights).
+  │ 09:57:14 | INFO     | Training base policy (MAPPO-Safe-EWC, 39bus, 60% PV)...
+  │ 10:17:25 | INFO     | Base policy trained (5000 steps). Best OF=675.0128, CTI_ok=False, actor_params persisted (5636 weights).
+  │ 10:17:28 | INFO     | [Core I] Fig 53: Model Compression (REAL)
+  │ 10:17:28 | INFO     | [Fig 53] Running real evaluation: _eval_compression
+  │ 10:17:38 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig53.json
+  │ 10:17:38 | INFO     | [Fig 53] \u2713 Real evaluation complete in 10.30s
+  │ 10:17:38 | INFO     | [Fig 53] Running real evaluation: _eval_compression
+  │ 10:17:50 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig53.json
+  │ 10:17:50 | INFO     | [Fig 53] \u2713 Real evaluation complete in 11.53s
+  │ 10:17:50 | INFO     | [Fig 53] Running real evaluation: _eval_compression
+  │ 10:18:00 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig53.json
+  │ 10:18:00 | INFO     | [Fig 53] \u2713 Real evaluation complete in 10.76s
+  │ 10:18:00 | INFO     | [CACHE STORE] core_I_deployment -> 2caf63c3d77660c5 (0.00 MB)
+  │ 10:18:00 | INFO     | [Core I] Complete.
+  │ 10:18:00 | INFO     |
+  │ Core I: \u2713 COMPLETE
+  │ 10:18:00 | INFO     |
+  │ ======================================================================
+  │ 10:18:00 | INFO     | STARTING: Core J — Protection engineering — 5 analyses (REAL)
+  │ 10:18:00 | INFO     | ======================================================================
+  │ 10:18:00 | INFO     | ======================================================================
+  │ 10:18:00 | INFO     | CORE RUN J: Protection Engineering (REAL via training_pipeline)
+  │ 10:18:00 | INFO     |   Feeds: Figs 43, 44, 45, 46, 47
+  │ 10:18:00 | INFO     | ======================================================================
+  │ 10:18:00 | INFO     | [Core J] Fig 43: Coordination Diagram
+  │ 10:18:00 | INFO     | Training base policy (MAPPO-Safe-EWC, 8bus, 60% PV)...
+  │ 10:22:43 | INFO     | Base policy trained (5000 steps). Best OF=98.5400, CTI_ok=False, actor_params persisted (5636 weights).
+  │ 10:22:43 | INFO     | [Core J] Fig 44: Fault Current Contribution (REAL)
+  │ 10:22:43 | INFO     | [Fig 44] Running real evaluation: _eval_fault_contributions
+  │ 10:22:54 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig44.json
+  │ 10:22:54 | INFO     | [Fig 44] \u2713 Real evaluation complete in 11.04s
+  │ 10:22:54 | INFO     | [Core J] Fig 45: Daily PV Profile (REAL)
+  │ 10:22:54 | INFO     | [Fig 45] Running real evaluation: _eval_daily_pv
+  │ 10:23:38 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig45.json
+  │ 10:23:38 | INFO     | [Fig 45] \u2713 Real evaluation complete in 43.55s
+  │ 10:23:38 | INFO     | [Core J] Fig 46: Relay Operating Curves (REAL)
+  │ 10:23:38 | INFO     | [Fig 46] Running real evaluation: _eval_relay_curves
+  │ 10:23:38 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig46.json
+  │ 10:23:38 | INFO     | [Fig 46] \u2713 Real evaluation complete in 0.00s
+  │ 10:23:38 | INFO     | [Core J] Fig 47: Sympathetic Tripping (REAL)
+  │ 10:23:38 | INFO     | [Fig 47] Running real evaluation: _eval_sympathetic_tripping
+  │ 10:24:42 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig47.json
+  │ 10:24:42 | INFO     | [Fig 47] \u2713 Real evaluation complete in 64.74s
+  │ 10:24:42 | INFO     | [CACHE STORE] core_J_protection -> 452cab9d78b5f6f7 (0.03 MB)
+  │ 10:24:42 | INFO     | [Core J] Complete.
+  │ 10:24:42 | INFO     |
+  │ Core J: \u2713 COMPLETE
+  │ 10:24:42 | INFO     |
+  │ ======================================================================
+  │ 10:24:42 | INFO     | STARTING: Core K — Seasonal generalization — 4 seasons (REAL)
+  │ 10:24:42 | INFO     | ======================================================================
+  │ 10:24:42 | INFO     | ======================================================================
+  │ 10:24:42 | INFO     | CORE RUN K: Seasonal/Weather Generalization (REAL via training_pipeline)
+  │ 10:24:42 | INFO     |   Feeds: Fig 58
+  │ 10:24:42 | INFO     | ======================================================================
+  │ 10:24:42 | INFO     | Training base policy (MAPPO-Safe-EWC, 8bus, 60% PV)...
+  │ 10:29:17 | INFO     | Base policy trained (5000 steps). Best OF=98.5400, CTI_ok=False, actor_params persisted (5636 weights).
+  │ 10:29:17 | INFO     | [Fig 58] Running real evaluation: _eval_seasonal
+  │ 10:29:29 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig58.json
+  │ 10:29:29 | INFO     | [Fig 58] \u2713 Real evaluation complete in 11.62s
+  │ 10:29:29 | INFO     | [Fig 58] Running real evaluation: _eval_seasonal
+  │ 10:29:43 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig58.json
+  │ 10:29:43 | INFO     | [Fig 58] \u2713 Real evaluation complete in 14.07s
+  │ 10:29:43 | INFO     | [Fig 58] Running real evaluation: _eval_seasonal
+  │ 10:29:55 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig58.json
+  │ 10:29:55 | INFO     | [Fig 58] \u2713 Real evaluation complete in 11.94s
+  │ 10:29:55 | INFO     | [Fig 58] Running real evaluation: _eval_seasonal
+  │ 10:30:06 | INFO     |   Cached to C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig58.json
+  │ 10:30:06 | INFO     | [Fig 58] \u2713 Real evaluation complete in 11.72s
+  │ 10:30:06 | INFO     | [CACHE STORE] core_K_seasonal -> b755b8e3a74b39d5 (0.00 MB)
+  │ 10:30:06 | INFO     | [Core K] Complete.
+  │ 10:30:06 | INFO     |
+  │ Core K: \u2713 COMPLETE
+  │ 10:30:06 | INFO     |
+  │ ======================================================================
+  │ 10:30:06 | INFO     | EXPERIMENT SUITE SUMMARY
+  │ 10:30:06 | INFO     | ======================================================================
+  │ 10:30:06 | INFO     | Total elapsed: 1 day, 17:39:27
+  │ 10:30:06 | INFO     | Mode: FAST
+  │ 10:30:06 | INFO     | ----------------------------------------------------------------------
+  │ 10:30:06 | INFO     |   \u2713 Core A               complete     (2/2 steps)
+  │ 10:30:06 | INFO     |   \u2713 Core B               complete     (4/4 steps)
+  │ 10:30:06 | INFO     |   \u2713 Core C               complete     (10/10 steps)
+  │ 10:30:06 | INFO     |   \u2713 Core D               complete     (10/10 steps)
+  │ 10:30:06 | INFO     |   \u2713 Core E               complete     (80/80 steps)
+  │ 10:30:06 | INFO     |   \u2713 Core F               complete     (3/3 steps)
+  │ 10:30:06 | INFO     |   \u2713 Core G               complete     (0/6 steps)
+  │ 10:30:06 | INFO     |   \u2713 Core H               complete     (0/2 steps)
+  │ 10:30:06 | INFO     |   \u2713 Core I               complete     (0/2 steps)
+  │ 10:30:06 | INFO     |   \u2713 Core J               complete     (0/5 steps)
+  │ 10:30:06 | INFO     |   \u2713 Core K               complete     (0/4 steps)
+  │ 10:30:06 | INFO     | ======================================================================
+  │ 10:30:06 | INFO     | Progress report saved to: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\progress\training_progress_20261024_103006.json
+  │ 10:30:06 | INFO     |
+  │ Cache statistics: 0 hits, 11 misses, 12 stores
+  │ 10:30:06 | INFO     |
+  │ ======================================================================
+  │ 10:30:06 | INFO     | ALL CORE TRAINING COMPLETE (A-K)
+  │ 10:30:06 | INFO     | Total time: 1 day, 17:39:27
+  │ 10:30:06 | INFO     | Synthetic Fallback: DISABLED
+  │ 10:30:06 | INFO     | Manifest: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\training_manifest.json
+  │ 10:30:06 | INFO     | Progress: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\progress\training_progress_20261024_103006.json
+  │ 10:30:06 | INFO     | Next: run_post_processing.py --all
+  │ 10:30:06 | INFO     | ======================================================================
+  │ 
+  │ ======================================================================
+  │ DOCR-MARL CONFIGURATION SUMMARY
+  │ ======================================================================
+  │ 
+  │ [SYSTEM] 8BUS
+  │    - Relays: ...
+  │    - Pandapower: OFF
+  │ 
+  │ [TRAINING]
+  │    - GNN Communication: OFF
+  │    - Safety Layer: ON
+  │    - EWC: ON
+  │    - Curriculum: OFF
+  │ 
+  │ [EXPERIMENT]
+  │    - Synthetic Fallback: OFF
+  │ 
+  │ [POST-PROCESSING]
+  │ ======================================================================
+  │ 
+10:30:12 | INFO     |   ✓ SUCCESS in 149973.2s
+10:30:12 | INFO     | 
+[Phase 2] Running Objective 4 benchmark comparison (GA-SQP/HWOA/HHO/JAYA/EEO vs MARL)...
+10:30:16 | INFO     |   PV level: 0% - already computed, loading results\benchmark_pv000.pkl
+10:30:16 | INFO     |   PV level: 20% - already computed, loading results\benchmark_pv020.pkl
+10:30:16 | INFO     |   PV level: 40% - already computed, loading results\benchmark_pv040.pkl
+10:30:16 | INFO     |   PV level: 60% - already computed, loading results\benchmark_pv060.pkl
+10:30:16 | INFO     | [Phase 2] Objective 4 benchmark comparison complete.
+10:30:16 | INFO     | ✓ Phase 2 Core Training Runs (A-K with Real Evals): COMPLETE (1 day, 17:39:37)
+10:30:16 | INFO     | 
+10:30:16 | INFO     | ======================================================================
+10:30:16 | INFO     | PHASE 3: Training Dynamics
+10:30:16 | INFO     | ======================================================================
+10:30:16 | INFO     | Generating 14 figures from Core A/B cached data: [5, 6, 7, 8, 9, 10, 12, 16, 21, 29, 36, 37, 38, 41]
+10:30:16 | INFO     | \n[Fig 05] Objective Function vs. PV Penetration
+10:30:17 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_01_10\fig_05_objective_vs_pv.pdf
+10:30:17 | INFO     | [Fig 05] ✓ Generated in 0.69s
+10:30:17 | INFO     |   [Fig 05] ✓ Generated in 0.69s
+10:30:17 | INFO     | \n[Fig 06] CTI Violation Rate vs. PV Penetration
+10:30:17 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_01_10\fig_06_cti_vs_pv.pdf
+10:30:17 | INFO     | [Fig 06] ✓ Generated in 0.44s
+10:30:17 | INFO     |   [Fig 06] ✓ Generated in 0.44s
+10:30:17 | INFO     | \n[Fig 07] Curriculum Learning Progression
+10:30:18 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_01_10\fig_07_curriculum.pdf
+10:30:18 | INFO     | [Fig 07] ✓ Generated in 0.88s
+10:30:18 | INFO     |   [Fig 07] ✓ Generated in 0.88s
+10:30:18 | INFO     | \n[Fig 08] Learned GNN Attention Weights
+10:30:19 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_01_10\fig_08_attention_weights.pdf
+10:30:19 | INFO     | [Fig 08] ✓ Generated in 1.21s
+10:30:19 | INFO     |   [Fig 08] ✓ Generated in 1.21s
+10:30:19 | INFO     | \n[Fig 09] CTI Violation Dynamics During Training
+10:30:20 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_01_10\fig_09_cti_violations.pdf
+10:30:20 | INFO     | [Fig 09] ✓ Generated in 1.31s
+10:30:20 | INFO     |   [Fig 09] ✓ Generated in 1.31s
+10:30:20 | INFO     | \n[Fig 10] Lagrange Multiplier Evolution
+10:30:21 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_01_10\fig_10_lagrange_multipliers.pdf
+10:30:21 | INFO     | [Fig 10] ✓ Generated in 0.31s
+10:30:21 | INFO     |   [Fig 10] ✓ Generated in 0.31s
+10:30:21 | INFO     | \n[Fig 12] Convergence Curves with 95% Confidence Bands
+10:30:21 | ERROR    | [Fig 12] ✗ Failed after 0.04s: Axes.boxplot() got an unexpected keyword argument 'tick_labels'
+10:30:21 | ERROR    |   [Fig 12] ✗ Failed: Axes.boxplot() got an unexpected keyword argument 'tick_labels'
+10:30:21 | ERROR    | Fig 12 error: Axes.boxplot() got an unexpected keyword argument 'tick_labels'
+10:30:21 | INFO     | \n[Fig 16] EWC Effectiveness
+10:30:22 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_11_20\fig_16_ewc_effectiveness.pdf
+10:30:22 | INFO     | [Fig 16] ✓ Generated in 1.41s
+10:30:22 | INFO     |   [Fig 16] ✓ Generated in 1.41s
+10:30:22 | INFO     | \n[Fig 21] Action Projection Efficacy
+10:30:23 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_21_30\fig_21_action_projection.pdf
+10:30:23 | INFO     | [Fig 21] ✓ Generated in 0.33s
+10:30:23 | INFO     |   [Fig 21] ✓ Generated in 0.34s
+10:30:23 | INFO     | \n[Fig 29] EWC Continual Adaptation
+10:30:25 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_21_30\fig_29_ewc_continual.pdf
+10:30:25 | INFO     | [Fig 29] ✓ Generated in 1.99s
+10:30:25 | INFO     |   [Fig 29] ✓ Generated in 1.99s
+10:30:25 | INFO     | \n[Fig 36] Action Space Bounds & Safety Projection Geometry
+10:30:25 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_31_40\fig_36_action_space_geometry.pdf
+10:30:25 | INFO     | [Fig 36] ✓ Generated in 0.76s
+10:30:25 | INFO     |   [Fig 36] ✓ Generated in 0.76s
+10:30:25 | INFO     | \n[Fig 37] Per-Agent Learning Curves
+10:30:26 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_31_40\fig_37_per_agent_curves.pdf
+10:30:26 | INFO     | [Fig 37] ✓ Generated in 0.98s
+10:30:26 | INFO     |   [Fig 37] ✓ Generated in 0.98s
+10:30:26 | INFO     | \n[Fig 38] Attention Weight Evolution
+10:30:29 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_31_40\fig_38_attention_evolution.pdf
+10:30:29 | INFO     | [Fig 38] ✓ Generated in 2.94s
+10:30:29 | INFO     |   [Fig 38] ✓ Generated in 2.94s
+10:30:29 | INFO     | \n[Fig 41] Sample Efficiency Comparison
+10:30:30 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_31_40\fig_41_sample_efficiency.pdf
+10:30:30 | INFO     | [Fig 41] ✓ Generated in 0.28s
+10:30:30 | INFO     |   [Fig 41] ✓ Generated in 0.28s
+10:30:30 | INFO     | Phase 3 complete: 13 generated, 1 failed
+10:30:30 | INFO     | ✓ Phase 3 Training Dynamics: COMPLETE (0:00:13)
+10:30:30 | INFO     | 
+10:30:30 | INFO     | ======================================================================
+10:30:30 | INFO     | PHASE 4: Robustness & Resilience
+10:30:30 | INFO     | ======================================================================
+10:30:30 | INFO     | Generating 6 figures from Core G cached data: [13, 14, 20, 22, 24, 54]
+10:30:30 | INFO     | \n[Fig 13] Communication Stress Robustness
+10:30:30 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_11_20\fig_13_communication_stress.pdf
+10:30:30 | INFO     | [Fig 13] ✓ Generated in 0.45s
+10:30:30 | INFO     |   [Fig 13] ✓ Generated in 0.45s
+10:30:30 | INFO     | \n[Fig 14] N-1 Contingency Impact and Recovery
+10:30:30 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_11_20\fig_14_n1_contingency.pdf
+10:30:30 | INFO     | [Fig 14] ✓ Generated in 0.33s
+10:30:30 | INFO     |   [Fig 14] ✓ Generated in 0.33s
+10:30:30 | INFO     | \n[Fig 20] Byzantine Agent Detection
+10:30:31 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_11_20\fig_20_byzantine.pdf
+10:30:31 | INFO     | [Fig 20] ✓ Generated in 0.25s
+10:30:31 | INFO     |   [Fig 20] ✓ Generated in 0.25s
+10:30:31 | INFO     | \n[Fig 22] Bandwidth vs. Performance Trade-off
+10:30:31 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_21_30\fig_22_bandwidth_tradeoff.pdf
+10:30:31 | INFO     | [Fig 22] ✓ Generated in 0.33s
+10:30:31 | INFO     |   [Fig 22] ✓ Generated in 0.33s
+10:30:31 | INFO     | \n[Fig 24] Sensor Robustness
+10:30:32 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_21_30\fig_24_sensor_robustness.pdf
+10:30:32 | INFO     | [Fig 24] ✓ Generated in 1.26s
+10:30:32 | INFO     |   [Fig 24] ✓ Generated in 1.26s
+10:30:32 | INFO     | \n[Fig 54] Adversarial Robustness
+10:30:33 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_51_58\fig_54_adversarial.pdf
+10:30:33 | INFO     | [Fig 54] ✓ Generated in 0.45s
+10:30:33 | INFO     |   [Fig 54] ✓ Generated in 0.45s
+10:30:33 | INFO     | Phase 4 complete: 6 generated, 0 failed
+10:30:33 | INFO     | ✓ Phase 4 Robustness & Resilience: COMPLETE (0:00:03)
+10:30:33 | INFO     | 
+10:30:33 | INFO     | ======================================================================
+10:30:33 | INFO     | PHASE 5: Scalability & Transfer Learning
+10:30:33 | INFO     | ======================================================================
+10:30:33 | INFO     | Generating 3 figures from Core F/H cached data: [15, 23, 25]
+10:30:33 | INFO     | \n[Fig 15] Scalability Analysis
+10:30:33 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_11_20\fig_15_scalability.pdf
+10:30:33 | INFO     | [Fig 15] ✓ Generated in 0.56s
+10:30:33 | INFO     |   [Fig 15] ✓ Generated in 0.56s
+10:30:33 | INFO     | \n[Fig 23] Generalization to Unseen Fault Types
+10:30:33 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_21_30\fig_23_unseen_faults.pdf
+10:30:33 | INFO     | [Fig 23] ✓ Generated in 0.23s
+10:30:33 | INFO     |   [Fig 23] ✓ Generated in 0.23s
+10:30:33 | INFO     | \n[Fig 25] Zero-Shot Transfer 8->30 Bus
+10:30:34 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_21_30\fig_25_zero_shot_transfer.pdf
+10:30:34 | INFO     | [Fig 25] ✓ Generated in 0.31s
+10:30:34 | INFO     |   [Fig 25] ✓ Generated in 0.31s
+10:30:34 | INFO     | Phase 5 complete: 3 generated, 0 failed
+10:30:34 | INFO     | ✓ Phase 5 Scalability & Transfer Learning: COMPLETE (0:00:01)
+10:30:34 | INFO     | 
+10:30:34 | INFO     | ======================================================================
+10:30:34 | INFO     | PHASE 6: Deployment & Hardware
+10:30:34 | INFO     | ======================================================================
+10:30:34 | INFO     | Generating 2 figures from Core I cached data: [18, 53]
+10:30:34 | INFO     | \n[Fig 18] Inference Latency Distribution
+10:30:35 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_11_20\fig_18_inference_latency.pdf
+10:30:35 | INFO     | [Fig 18] ✓ Generated in 0.99s
+10:30:35 | INFO     |   [Fig 18] ✓ Generated in 0.99s
+10:30:35 | INFO     | \n[Fig 53] Model Compression & Quantization Impact
+10:30:35 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_51_58\fig_53_model_compression.pdf
+10:30:35 | INFO     | [Fig 53] ✓ Generated in 0.47s
+10:30:35 | INFO     |   [Fig 53] ✓ Generated in 0.47s
+10:30:35 | INFO     | Phase 6 complete: 2 generated, 0 failed
+10:30:35 | INFO     | ✓ Phase 6 Deployment & Hardware: COMPLETE (0:00:01)
+10:30:35 | INFO     | 
+10:30:35 | INFO     | ======================================================================
+10:30:35 | INFO     | PHASE 7: Protection Engineering & Interpretability
+10:30:35 | INFO     | ======================================================================
+10:30:35 | INFO     | Generating 9 figures from Core J/A cached data: [43, 44, 45, 46, 47, 48, 49, 50, 58]
+10:30:35 | INFO     | \n[Fig 43] Relay Coordination Time-Distance Diagram
+10:30:36 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_41_50\fig_43_coordination_diagram.pdf
+10:30:36 | INFO     | [Fig 43] ✓ Generated in 0.35s
+10:30:36 | INFO     |   [Fig 43] ✓ Generated in 0.35s
+10:30:36 | INFO     | \n[Fig 44] Fault Current Contribution Pie Chart
+10:30:36 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_41_50\fig_44_fault_contribution.pdf
+10:30:36 | INFO     | [Fig 44] ✓ Generated in 0.28s
+10:30:36 | INFO     |   [Fig 44] ✓ Generated in 0.28s
+10:30:36 | INFO     | \n[Fig 45] Daily PV Profile & Adaptive Relay Response
+10:30:36 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_41_50\fig_45_daily_profile.pdf
+10:30:36 | INFO     | [Fig 45] ✓ Generated in 0.68s
+10:30:36 | INFO     |   [Fig 45] ✓ Generated in 0.68s
+10:30:36 | INFO     | \n[Fig 46] Relay Operating Characteristic Curves
+10:30:37 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_41_50\fig_46_relay_curves.pdf
+10:30:37 | INFO     | [Fig 46] ✓ Generated in 0.41s
+10:30:37 | INFO     |   [Fig 46] ✓ Generated in 0.41s
+10:30:37 | INFO     | \n[Fig 47] Sympathetic Tripping Prevention Analysis
+10:30:37 | INFO     | Loaded bridge cache: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig47.json
+10:30:37 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_41_50\fig_47_sympathetic_tripping.pdf
+10:30:37 | INFO     | [Fig 47] ✓ Generated in 0.57s
+10:30:37 | INFO     |   [Fig 47] ✓ Generated in 0.58s
+10:30:37 | INFO     | \n[Fig 48] SHAP Feature Importance
+10:30:37 | INFO     | Loaded bridge cache: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig48.json
+10:30:38 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_41_50\fig_48_shap.pdf
+10:30:38 | INFO     | [Fig 48] ✓ Generated in 0.43s
+10:30:38 | INFO     |   [Fig 48] ✓ Generated in 0.43s
+10:30:38 | INFO     | \n[Fig 49] Decision Boundary Visualization
+10:30:38 | INFO     | Loaded bridge cache: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig49.json
+10:30:40 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_41_50\fig_49_decision_boundary.pdf
+10:30:40 | INFO     | [Fig 49] ✓ Generated in 1.77s
+10:30:40 | INFO     |   [Fig 49] ✓ Generated in 1.77s
+10:30:40 | INFO     | \n[Fig 50] Critical P/B Pair Identification
+10:30:40 | INFO     | Loaded bridge cache: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\core_cache\core_eval_fig50.json
+10:30:40 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_41_50\fig_50_critical_pairs.pdf
+10:30:40 | INFO     | [Fig 50] ✓ Generated in 0.41s
+10:30:40 | INFO     |   [Fig 50] ✓ Generated in 0.41s
+10:30:40 | INFO     | \n[Fig 58] Seasonal/Weather Generalization
+10:30:41 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_51_58\fig_58_seasonal.pdf
+10:30:41 | INFO     | [Fig 58] ✓ Generated in 0.67s
+10:30:41 | INFO     |   [Fig 58] ✓ Generated in 0.67s
+10:30:41 | INFO     | Phase 7 complete: 9 generated, 0 failed
+10:30:41 | INFO     | ✓ Phase 7 Protection Engineering & Interpretability: COMPLETE (0:00:05)
+10:30:41 | INFO     | 
+10:30:41 | INFO     | ======================================================================
+10:30:41 | INFO     | PHASE 8: Statistical Aggregation
+10:30:41 | INFO     | ======================================================================
+10:30:41 | INFO     | Generating 10 figures from Core C cached data: [11, 31, 32, 33, 55, 56, 57, 39, 40, 42]
+10:30:41 | INFO     | \n[Fig 11] Nemenyi Critical Difference Diagram
+10:30:41 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_11_20\fig_11_nemenyi.pdf
+10:30:41 | INFO     | [Fig 11] ✓ Generated in 0.32s
+10:30:41 | INFO     |   [Fig 11] ✓ Generated in 0.32s
+10:30:41 | INFO     | \n[Fig 31] Multi-Metric Ranking
+10:30:41 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_31_40\fig_31_multi_metric_ranking.pdf
+10:30:41 | INFO     | [Fig 31] ✓ Generated in 0.24s
+10:30:41 | INFO     |   [Fig 31] ✓ Generated in 0.24s
+10:30:41 | INFO     | \n[Fig 32] Effect Size Analysis
+10:30:42 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_31_40\fig_32_effect_size.pdf
+10:30:42 | INFO     | [Fig 32] ✓ Generated in 0.22s
+10:30:42 | INFO     |   [Fig 32] ✓ Generated in 0.22s
+10:30:42 | INFO     | \n[Fig 33] Multi-Dimensional Method Comparison
+10:30:42 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_31_40\fig_33_radar_chart.pdf
+10:30:42 | INFO     | [Fig 33] ✓ Generated in 0.55s
+10:30:42 | INFO     |   [Fig 33] ✓ Generated in 0.55s
+10:30:42 | INFO     | \n[Fig 55] Comprehensive Method Comparison Table
+10:30:42 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_51_58\fig_55_comparison_table.pdf
+10:30:42 | INFO     | [Fig 55] ✓ Generated in 0.37s
+10:30:42 | INFO     |   [Fig 55] ✓ Generated in 0.37s
+10:30:42 | INFO     | \n[Fig 56] Multi-Objective Pareto Front
+10:30:43 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_51_58\fig_56_pareto_front.pdf
+10:30:43 | INFO     | [Fig 56] ✓ Generated in 0.39s
+10:30:43 | INFO     |   [Fig 56] ✓ Generated in 0.39s
+10:30:43 | INFO     | \n[Fig 57] Bootstrap Confidence Interval Convergence
+10:30:44 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_51_58\fig_57_bootstrap_ci.pdf
+10:30:44 | INFO     | [Fig 57] ✓ Generated in 0.90s
+10:30:44 | INFO     |   [Fig 57] ✓ Generated in 0.90s
+10:30:44 | INFO     | \n[Fig 39] Systematic Ablation Study
+10:30:45 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_31_40\fig_39_ablation.pdf
+10:30:45 | INFO     | [Fig 39] ✓ Generated in 0.77s
+10:30:45 | INFO     |   [Fig 39] ✓ Generated in 0.77s
+10:30:45 | INFO     | \n[Fig 40] Hyperparameter Sensitivity Heatmap
+10:30:47 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_31_40\fig_40_hyperparameter.pdf
+10:30:47 | INFO     | [Fig 40] ✓ Generated in 2.34s
+10:30:47 | INFO     |   [Fig 40] ✓ Generated in 2.34s
+10:30:47 | INFO     | \n[Fig 42] Warm-Start vs. Cold-Start Initialization
+10:30:47 | INFO     |   Saved: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\figures\figs_31_40\fig_42_warm_start.pdf
+10:30:47 | INFO     | [Fig 42] ✓ Generated in 0.31s
+10:30:47 | INFO     |   [Fig 42] ✓ Generated in 0.31s
+10:30:47 | INFO     | Phase 8 complete: 10 generated, 0 failed
+10:30:47 | INFO     | ✓ Phase 8 Statistical Aggregation: COMPLETE (0:00:06)
+10:30:47 | INFO     | 
+10:30:47 | INFO     | ======================================================================
+10:30:47 | INFO     | PHASE 9: Final Compilation
+10:30:47 | INFO     | ======================================================================
+10:30:47 | INFO     |   -> Compilation report saved to results\reports\compilation_report.json
+10:30:47 | INFO     |   -> Figures generated: 50/58 (35 auto + 15 manual)
+10:30:47 | INFO     |   -> Cache entries: 12
+10:30:47 | INFO     |   -> Cached cores: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K']
+10:30:47 | INFO     | ✓ Phase 9 Final Compilation: COMPLETE (0:00:00)
+10:30:47 | INFO     | 
+10:30:47 | INFO     | ======================================================================
+10:30:47 | INFO     | EXPERIMENT SUITE SUMMARY
+10:30:47 | INFO     | ======================================================================
+10:30:47 | INFO     | Total elapsed: 1 day, 17:40:25
+10:30:47 | INFO     | Mode: FAST
+10:30:47 | INFO     | ETA: 0:17:00
+10:30:47 | INFO     | ----------------------------------------------------------------------
+10:30:47 | INFO     |   ✓ Phase 1: Manual Diagrams & Architecture COMPLETE   0:00:16
+10:30:47 | INFO     |   ✓ Phase 2: Core Training Runs (A-K with Real Evals) COMPLETE   1 day, 17:39:37
+10:30:47 | INFO     |   ✓ Phase 3: Training Dynamics              COMPLETE   0:00:13 [1 failed]
+10:30:47 | INFO     |   ✓ Phase 4: Robustness & Resilience        COMPLETE   0:00:03
+10:30:47 | INFO     |   ✓ Phase 5: Scalability & Transfer Learning COMPLETE   0:00:01
+10:30:47 | INFO     |   ✓ Phase 6: Deployment & Hardware          COMPLETE   0:00:01
+10:30:47 | INFO     |   ✓ Phase 7: Protection Engineering & Interpretability COMPLETE   0:00:05
+10:30:47 | INFO     |   ✓ Phase 8: Statistical Aggregation        COMPLETE   0:00:06
+10:30:47 | INFO     |   ✓ Phase 9: Final Compilation              COMPLETE   0:00:00
+10:30:47 | INFO     | ----------------------------------------------------------------------
+10:30:47 | INFO     | Figures: 57 generated, 1 failed, 0 pending
+10:30:47 | INFO     | Failed figures:
+10:30:47 | ERROR    |   Fig 12: Axes.boxplot() got an unexpected keyword argument 'tick_labels'
+10:30:47 | INFO     | ======================================================================
+10:30:47 | INFO     | Report saved to: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\reports\experiment_report_20261022_165022.json
+10:30:47 | INFO     | 
+10:30:47 | INFO     | ======================================================================
+10:30:47 | INFO     | ALL PHASES COMPLETE
+10:30:47 | INFO     | Total time: 1 day, 17:40:25
+10:30:47 | INFO     | Report: C:\Users\de1ug\Documents\Python Project\DOCR_Research\results\reports\experiment_report_20261022_165022.json
+10:30:47 | INFO     | ======================================================================

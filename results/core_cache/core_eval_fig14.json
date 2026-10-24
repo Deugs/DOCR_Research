@@ -1,14 +1,14 @@
 {
   "fig_num": 14,
   "data": {
-    "n1_of": 1291.4991086501655,
+    "n1_of": 327.5635449747299,
     "n1_cti_ok": false,
-    "recovery_of": 942.6393986373389,
-    "line": 0
+    "recovery_of": 319.8733589318815,
+    "line": 45
   },
   "metadata": {
     "method": "_eval_n1_contingency",
-    "duration": 19.04004454612732,
+    "duration": 112.91551446914673,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "39bus",
@@ -31,7 +31,7 @@
       "packet_loss_rate": 0.0,
       "latency_ms": 0.0,
       "quantization_bits": 32,
-      "n1_line_outage": 0,
+      "n1_line_outage": 45,
       "n1_recovery_eval": true,
       "byzantine_agents": [],
       "byzantine_strategy": "random",
@@ -81,7 +81,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 304.6966478580571
+    "base_of": 675.0128134823427
   },
-  "timestamp": 1788867641.917618
+  "timestamp": 1792820574.7689025
 }

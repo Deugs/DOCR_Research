@@ -1,0 +1,507 @@
+{
+  "timestamp": "2026-10-24T10:30:47.712783",
+  "fast_mode": true,
+  "total_elapsed_seconds": 150025.06467938423,
+  "eta": "0:17:00",
+  "phases": {
+    "1": {
+      "name": "Manual Diagrams & Architecture",
+      "status": "complete",
+      "duration_seconds": 16.104718446731567,
+      "figures_generated": [
+        1,
+        2,
+        3,
+        4,
+        17,
+        19,
+        26,
+        27,
+        28,
+        30,
+        34,
+        35,
+        51,
+        52
+      ],
+      "figures_failed": [],
+      "details": {}
+    },
+    "2": {
+      "name": "Core Training Runs (A-K with Real Evals)",
+      "status": "complete",
+      "duration_seconds": 149977.67037129402,
+      "figures_generated": [],
+      "figures_failed": [],
+      "details": {}
+    },
+    "3": {
+      "name": "Training Dynamics",
+      "status": "complete",
+      "duration_seconds": 13.574470520019531,
+      "figures_generated": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        16,
+        21,
+        29,
+        36,
+        37,
+        38,
+        41
+      ],
+      "figures_failed": [
+        {
+          "fig": 12,
+          "error": "Axes.boxplot() got an unexpected keyword argument 'tick_labels'"
+        }
+      ],
+      "details": {}
+    },
+    "4": {
+      "name": "Robustness & Resilience",
+      "status": "complete",
+      "duration_seconds": 3.080761671066284,
+      "figures_generated": [
+        13,
+        14,
+        20,
+        22,
+        24,
+        54
+      ],
+      "figures_failed": [],
+      "details": {}
+    },
+    "5": {
+      "name": "Scalability & Transfer Learning",
+      "status": "complete",
+      "duration_seconds": 1.1149184703826904,
+      "figures_generated": [
+        15,
+        23,
+        25
+      ],
+      "figures_failed": [],
+      "details": {}
+    },
+    "6": {
+      "name": "Deployment & Hardware",
+      "status": "complete",
+      "duration_seconds": 1.4645910263061523,
+      "figures_generated": [
+        18,
+        53
+      ],
+      "figures_failed": [],
+      "details": {}
+    },
+    "7": {
+      "name": "Protection Engineering & Interpretability",
+      "status": "complete",
+      "duration_seconds": 5.589404582977295,
+      "figures_generated": [
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        58
+      ],
+      "figures_failed": [],
+      "details": {}
+    },
+    "8": {
+      "name": "Statistical Aggregation",
+      "status": "complete",
+      "duration_seconds": 6.435697555541992,
+      "figures_generated": [
+        11,
+        31,
+        32,
+        33,
+        55,
+        56,
+        57,
+        39,
+        40,
+        42
+      ],
+      "figures_failed": [],
+      "details": {}
+    },
+    "9": {
+      "name": "Final Compilation",
+      "status": "complete",
+      "duration_seconds": 0.011220455169677734,
+      "figures_generated": [],
+      "figures_failed": [],
+      "details": {}
+    }
+  },
+  "figures": {
+    "1": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.3765475749969482,
+      "error": null
+    },
+    "2": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.7397372722625732,
+      "error": null
+    },
+    "3": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.82755446434021,
+      "error": null
+    },
+    "4": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.0078542232513428,
+      "error": null
+    },
+    "17": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 2.2502598762512207,
+      "error": null
+    },
+    "19": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.8874297142028809,
+      "error": null
+    },
+    "26": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.8494765758514404,
+      "error": null
+    },
+    "27": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.6690309047698975,
+      "error": null
+    },
+    "28": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.5942857265472412,
+      "error": null
+    },
+    "30": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.8193056583404541,
+      "error": null
+    },
+    "34": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.2278611660003662,
+      "error": null
+    },
+    "35": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.5290813446044922,
+      "error": null
+    },
+    "51": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.5055766105651855,
+      "error": null
+    },
+    "52": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.8155930042266846,
+      "error": null
+    },
+    "5": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.6871767044067383,
+      "error": null
+    },
+    "6": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.4353353977203369,
+      "error": null
+    },
+    "7": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.8809540271759033,
+      "error": null
+    },
+    "8": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 1.206458330154419,
+      "error": null
+    },
+    "9": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 1.3092377185821533,
+      "error": null
+    },
+    "10": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.31242871284484863,
+      "error": null
+    },
+    "12": {
+      "phase": 3,
+      "status": "failed",
+      "duration_seconds": 0.04204845428466797,
+      "error": "Axes.boxplot() got an unexpected keyword argument 'tick_labels'"
+    },
+    "16": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 1.405498743057251,
+      "error": null
+    },
+    "21": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.3357679843902588,
+      "error": null
+    },
+    "29": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 1.986466407775879,
+      "error": null
+    },
+    "36": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.7633202075958252,
+      "error": null
+    },
+    "37": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.9785547256469727,
+      "error": null
+    },
+    "38": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 2.94476056098938,
+      "error": null
+    },
+    "41": {
+      "phase": 3,
+      "status": "complete",
+      "duration_seconds": 0.27693986892700195,
+      "error": null
+    },
+    "13": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 0.4536280632019043,
+      "error": null
+    },
+    "14": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 0.32932448387145996,
+      "error": null
+    },
+    "20": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 0.25385522842407227,
+      "error": null
+    },
+    "22": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 0.32927560806274414,
+      "error": null
+    },
+    "24": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 1.2579848766326904,
+      "error": null
+    },
+    "54": {
+      "phase": 4,
+      "status": "complete",
+      "duration_seconds": 0.4526963233947754,
+      "error": null
+    },
+    "15": {
+      "phase": 5,
+      "status": "complete",
+      "duration_seconds": 0.5649101734161377,
+      "error": null
+    },
+    "23": {
+      "phase": 5,
+      "status": "complete",
+      "duration_seconds": 0.23393797874450684,
+      "error": null
+    },
+    "25": {
+      "phase": 5,
+      "status": "complete",
+      "duration_seconds": 0.3105628490447998,
+      "error": null
+    },
+    "18": {
+      "phase": 6,
+      "status": "complete",
+      "duration_seconds": 0.9899387359619141,
+      "error": null
+    },
+    "53": {
+      "phase": 6,
+      "status": "complete",
+      "duration_seconds": 0.46865248680114746,
+      "error": null
+    },
+    "43": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.35020971298217773,
+      "error": null
+    },
+    "44": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.27622056007385254,
+      "error": null
+    },
+    "45": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.6833326816558838,
+      "error": null
+    },
+    "46": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.4064910411834717,
+      "error": null
+    },
+    "47": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.5755515098571777,
+      "error": null
+    },
+    "48": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.4305851459503174,
+      "error": null
+    },
+    "49": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 1.7741155624389648,
+      "error": null
+    },
+    "50": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.41303515434265137,
+      "error": null
+    },
+    "58": {
+      "phase": 7,
+      "status": "complete",
+      "duration_seconds": 0.6678612232208252,
+      "error": null
+    },
+    "11": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.32439541816711426,
+      "error": null
+    },
+    "31": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.23946738243103027,
+      "error": null
+    },
+    "32": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.2185969352722168,
+      "error": null
+    },
+    "33": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.5544309616088867,
+      "error": null
+    },
+    "55": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.3708493709564209,
+      "error": null
+    },
+    "56": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.39475464820861816,
+      "error": null
+    },
+    "57": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.9042677879333496,
+      "error": null
+    },
+    "39": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.7709305286407471,
+      "error": null
+    },
+    "40": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 2.3363232612609863,
+      "error": null
+    },
+    "42": {
+      "phase": 8,
+      "status": "complete",
+      "duration_seconds": 0.3121175765991211,
+      "error": null
+    }
+  },
+  "summary": {
+    "total_phases": 9,
+    "completed_phases": 9,
+    "failed_phases": 0,
+    "total_figures": 58,
+    "completed_figures": 57,
+    "failed_figures": 1
+  }
+}

@@ -1,16 +1,16 @@
 {
   "fig_num": 22,
   "data": {
-    "bandwidth": 3.584,
-    "of": 155.78411602790865,
-    "params": 1978
+    "bandwidth": 0.256,
+    "of": 320.87855063685913,
+    "params": 2172
   },
   "metadata": {
     "method": "_eval_bandwidth",
-    "duration": 0.35951852798461914,
+    "duration": 84.43460178375244,
     "config": {
       "method": "MAPPO-Safe-EWC",
-      "system": "8bus",
+      "system": "39bus",
       "pv_level": 0.6,
       "fault_type": "3ph",
       "topology_changes": null,
@@ -80,7 +80,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 55.08287320208595
+    "base_of": 675.0128134823427
   },
-  "timestamp": 1788633547.05532
+  "timestamp": 1792814566.607866
 }

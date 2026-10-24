@@ -1,1 +1,249 @@
-{}
+{
+  "edf77c3142db7ccb": {
+    "name": "core_A_mappo_safe_ewc_8bus_60pv",
+    "created": "2026-10-22T20:06:58.814532",
+    "config_keys": [
+      "name",
+      "method",
+      "system",
+      "pv",
+      "n_runs",
+      "n_episodes",
+      "seed",
+      "fault_type",
+      "real_safety_ewc",
+      "real_fig36_fig38_v1",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.15017127990722656
+  },
+  "02e7e2eb2565824b": {
+    "name": "core_B_curriculum",
+    "created": "2026-10-23T03:26:38.077074",
+    "config_keys": [
+      "name",
+      "system",
+      "tasks",
+      "episodes_per_task",
+      "n_runs",
+      "seed",
+      "fault_type",
+      "real_safety",
+      "real_pv_eval",
+      "real_fisher_capture_v1",
+      "real_curriculum_history_v1",
+      "parallel_b_split_v1",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.155731201171875
+  },
+  "c7a42d47863b721e": {
+    "name": "core_C_metrics_8bus",
+    "created": "2026-10-23T13:43:22.460380",
+    "config_keys": [
+      "name",
+      "system",
+      "methods",
+      "n_runs",
+      "n_episodes",
+      "seed",
+      "fault_type",
+      "real_safety_ewc",
+      "real_multi_system",
+      "real_fig33_55_56_metrics_v1",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.0012521743774414062
+  },
+  "33415805be153c82": {
+    "name": "core_C_baselines_8bus",
+    "created": "2026-10-23T13:43:22.499604",
+    "config_keys": [
+      "name",
+      "system",
+      "methods",
+      "n_runs",
+      "n_episodes",
+      "seed",
+      "fault_type",
+      "real_safety_ewc",
+      "real_multi_system",
+      "real_fig33_55_56_metrics_v1",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.02017688751220703
+  },
+  "ac32d1d198a20a86": {
+    "name": "core_D_ablation",
+    "created": "2026-10-23T23:40:17.920708",
+    "config_keys": [
+      "name",
+      "configs",
+      "n_runs",
+      "n_episodes",
+      "seed",
+      "fault_type",
+      "real_safety_ewc",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.00036907196044921875
+  },
+  "21a9313c0878d8e6": {
+    "name": "core_E_hparam",
+    "created": "2026-10-24T02:07:19.021235",
+    "config_keys": [
+      "name",
+      "lambda_ewc",
+      "alpha_lambda",
+      "hidden_dim",
+      "n_seeds",
+      "n_steps",
+      "seed",
+      "fault_type",
+      "real_hparam_effect",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.004332542419433594
+  },
+  "49d1bd9031908e85": {
+    "name": "core_F_scalability",
+    "created": "2026-10-24T03:20:48.940870",
+    "config_keys": [
+      "name",
+      "systems",
+      "seed",
+      "fault_type",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "14bus": "dbad43ab42fff7db",
+      "30bus": "ad42bcc081d721c6",
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.00015926361083984375
+  },
+  "6c703205eb8e6086": {
+    "name": "core_G_robustness",
+    "created": "2026-10-24T05:42:54.782452",
+    "config_keys": [
+      "name",
+      "stress_types",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_sweep_v2",
+      "real_sweep_v3_n1",
+      "real_39bus_bandwidth_v1",
+      "real_sweep_v4_ranges_and_n1_14_39",
+      "parallel_v1",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "14bus": "dbad43ab42fff7db",
+      "39bus": "e41a06a41e18bf43",
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.0032682418823242188
+  },
+  "74b67e742307dbab": {
+    "name": "core_H_transfer",
+    "created": "2026-10-24T09:53:33.228302",
+    "config_keys": [
+      "name",
+      "evaluations",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_unseen_sweep_v2",
+      "real_14bus_transfer",
+      "real_cold_start_v1",
+      "parallel_v1",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "14bus": "dbad43ab42fff7db",
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.0003070831298828125
+  },
+  "2caf63c3d77660c5": {
+    "name": "core_I_deployment",
+    "created": "2026-10-24T10:18:00.820076",
+    "config_keys": [
+      "name",
+      "benchmarks",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_inference_timing",
+      "real_compression_per_method_v1",
+      "real_39bus_latency_v1",
+      "parallel_v1",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "39bus": "e41a06a41e18bf43",
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.0020427703857421875
+  },
+  "452cab9d78b5f6f7": {
+    "name": "core_J_protection",
+    "created": "2026-10-24T10:24:42.821363",
+    "config_keys": [
+      "name",
+      "analyses",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "seeded_jitter",
+      "real_fig44_sc_and_fig47_fault_sweep_v1",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.031355857849121094
+  },
+  "b755b8e3a74b39d5": {
+    "name": "core_K_seasonal",
+    "created": "2026-10-24T10:30:06.867054",
+    "config_keys": [
+      "name",
+      "seasons",
+      "seed",
+      "fault_type",
+      "real_eval",
+      "real_safety_ewc",
+      "real_performance_pv_variability_v1",
+      "parallel_v1",
+      "topology_fp"
+    ],
+    "topology_fp": {
+      "8bus": "234bc9468188f4d5"
+    },
+    "size_mb": 0.00023746490478515625
+  }
+}

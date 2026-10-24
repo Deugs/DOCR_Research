@@ -1,0 +1,125 @@
+{
+  "timestamp": "2026-10-24T16:55:54.488841",
+  "fast_mode": false,
+  "total_elapsed_seconds": 32.37059497833252,
+  "eta": "-1 day, 23:59:42",
+  "phases": {
+    "1": {
+      "name": "Manual Diagrams & Architecture",
+      "status": "complete",
+      "duration_seconds": 32.36859464645386,
+      "figures_generated": [
+        1,
+        2,
+        3,
+        4,
+        17,
+        19,
+        26,
+        27,
+        28,
+        30,
+        34,
+        35,
+        51,
+        52
+      ],
+      "figures_failed": [],
+      "details": {}
+    }
+  },
+  "figures": {
+    "1": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 3.5728204250335693,
+      "error": null
+    },
+    "2": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.9141819477081299,
+      "error": null
+    },
+    "3": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.8837451934814453,
+      "error": null
+    },
+    "4": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.6518080234527588,
+      "error": null
+    },
+    "17": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 2.542809009552002,
+      "error": null
+    },
+    "19": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 2.229308605194092,
+      "error": null
+    },
+    "26": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 3.7036352157592773,
+      "error": null
+    },
+    "27": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.7147119045257568,
+      "error": null
+    },
+    "28": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 0.8591775894165039,
+      "error": null
+    },
+    "30": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.9373958110809326,
+      "error": null
+    },
+    "34": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 2.5749974250793457,
+      "error": null
+    },
+    "35": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 2.724571704864502,
+      "error": null
+    },
+    "51": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 3.2282023429870605,
+      "error": null
+    },
+    "52": {
+      "phase": 1,
+      "status": "complete",
+      "duration_seconds": 1.8207168579101562,
+      "error": null
+    }
+  },
+  "summary": {
+    "total_phases": 1,
+    "completed_phases": 1,
+    "failed_phases": 0,
+    "total_figures": 0,
+    "completed_figures": 14,
+    "failed_figures": 0
+  }
+}

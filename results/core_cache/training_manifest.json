@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-09-05T20:40:48.947810",
+  "timestamp": "2026-10-24T10:30:06.883058",
   "fast_mode": true,
   "use_synthetic": false,
   "config_used": true,
-  "elapsed_seconds": 1008.9866688251495,
+  "elapsed_seconds": 149967.58290314674,
   "cores": {
     "A": {
       "feeds": "Figs 9,10,12,21,37,38,41,48-50,55-57",
@@ -50,12 +50,12 @@
       "status": "complete"
     }
   },
-  "cache_dir": "/workspace/DOCR_Research/results/core_cache",
+  "cache_dir": "C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\core_cache",
   "estimated_gpu_days": "~1-2 hours (fast)",
   "cache_stats": {
-    "hits": 10,
-    "misses": 1,
-    "stores": 1
+    "hits": 0,
+    "misses": 11,
+    "stores": 12
   },
-  "progress_report": "/workspace/DOCR_Research/results/progress/training_progress_20260905_204048.json"
+  "progress_report": "C:\\Users\\de1ug\\Documents\\Python Project\\DOCR_Research\\results\\progress\\training_progress_20261024_103006.json"
 }

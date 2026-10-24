@@ -1,13 +1,13 @@
 {
   "fig_num": 53,
   "data": {
-    "of": 133.57411874541745,
+    "of": 2189.593386708801,
     "size_kb": 0.07421875,
-    "drop": 78.4912455433315
+    "drop": 2091.0533958427486
   },
   "metadata": {
     "method": "_eval_compression",
-    "duration": 0.3465278148651123,
+    "duration": 10.755669593811035,
     "config": {
       "method": "MAPPO-Safe-EWC",
       "system": "8bus",
@@ -80,7 +80,7 @@
       "season": null,
       "seasonal_temperature": null
     },
-    "base_of": 55.08287320208595
+    "base_of": 98.53999086605224
   },
-  "timestamp": 1788635453.5863833
+  "timestamp": 1792837080.8050516
 }
