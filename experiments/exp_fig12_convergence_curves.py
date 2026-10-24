@@ -476,7 +476,9 @@ def main(n_runs: int = 50, n_episodes: int = 2000, seed_base: int = 0,
     # Panel 6: Final performance distribution
     ax6 = fig.add_subplot(gs[1, 2])
     final_returns = [all_results[m]["returns"][:, -50:].mean(axis=1) for m in METHODS]
-    bp = ax6.boxplot(final_returns, tick_labels=METHODS, patch_artist=True)
+    # `labels=` not `tick_labels=` -- the latter needs matplotlib 3.9+,
+    # requirements.txt pins matplotlib>=3.7 (confirmed broken on 3.8.4).
+    bp = ax6.boxplot(final_returns, labels=METHODS, patch_artist=True)
     for patch, method in zip(bp["boxes"], METHODS):
         patch.set_facecolor(METHOD_COLORS[method])
         patch.set_alpha(0.7)

@@ -932,7 +932,11 @@ def fig_12_convergence_bands():
             final_returns.append(rng_box.normal(final_mean, final_std, 50))
             labels.append(method)
 
-    bp = ax.boxplot(final_returns, tick_labels=labels, patch_artist=True)
+    # `labels=` (not `tick_labels=`, matplotlib 3.9+ only) for compatibility
+    # with requirements.txt's matplotlib>=3.7 pin -- confirmed broken on the
+    # installed 3.8.4 (Axes.boxplot() got an unexpected keyword argument
+    # 'tick_labels') during the 2026-10-22 full fast-mode pipeline validation.
+    bp = ax.boxplot(final_returns, labels=labels, patch_artist=True)
     for patch, label in zip(bp["boxes"], labels):
         patch.set_facecolor(colors.get(label, "#333"))
         patch.set_alpha(0.7)

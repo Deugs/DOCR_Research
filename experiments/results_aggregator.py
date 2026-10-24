@@ -457,7 +457,10 @@ class ResultsAggregator:
                 pv_100_labels.append(method)
 
         if pv_100_data:
-            bp = ax.boxplot(pv_100_data, tick_labels=pv_100_labels, patch_artist=True)
+            # `labels=` not `tick_labels=` -- the latter needs matplotlib
+            # 3.9+, requirements.txt pins matplotlib>=3.7 (confirmed broken
+            # on 3.8.4).
+            bp = ax.boxplot(pv_100_data, labels=pv_100_labels, patch_artist=True)
             for patch, label in zip(bp["boxes"], pv_100_labels):
                 patch.set_facecolor(COLORS.get(label, "#fff"))
                 patch.set_alpha(0.7)
