@@ -211,6 +211,7 @@ def generate_figure(output_dir):
     mark_synthetic(fig, note="panel (c) feature-importance bars are illustrative, not SHAP values from a trained model")
 
     plt.savefig(output_dir + '/fig35_observation_space.png', dpi=200, bbox_inches='tight', facecolor='white')
+    plt.savefig(output_dir + '/fig35_observation_space.pdf', dpi=200, bbox_inches='tight', facecolor='white')
     plt.close()
 
 

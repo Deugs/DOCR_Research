@@ -90,6 +90,7 @@ def generate_figure(output_dir):
 
     plt.tight_layout()
     plt.savefig(output_dir + '/fig1_system_architecture.png', dpi=150, bbox_inches='tight', facecolor='white')
+    plt.savefig(output_dir + '/fig1_system_architecture.pdf', dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
 
 

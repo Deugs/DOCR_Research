@@ -735,12 +735,15 @@ def clear_all_caches():
     except Exception:
         pass
 
-    # Clear figure outputs
+    # Clear figure outputs. save_fig() (run_post_processing.py) emits both
+    # .pdf and .png for every figure -- glob both so a clear doesn't leave
+    # orphaned PNGs behind.
     for subdir in ["figs_01_10", "figs_11_20", "figs_21_30", "figs_31_40", "figs_41_50", "figs_51_58"]:
         d = FIGURES_DIR / subdir
         if d.exists():
-            for f in d.glob("*.pdf"):
-                f.unlink()
+            for ext in ("*.pdf", "*.png"):
+                for f in d.glob(ext):
+                    f.unlink()
 
     # Clear reports
     for f in REPORT_DIR.glob("*.json"):

@@ -72,7 +72,7 @@ To also wipe the tracked figure/log/report artifacts already checked into
 the repo (not just the cache), follow the cache clear with:
 
 ```bash
-rm -rf results/figures/*/*.pdf results/reports/*.json results/logs/*.txt
+rm -rf results/figures/*/*.pdf results/figures/*/*.png results/reports/*.json results/logs/*.txt
 ```
 
 ---

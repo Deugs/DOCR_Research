@@ -169,6 +169,7 @@ def generate_figure(output_dir):
 
     plt.tight_layout()
     plt.savefig(output_dir + '/fig34_neural_architecture.png', dpi=200, bbox_inches='tight', facecolor='white')
+    plt.savefig(output_dir + '/fig34_neural_architecture.pdf', dpi=200, bbox_inches='tight', facecolor='white')
     plt.close()
 
 

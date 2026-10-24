@@ -133,6 +133,7 @@ def generate_figure(output_dir):
 
     plt.tight_layout()
     plt.savefig(output_dir + '/fig28_safe_rl_dual.png', dpi=150, bbox_inches='tight', facecolor='white')
+    plt.savefig(output_dir + '/fig28_safe_rl_dual.pdf', dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
 
 

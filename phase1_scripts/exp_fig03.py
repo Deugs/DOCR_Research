@@ -149,6 +149,7 @@ def generate_figure(output_dir):
 
     plt.tight_layout()
     plt.savefig(output_dir + '/fig3_ieee8bus_diagram.png', dpi=150, bbox_inches='tight', facecolor='white')
+    plt.savefig(output_dir + '/fig3_ieee8bus_diagram.pdf', dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
 
 

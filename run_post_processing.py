@@ -392,15 +392,24 @@ def _annotate_panel_synthetic(ax, note: str) -> None:
 
 
 def save_fig(fig, path: Path, dpi: int = None):
-    """Save figure and close. Uses config DPI if available."""
+    """Save figure as both PDF and PNG, then close. Uses config DPI if
+    available.
+
+    `path` carries whatever single extension get_fig_path() built from
+    postprocessing.fig_format (default "pdf") -- always emitting the other
+    of the {pdf, png} pair too, regardless of that config, so every figure
+    is available in both formats without touching each of the ~50 fig_*
+    call sites individually."""
     if dpi is None and _config is not None:
         dpi = _config.postprocessing.dpi
     elif dpi is None:
         dpi = 200
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    base = path.with_suffix("")
+    for ext in (".pdf", ".png"):
+        fig.savefig(base.with_suffix(ext), dpi=dpi, bbox_inches="tight")
     plt.close(fig)
-    logger.info(f"  Saved: {path}")
+    logger.info(f"  Saved: {base}.pdf / {base}.png")
 
 
 def get_fig_path(fig_num: int, subdir: str) -> Path:

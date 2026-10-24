@@ -105,6 +105,7 @@ def generate_figure(output_dir):
 
     plt.tight_layout()
     plt.savefig(output_dir + '/fig19_ride_through_curve.png', dpi=150, bbox_inches='tight', facecolor='white')
+    plt.savefig(output_dir + '/fig19_ride_through_curve.pdf', dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
 
 

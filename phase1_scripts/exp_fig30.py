@@ -130,6 +130,7 @@ def generate_figure(output_dir):
 
     plt.tight_layout()
     plt.savefig(output_dir + '/fig30_algorithm_pseudocode.png', dpi=150, bbox_inches='tight', facecolor='white')
+    plt.savefig(output_dir + '/fig30_algorithm_pseudocode.pdf', dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
 
 
