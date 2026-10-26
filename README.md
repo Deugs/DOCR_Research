@@ -154,6 +154,40 @@ python3 run_core_training.py --all --n-workers 8   # all 11 cores, parallelized
 
 ---
 
+## 4a. Running on GPU (optional)
+
+Training defaults to CPU. GPU support exists — MAPPO/GNN/single-agent-PPO
+are real `torch.nn.Module`s trained via backprop + Adam (§1) — but it's an
+explicit opt-in, never auto-detected, set via an environment variable
+checked once at import time:
+
+```bash
+export DOCR_USE_GPU=1
+python3 run_core_training.py --core-A --fast --seed 42
+# or inline:
+DOCR_USE_GPU=1 python3 run_thesis_experiments.py --all --preset thesis_sweep_fast
+```
+
+**Benchmark before trusting it — don't just turn it on.** On this
+project's own test hardware (NVIDIA GTX 1050, 4GB), GPU measured *slower*
+than CPU for the current real-backprop training — confirmed both in
+isolated actor/critic-update microbenchmarks (0.45x–0.67x) and in a full
+end-to-end training loop with GNN comm on (~2.9x slower: 7.84s/300 steps
+on CPU vs. 22.53s on GPU). This is the *opposite* of the earlier ES-era
+result (GPU was 1.3–1.6x faster there), so don't assume either direction
+holds on a different machine. Re-run the same measurement on your target
+hardware before relying on `DOCR_USE_GPU=1` for a real campaign — see
+`EXPERIMENT_GUIDE.md` §2.2.4 for the exact methodology and numbers.
+
+With `--n-workers N`, GPU is shared adaptively across the worker pool:
+`run_core_training.py` queries free VRAM once at startup and caps how many
+workers get CUDA (the rest automatically fall back to CPU), so a run can't
+repeat an out-of-memory crash on a small card. CPU multiprocessing
+(`--n-workers`) remains the scaling lever that's actually proven to help,
+independent of whether GPU is enabled.
+
+---
+
 ## 5. Generating figures without retraining
 
 ```bash
