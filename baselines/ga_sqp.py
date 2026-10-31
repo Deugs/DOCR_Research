@@ -43,40 +43,33 @@ def fitness(x, net, alpha1=1.0, alpha2=100.0, beta=50.0,
 
 
 def fitness_batch(pop, net, alpha1=1.0, alpha2=100.0, beta=50.0,
-                   fault_type="3ph", topology_state=None, use_gpu_batch=False):
+                   fault_type="3ph", topology_state=None):
     """Evaluates a whole population at once via
-    relay_physics.objective_function_batch_gpu (2026-10-22 GPU-port
-    addition) instead of a Python loop over fitness(), when possible.
-    Falls back to the per-individual loop when topology_state is given
-    (dynamic fault currents aren't supported by the batched path yet) or
-    when use_gpu_batch=False (the default -- see below). pop:
-    (pop_size, 2*n_relays).
+    relay_physics.objective_function_batch() instead of a Python loop over
+    fitness(). Falls back to the per-individual loop only when
+    topology_state is given (dynamic fault currents aren't supported by
+    the batched path). pop: (pop_size, 2*n_relays).
 
-    use_gpu_batch defaults to False because it measured SLOWER than the
-    plain per-individual loop at every realistic problem size in this
-    project, benchmarked directly on this project's own GPU: 0.07x at
-    8-bus (pop_size=60, n_gen=40) and 0.63x even at 39-bus (pop_size=100,
-    n_gen=100, this codebase's largest system and a realistic full-mode
-    population size) -- per-call tensor creation/transfer/kernel-launch
-    overhead dominates at these population sizes regardless of system
-    size. Both results were bit-for-bit/converged-identical to the loop
-    path, so this is purely a speed verdict, not a correctness concern.
-    Same category of finding as EXPERIMENT_GUIDE.md section 2.2.2's GNN
-    attention layer ("measured slower when batched") and section 2.2.4's
-    GPU ES note ("benchmark before assuming a vectorization helps") --
-    kept available as an opt-in for a future setup with a much larger
-    population size or a substantially more powerful GPU, where the
-    crossover point this project's own hardware never reached might
-    actually be crossed."""
-    if topology_state is None and use_gpu_batch:
-        from network.relay_physics import objective_function_batch_gpu
-        import torch
+    2026-10-26: previously gated behind a use_gpu_batch=False-by-default
+    flag, because the GPU-only version of this path measured SLOWER than
+    the plain per-individual loop at every realistic problem size tested
+    on this project's own GPU (0.07x at 8-bus, 0.63x at 39-bus -- see git
+    history for the full writeup). That flag is gone now, not because the
+    underlying speed verdict changed, but because objective_function_batch
+    is device-gated by the project's DOCR_USE_GPU=1 opt-in policy (see
+    network/relay_physics.py's module docstring) exactly like every other
+    torch-backed function in this project -- there's no longer a separate
+    "GPU-only" code path to opt into: on CPU (the default) this always
+    runs, same cost profile as before; DOCR_USE_GPU=1 is still what
+    decides whether it also tries the GPU, and that's still expected to be
+    a loss on this project's own hardware until proven otherwise on a
+    more capable remote GPU (see EXPERIMENT_GUIDE.md section 2.2.4)."""
+    if topology_state is None:
+        from network.relay_physics import objective_function_batch
         n = net.n_relays
         TMS_batch, PS_batch = pop[:, :n], pop[:, n:]
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        return objective_function_batch_gpu(
-            net, TMS_batch, PS_batch, alpha1, alpha2, beta,
-            fault_type=fault_type, device=device)
+        return objective_function_batch(
+            net, TMS_batch, PS_batch, alpha1, alpha2, beta, fault_type=fault_type)
     return np.array([
         fitness(ind, net, alpha1, alpha2, beta, fault_type, topology_state)
         for ind in pop
