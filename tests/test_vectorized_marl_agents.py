@@ -36,21 +36,42 @@ def _run_trainer(n_envs, total_steps=96, rollout_len=16):
 
 
 def test_vectorized_trainer_runs_n_envs_1():
-    trainer, history = _run_trainer(n_envs=1)
-    assert len(history) > 0
-    for h in history:
-        assert np.isfinite(h["mean_reward"])
-        assert np.isfinite(h["actor_loss"])
-        assert np.isfinite(h["critic_loss"])
+    trainer, result = _run_trainer(n_envs=1)
+    n_rollouts = len(result["history"])
+    assert n_rollouts > 0
+    assert len(result["cti_satisfaction_history"]) == n_rollouts
+    assert len(result["actor_loss_history"]) == n_rollouts
+    assert len(result["critic_loss_history"]) == n_rollouts
+    assert len(result["mean_reward_history"]) == n_rollouts
+    assert np.isfinite(result["OF"])
+    for of_val, cti_rate, actor_l, critic_l, rew in zip(
+        result["history"], result["cti_satisfaction_history"],
+        result["actor_loss_history"], result["critic_loss_history"],
+        result["mean_reward_history"],
+    ):
+        assert np.isfinite(of_val)
+        assert 0.0 <= cti_rate <= 1.0
+        assert np.isfinite(actor_l)
+        assert np.isfinite(critic_l)
+        assert np.isfinite(rew)
 
 
 def test_vectorized_trainer_runs_n_envs_4_no_crash():
-    trainer, history = _run_trainer(n_envs=4)
-    assert len(history) > 0
-    for h in history:
-        assert np.isfinite(h["mean_reward"])
-        assert np.isfinite(h["actor_loss"])
-        assert np.isfinite(h["critic_loss"])
+    trainer, result = _run_trainer(n_envs=4)
+    n_rollouts = len(result["history"])
+    assert n_rollouts > 0
+    for of_val, cti_rate, actor_l, critic_l, rew in zip(
+        result["history"], result["cti_satisfaction_history"],
+        result["actor_loss_history"], result["critic_loss_history"],
+        result["mean_reward_history"],
+    ):
+        assert np.isfinite(of_val)
+        assert 0.0 <= cti_rate <= 1.0
+        assert np.isfinite(actor_l)
+        assert np.isfinite(critic_l)
+        assert np.isfinite(rew)
+    assert result["TMS"].shape == (trainer.n_agents,)
+    assert result["PS"].shape == (trainer.n_agents,)
 
     # Shape sanity on the actor/critic after a real rollout+update cycle.
     assert trainer.buffer.n_envs == 4

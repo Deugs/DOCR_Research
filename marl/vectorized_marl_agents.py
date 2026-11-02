@@ -48,6 +48,7 @@ documented-scope-cut pattern.
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 import numpy as np
@@ -57,6 +58,7 @@ from marl.marl_agents import (
     _default_device, _fault_type_idx,
 )
 from marl.vectorized_marl_env import VectorizedDynamicDOCREnv
+from network.relay_physics import objective_function_batch, compute_operating_times_batch, CTI
 
 
 class VectorizedMAPPOTrainer:
@@ -167,10 +169,29 @@ class VectorizedMAPPOTrainer:
         """Train for `total_steps` total environment steps (summed across
         all n_envs, matching MAPPOMARLTrainer's `step` accounting
         convention of counting real env.step() calls, now n_envs at a
-        time)."""
+        time).
+
+        Return schema is deliberately aligned with `MAPPOMARLTrainer.
+        train()`'s (`"history"` = list of per-rollout OF values, mean across
+        envs; `"cti_satisfaction_history"` = list of per-rollout CTI
+        satisfaction rates; `"TMS"`/`"PS"`/`"OF"` = the single best
+        (environment, rollout) found across the whole run) so the two
+        trainers' outputs can be compared directly, e.g. by
+        `run_vectorized_validation.py`. `"actor_loss_history"`/
+        `"critic_loss_history"`/`"mean_reward_history"` are additional
+        diagnostics `MAPPOMARLTrainer.train()` doesn't expose per rollout.
+        """
         obs = self.env.reset()
         step = 0
-        history = []
+        of_history = []
+        cti_satisfaction_history = []
+        actor_loss_history = []
+        critic_loss_history = []
+        mean_reward_history = []
+        best_OF = np.inf
+        best_TMS = self.env.TMS[0].copy()
+        best_PS = self.env.PS[0].copy()
+        t0 = time.perf_counter()
 
         if verbose:
             print(f"\n{'-' * 55}")
@@ -233,16 +254,59 @@ class VectorizedMAPPOTrainer:
                 critic_losses.append(closs)
 
             mean_reward = float(self.buffer.rewards[:T].mean().item())
-            entry = {
-                "step": step,
-                "mean_reward": mean_reward,
-                "actor_loss": float(np.mean(actor_losses)) if actor_losses else 0.0,
-                "critic_loss": float(np.mean(critic_losses)) if critic_losses else 0.0,
-            }
-            history.append(entry)
+            actor_loss = float(np.mean(actor_losses)) if actor_losses else 0.0
+            critic_loss = float(np.mean(critic_losses)) if critic_losses else 0.0
+
+            # Per-rollout OF/CTI-satisfaction snapshot, reusing the same
+            # cached per-env dynamic fault currents the env itself computed
+            # at reset() (Phase V6) -- matching check_constraints()'s single-
+            # env CTI-satisfaction definition (delta_cti >= CTI - 1e-6 for
+            # every pair), evaluated batched across all n_envs at once.
+            OF_batch = objective_function_batch(
+                self.env.net, TMS, PS, fault_type=self.env.fault_type,
+                fault_currents_batch=(self.env._If_pri_dyn, self.env._If_bkp_dyn),
+            )
+            t_pri_e, t_bkp_e = compute_operating_times_batch(
+                self.env.net, TMS, PS, fault_type=self.env.fault_type,
+                fault_currents_batch=(self.env._If_pri_dyn, self.env._If_bkp_dyn),
+            )
+            cti_ok_batch = np.all(t_bkp_e - t_pri_e >= CTI - 1e-6, axis=1)  # (n_envs,)
+            OF_mean = float(np.mean(OF_batch))
+            cti_rate = float(np.mean(cti_ok_batch))
+
+            best_idx = int(np.argmin(OF_batch))
+            if OF_batch[best_idx] < best_OF:
+                best_OF = float(OF_batch[best_idx])
+                best_TMS = TMS[best_idx].copy()
+                best_PS = PS[best_idx].copy()
+
+            of_history.append(OF_mean)
+            cti_satisfaction_history.append(cti_rate)
+            actor_loss_history.append(actor_loss)
+            critic_loss_history.append(critic_loss)
+            mean_reward_history.append(mean_reward)
 
             if verbose and step % log_every < T * self.n_envs:
-                print(f"  step={step:>8d}  mean_reward={mean_reward:+.4f}  "
-                      f"actor_loss={entry['actor_loss']:.4f}  critic_loss={entry['critic_loss']:.4f}")
+                print(f"  step={step:>8d}  OF_mean={OF_mean:.4f}  best_OF={best_OF:.4f}  "
+                      f"cti_rate={cti_rate:.2f}  mean_reward={mean_reward:+.4f}  "
+                      f"actor_loss={actor_loss:.4f}  critic_loss={critic_loss:.4f}")
 
-        return history
+        elapsed = time.perf_counter() - t0
+        if verbose:
+            print(f"  Done. Best OF = {best_OF:.4f}  [{elapsed:.1f}s]")
+
+        return {
+            "method": "VectorizedMAPPO",
+            "network": self.env.net.name,
+            "n_envs": self.n_envs,
+            "TMS": best_TMS,
+            "PS": best_PS,
+            "OF": best_OF,
+            "history": of_history,
+            "cti_satisfaction_history": cti_satisfaction_history,
+            "actor_loss_history": actor_loss_history,
+            "critic_loss_history": critic_loss_history,
+            "mean_reward_history": mean_reward_history,
+            "elapsed": elapsed,
+            "stopped_at_step": step,
+        }
