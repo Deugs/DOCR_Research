@@ -10,6 +10,42 @@ Dynamic Network wrapper that combines:
 
 Refactored for full IEEE test system support: 3, 8, 14, 30, 39, 57, 118 buses.
 All systems accessible via load_network() from network_data.py.
+
+2026-11-02 torch-port review (Phase 6 of the project's "move everything to
+torch" rewrite plan): reviewed this module's two per-step hot paths for
+genuine torch-porting opportunity.
+
+- get_sensor_measurements()'s per-relay loop (with a nested per-DG scan
+  inside it) had a real O(n_relays x n_dg) nested loop -- vectorized into
+  plain NumPy array ops (relay->bus and DG-bus arrays cached once in
+  __init__). Not torch tensors: these are 14-92 element arrays with no
+  scalar-branching-per-call bottleneck to eliminate (unlike Phase 1's
+  idmt_time()), so there's nothing for a GPU to meaningfully parallelize.
+
+- _compute_fault_currents() / network.relay_physics.compute_fault_currents_
+  dynamic() (the actual "analytical fault-current fallback" used when
+  use_pandapower=False, the default for the vast majority of training) were
+  deliberately NOT ported to torch. Both build a sparse, STRING-KEYED DICT
+  (`{"pair_0_pri": ..., "pair_0_bkp": ...}`), which is how
+  compute_operating_times()'s dynamic-fault-current branch consumes this
+  data (see relay_physics.py) -- there is no dense per-relay/per-pair array
+  to vectorize into without redesigning that dict-based interface across
+  every caller that builds or reads a `fault_currents` dict. More
+  importantly, there's no real bottleneck being removed even if it were
+  array-shaped: unlike the per-pair loop Phase 1 replaced (which called a
+  branching SCALAR function, idmt_time(), once per pair), this loop does
+  only simple, already-cheap arithmetic per pair with no function-call
+  overhead to amortize. A deliberate exception, not an oversight -- flagged
+  here the same way evaluation/stat_analysis.py and AugmentedLagrangian's
+  PID state were flagged elsewhere in this torch-port effort.
+
+- The real pandapower AC power-flow solve (self.pp_net.run_power_flow(),
+  used only when use_pandapower=True) is permanent and can never be ported
+  to torch -- it calls into pandapower, an external library backed by its
+  own compiled linear-algebra solvers. This path is already the rare,
+  opt-in one (already ~28x slower per step than the analytical fallback
+  per an existing code comment in marl/marl_env.py), so it was never a
+  realistic torch target to begin with.
 """
 
 import numpy as np
@@ -144,6 +180,17 @@ class DistributionNetwork:
 
         # ── Sensor array ──────────────────────────────────────────────────────
         self.sensors = SensorArray(net_data.n_relays, seed=sensor_seed)
+
+        # ── Precomputed per-relay bus mapping (2026-11-02) ─────────────────────
+        # net_data is never reassigned after construction, so relay->bus and
+        # DG-bus arrays are invariant for this instance's lifetime -- cached
+        # once here instead of rebuilt (via net_data.get_relay_bus(i) calls
+        # and a per-DG Python loop) on every get_sensor_measurements() call.
+        self._relay_bus_arr = np.array(
+            [net_data.get_relay_bus(i) for i in range(net_data.n_relays)]
+        )
+        self._dg_bus_0idx = np.array([dg.bus_idx - 1 for dg in net_data.dg_buses], dtype=np.int64)
+        self._dg_p_mw = np.array([dg.p_mw for dg in net_data.dg_buses])
 
         # ── Instance RNG (for anything in this class not delegated to a
         #    sub-component's own seeded Generator) ─────────────────────────────
@@ -388,35 +435,47 @@ class DistributionNetwork:
         if self.current_state is None:
             raise RuntimeError("Network not initialized. Call reset() first.")
 
-        # Extract true values from current state
-        true_currents = np.zeros(self.net_data.n_relays)
-        true_voltages = np.zeros(self.net_data.n_relays)
+        # 2026-11-02: vectorized across all relays at once, replacing the
+        # per-relay `for i in range(n_relays)` loop (with its own nested
+        # `for dg in dg_buses` scan inside). bus_voltages stays a small
+        # per-relay dict lookup (it's keyed by bus, not a dense per-relay
+        # array, and rebuilt fresh by pandapower/the analytical fallback
+        # every step -- same reasoning as marl_env.py's analogous
+        # bus_voltages lookup). The load-current and PV-matching terms,
+        # which is where the real nested-loop cost lived, are now plain
+        # array ops using the relay->bus and DG-bus arrays cached once in
+        # __init__.
+        #
+        # One correctness-preserving subtlety: the original loop used
+        # `pv_current = ...` (assignment, not `+=`) inside the `for dg in
+        # dg_buses` scan, so if more than one DG shares a bus, only the
+        # LAST matching DG in dg_buses' iteration order ever contributed --
+        # earlier matches at the same bus were silently overwritten. This
+        # vectorized version replicates that same "last match wins"
+        # behavior (not "sum all matching DGs"), since this is reproducing
+        # existing behavior, not fixing a latent bug no one has flagged.
+        true_voltages = np.array([
+            self.current_state.bus_voltages.get(bus, 1.0) for bus in self._relay_bus_arr
+        ])
+        load_current = self.net_data.Iload_max * self.current_state.load_pu
 
-        for i in range(self.net_data.n_relays):
-            # Real bus this relay is located at (from its RelayPair's
-            # bus_pri/bus_bkp) — the previous placeholder min(i, n_buses-1)
-            # ignored real topology, reading voltage for the wrong bus and
-            # matching this relay against the wrong DG bus below.
-            bus_idx = self.net_data.get_relay_bus(i)
-            true_voltages[i] = self.current_state.bus_voltages.get(bus_idx, 1.0)
+        if len(self._dg_bus_0idx) == 0:
+            pv_current = np.zeros(self.net_data.n_relays)
+        else:
+            match = self._relay_bus_arr[:, None] == self._dg_bus_0idx[None, :]  # (n_relays, n_dg)
+            has_match = match.any(axis=1)
+            # Index of the LAST True per row (dg_buses' iteration order),
+            # matching the original's overwrite-not-accumulate semantics.
+            last_match_idx = len(self._dg_bus_0idx) - 1 - np.argmax(match[:, ::-1], axis=1)
+            pv_current = np.where(
+                has_match,
+                self._dg_p_mw[last_match_idx] * self.current_state.pv_penetration * 1e6 / (
+                    np.sqrt(3) * self.net_data.base_voltage * 1e3
+                ),
+                0.0,
+            )
 
-            # Approximate current from load and PV. get_relay_bus() returns
-            # a 0-indexed bus, but DGConfig.bus_idx is 1-indexed (same
-            # convention as RelayPair.bus_pri/bus_bkp -- see every
-            # get_*bus() constructor, e.g. get_39bus's generators at
-            # bus_idx 30-39 matching the IEEE 39-bus standard case's
-            # 1-indexed bus numbering). Comparing them directly was an
-            # off-by-one: PV current landed on the relay one bus downstream
-            # of the real DG, and a DG at the network's highest-numbered
-            # bus never matched any relay at all.
-            load_current = self.net_data.Iload_max[i] * self.current_state.load_pu
-            pv_current = 0.0
-            for dg in self.net_data.dg_buses:
-                if dg.bus_idx - 1 == bus_idx:
-                    pv_current = dg.p_mw * self.current_state.pv_penetration * 1e6 / (
-                        np.sqrt(3) * self.net_data.base_voltage * 1e3
-                    )
-            true_currents[i] = load_current + pv_current
+        true_currents = load_current + pv_current
 
         return self.sensors.measure_all(true_currents, true_voltages, fault_condition)
 
