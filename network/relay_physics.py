@@ -338,6 +338,49 @@ def objective_function_batch_gpu(net, TMS_batch, PS_batch, alpha1=1.0, alpha2=10
                                      beta, fault_type, device)
 
 
+def compute_operating_times_batch(net, TMS_batch, PS_batch, fault_type="3ph",
+                                   fault_currents_batch=None, device=None):
+    """Batched counterpart of compute_operating_times() (Phase V6 of the
+    GPU-vectorized-environment plan): returns per-pair (t_pri, t_bkp) for a
+    whole batch of (TMS, PS) rows at once -- needed by
+    VectorizedDynamicDOCREnv's _get_obs()/_compute_rewards(), which (like
+    the single-env DynamicDOCREnv) need the full (P, n_pairs) delta=t_bkp-
+    t_pri array, not just objective_function_batch()'s reduced OF scalar.
+
+    Same fault-current branching as objective_function_batch() (static
+    shared (n_pairs,) vector scaled by ft_scale when fault_currents_batch is
+    None, else an already-scaled per-row (P, n_pairs) pair -- see that
+    function's docstring for the exact semantics), deliberately duplicated
+    rather than factored out so this addition carries zero risk of changing
+    objective_function_batch()'s already-verified behavior.
+
+    TMS_batch/PS_batch: (P, n_relays) numpy arrays. Returns (t_pri, t_bkp),
+    each (P, n_pairs) numpy arrays.
+    """
+    import torch
+    primary, backup, if_pri_base, if_bkp_base = _pair_index_arrays(net)
+    ft_scale = FAULT_TYPE_WEIGHTS.get(fault_type, 1.0)
+    dev = torch.device(device) if device is not None else _torch_device()
+
+    TMS_t = torch.as_tensor(TMS_batch, dtype=torch.float64, device=dev)
+    PS_t = torch.as_tensor(PS_batch, dtype=torch.float64, device=dev)
+    primary_t = torch.as_tensor(primary, dtype=torch.long, device=dev)
+    backup_t = torch.as_tensor(backup, dtype=torch.long, device=dev)
+
+    if fault_currents_batch is not None:
+        If_pri_dyn_batch, If_bkp_dyn_batch = fault_currents_batch
+        If_pri_t = torch.as_tensor(If_pri_dyn_batch, dtype=torch.float64, device=dev)
+        If_bkp_t = torch.as_tensor(If_bkp_dyn_batch, dtype=torch.float64, device=dev)
+    else:
+        If_pri_t = torch.as_tensor(if_pri_base * ft_scale, dtype=torch.float64, device=dev)
+        If_bkp_t = torch.as_tensor(if_bkp_base * ft_scale, dtype=torch.float64, device=dev)
+
+    with torch.no_grad():
+        t_pri = _idmt_time_tensor(If_pri_t, PS_t[:, primary_t], TMS_t[:, primary_t])
+        t_bkp = _idmt_time_tensor(If_bkp_t, PS_t[:, backup_t], TMS_t[:, backup_t])
+    return t_pri.cpu().numpy(), t_bkp.cpu().numpy()
+
+
 def check_constraints(
     net: NetworkData,
     TMS: np.ndarray,

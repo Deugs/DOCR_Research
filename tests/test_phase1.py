@@ -469,6 +469,47 @@ def test_objective_function_batch_dynamic_fault_currents():
     assert np.all(np.isfinite(of_static))
 
 
+def test_compute_operating_times_batch():
+    """Phase V6 of the GPU-vectorized-environment plan:
+    compute_operating_times_batch() returns the full per-pair (t_pri, t_bkp)
+    arrays for a batch of (TMS, PS) rows -- VectorizedDynamicDOCREnv needs
+    these (not just objective_function_batch()'s reduced OF scalar) to build
+    its per-agent observation/reward features. Verified at P=1 against
+    compute_operating_times() exactly, and at P=5 (static and dynamic
+    per-row fault currents) by recombining into the OF formula and comparing
+    against objective_function_batch()'s independently-computed OF."""
+    from network.relay_physics import compute_operating_times_batch, CTI
+
+    rng = np.random.default_rng(11)
+    for net_fn in (get_8bus, get_39bus):
+        net = net_fn()
+        n = net.n_relays
+        n_pairs = len(net.pairs)
+
+        TMS = rng.uniform(TMS_MIN, TMS_MAX, n)
+        PS = rng.uniform(*net.ps_bounds())
+        t_pri_ref, t_bkp_ref = compute_operating_times(net, TMS, PS, fault_type="3ph")
+        t_pri_b, t_bkp_b = compute_operating_times_batch(net, TMS[None], PS[None], fault_type="3ph")
+        assert np.max(np.abs(t_pri_ref - t_pri_b[0])) < 1e-10
+        assert np.max(np.abs(t_bkp_ref - t_bkp_b[0])) < 1e-10
+
+        P = 5
+        ps_min, ps_max = net.ps_bounds()
+        TMS_batch = rng.uniform(TMS_MIN, TMS_MAX, (P, n))
+        PS_batch = np.stack([rng.uniform(ps_min, ps_max) for _ in range(P)])
+
+        for fc_batch in (None, (rng.uniform(100, 5000, (P, n_pairs)), rng.uniform(100, 5000, (P, n_pairs)))):
+            t_pri_batch, t_bkp_batch = compute_operating_times_batch(
+                net, TMS_batch, PS_batch, fault_currents_batch=fc_batch)
+            sum_top = t_pri_batch.sum(axis=1)
+            delta = t_bkp_batch - t_pri_batch - CTI
+            viol_coord = np.sum(np.minimum(delta, 0.0) ** 2, axis=1)
+            viol_mintime = np.sum(np.minimum(t_bkp_batch - CTI, 0.0) ** 2, axis=1)
+            OF_recombined = sum_top + 100.0 * viol_coord + 50.0 * viol_mintime
+            OF_ref = objective_function_batch(net, TMS_batch, PS_batch, fault_currents_batch=fc_batch)
+            assert np.max(np.abs(OF_recombined - OF_ref)) < 1e-6
+
+
 def test_pv_inverter():
     """Test PV inverter fault ride-through."""
     inv = PVInverter(rated_power_mw=1.0, rated_voltage_kv=0.4)
