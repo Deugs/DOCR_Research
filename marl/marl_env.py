@@ -99,6 +99,12 @@ class DynamicDOCREnv:
         # precomputed once rather than rebuilt every _get_obs() call.
         # Used by the P_dir/voltage analytical proxies below.
         self._dg_bus_set = {dg.bus_idx - 1 for dg in self.net.dg_buses}
+        # Depends on _dg_bus_set (just above) and _relay_bus_arr (built in
+        # _build_adjacency(), which runs before _dg_bus_set exists) -- built
+        # here, not in _build_adjacency(), so both prerequisites are ready.
+        self._is_dg_bus_arr = np.array([
+            1.0 if bus in self._dg_bus_set else 0.0 for bus in self._relay_bus_arr
+        ])
         self.TMS = np.zeros(self.n_agents)
         self.PS  = np.zeros(self.n_agents)
         self.step_count = 0
@@ -134,6 +140,82 @@ class DynamicDOCREnv:
                 if j != i and self.net.get_relay_bus(j) == bus_i:
                     neighbor_set.add(j)
             self.neighbors[i] = sorted(list(neighbor_set))
+
+        self._build_vectorized_pair_maps()
+        self._relay_bus_arr = np.array(
+            [self.net.get_relay_bus(i) for i in range(self.n_agents)]
+        )
+
+    def _build_vectorized_pair_maps(self):
+        """Precompute dense, padded (n_agents, max_degree) index/mask arrays
+        from the ragged self.relay_pairs[i] lists, computed once here rather
+        than rebuilt implicitly every _get_obs()/_compute_rewards() call via
+        a Python `for i in range(n_agents)` loop over a list-of-lists.
+        Padding uses index 0 with an accompanying boolean mask (standard
+        ragged-to-dense technique) so downstream masked reductions
+        (max/sum/mean/any/all over "pairs touching relay i") can run as
+        single vectorized NumPy ops across all agents at once instead of a
+        Python loop gathering each agent's variable-length pair list.
+
+        Two groupings, matching the two ways _get_obs()/_compute_rewards()
+        index into relay_pairs: the UNION membership (pairs where relay i is
+        either primary or backup -- self.relay_pairs[i] itself) and the
+        PRIMARY-ONLY membership (pairs where relay i is specifically the
+        primary relay -- used for If_norm's primary/backup value selection,
+        top_own, and r_speed, each of which only wants the primary-side
+        value or only this relay's own primary pairs)."""
+        n = self.n_agents
+
+        max_deg = max((len(p) for p in self.relay_pairs), default=0)
+        max_deg = max(max_deg, 1)  # avoid a zero-width array if n==0 or edge case
+        pair_idx = np.zeros((n, max_deg), dtype=np.int64)
+        pair_mask = np.zeros((n, max_deg), dtype=bool)
+        is_primary_role = np.zeros((n, max_deg), dtype=bool)
+        for i in range(n):
+            pairs_i = self.relay_pairs[i]
+            for slot, pidx in enumerate(pairs_i):
+                pair_idx[i, slot] = pidx
+                pair_mask[i, slot] = True
+                is_primary_role[i, slot] = (self.net.pairs[pidx].primary == i)
+        self._pair_idx_padded = pair_idx
+        self._pair_mask = pair_mask
+        self._is_primary_role = is_primary_role
+
+        pri_lists = [
+            [p for p in self.relay_pairs[i] if self.net.pairs[p].primary == i]
+            for i in range(n)
+        ]
+        max_deg_pri = max((len(p) for p in pri_lists), default=0)
+        max_deg_pri = max(max_deg_pri, 1)
+        pri_idx = np.zeros((n, max_deg_pri), dtype=np.int64)
+        pri_mask = np.zeros((n, max_deg_pri), dtype=bool)
+        for i in range(n):
+            for slot, pidx in enumerate(pri_lists[i]):
+                pri_idx[i, slot] = pidx
+                pri_mask[i, slot] = True
+        self._pri_idx_padded = pri_idx
+        self._pri_mask = pri_mask
+
+        # Static per-pair base fault currents (net.pairs[pidx].If_pri/
+        # If_bkp, not the dynamic topology_state-adjusted values used
+        # inside compute_operating_times) -- _get_obs()'s If_norm selects
+        # between these two per (agent, pair-slot) based on is_primary_role.
+        self._if_pri_base = np.array([p.If_pri for p in self.net.pairs])
+        self._if_bkp_base = np.array([p.If_bkp for p in self.net.pairs])
+
+        # Same ragged-to-padded technique for self.neighbors (used by
+        # get_neighbor_observations()).
+        max_nbr = max((len(nb) for nb in self.neighbors), default=0)
+        max_nbr = max(max_nbr, 1)
+        nbr_idx = np.zeros((n, max_nbr), dtype=np.int64)
+        nbr_mask = np.zeros((n, max_nbr), dtype=bool)
+        for i in range(n):
+            nbrs_i = self.neighbors[i]
+            for slot, nidx in enumerate(nbrs_i):
+                nbr_idx[i, slot] = nidx
+                nbr_mask[i, slot] = True
+        self._neighbor_idx_padded = nbr_idx
+        self._neighbor_mask = nbr_mask
 
     def reset(
         self,
@@ -179,8 +261,6 @@ class DynamicDOCREnv:
         )
         delta = t_bkp - t_pri
 
-        obs = np.zeros((self.n_agents, self.OBS_DIM))
-
         # Guard on self.current_state BEFORE dereferencing it — the
         # previous ternary evaluated the `any(...)` condition
         # unconditionally and only guarded the else-branch, so it would
@@ -199,76 +279,100 @@ class DynamicDOCREnv:
             n_outages = sum(1 for v in self.current_state.topology_state.line_status.values() if not v) if self.current_state else 0
             sensor_quality = max(0.5, 1.0 - 0.1 * n_outages)
 
-        for i in range(self.n_agents):
-            tms_n = (self.TMS[i] - TMS_MIN) / self.tms_range
-            ps_n  = (self.PS[i]  - self.ps_min[i]) / self.ps_range[i]
+        # 2026-11-02: vectorized across all agents at once, replacing the
+        # per-agent `for i in range(self.n_agents)` loop. The real
+        # difficulty here is that self.relay_pairs[i] is a RAGGED
+        # structure (each relay appears in a different number of P/B
+        # pairs), which doesn't vectorize via plain reshaping -- instead
+        # uses the padded index/mask arrays precomputed once in
+        # _build_vectorized_pair_maps() (ragged-to-dense + boolean mask,
+        # the standard technique for this), so each "for pidx in
+        # relay_pairs[i]: ..." becomes one masked reduction (max/mean/any)
+        # across all agents simultaneously. Verified bit-for-bit identical
+        # to the pre-vectorization per-agent loop (see test additions) --
+        # this directly shapes the RL observation every agent trains on,
+        # so unlike the metaheuristics' RNG-order-tolerant vectorization,
+        # this one has no tolerance for even statistical drift.
+        tms_n = (self.TMS - TMS_MIN) / self.tms_range
+        ps_n = (self.PS - self.ps_min) / self.ps_range
 
-            if_vals = []
-            for pidx in self.relay_pairs[i]:
-                p = self.net.pairs[pidx]
-                if_vals.append(p.If_pri if p.primary == i else p.If_bkp)
-            If_norm = (np.max(if_vals) / 15000.0) if if_vals else 0.0
+        if_pri_padded = self._if_pri_base[self._pair_idx_padded]
+        if_bkp_padded = self._if_bkp_base[self._pair_idx_padded]
+        if_vals_padded = np.where(self._is_primary_role, if_pri_padded, if_bkp_padded)
+        if_vals_for_max = np.where(self._pair_mask, if_vals_padded, -np.inf)
+        has_any_pair = self._pair_mask.any(axis=1)
+        If_norm = np.where(has_any_pair, np.max(if_vals_for_max, axis=1) / 15000.0, 0.0)
 
-            slacks = [delta[pidx] - CTI for pidx in self.relay_pairs[i]]
-            cti_slack_norm = np.clip(
-                float(np.mean(slacks)) / 2.0 if slacks else 0.0,
-                -1.0, 1.0
+        delta_padded = delta[self._pair_idx_padded]
+        slacks_padded = np.where(self._pair_mask, delta_padded - CTI, 0.0)
+        pair_counts = self._pair_mask.sum(axis=1)
+        slack_mean = np.where(has_any_pair, slacks_padded.sum(axis=1) / np.maximum(pair_counts, 1), 0.0)
+        cti_slack_norm = np.clip(slack_mean / 2.0, -1.0, 1.0)
+
+        viol = np.any(self._pair_mask & (delta_padded < CTI - 1e-6), axis=1).astype(float)
+
+        t_pri_pri_padded = t_pri[self._pri_idx_padded]
+        has_pri = self._pri_mask.any(axis=1)
+        pri_sum = np.where(self._pri_mask, t_pri_pri_padded, 0.0).sum(axis=1)
+        pri_counts = self._pri_mask.sum(axis=1)
+        top_own = np.where(has_pri, pri_sum / np.maximum(pri_counts, 1), TOP_MAX)
+        top_norm = np.clip(top_own / TOP_MAX, 0.0, 1.0)
+
+        pv_level_obs = np.full(self.n_agents, self.current_pv_level)
+
+        # Objective 2: real local voltage (V) and power-flow
+        # direction (P_dir) at this relay's bus. Under
+        # use_pandapower=True, V comes from a genuine AC power-flow
+        # solve (self.current_state.bus_voltages, populated by
+        # environment/dynamic_network.py's real PandapowerNetwork
+        # path). That solve is ~28x slower per step than the
+        # analytical fallback (measured directly: 84ms vs 3ms/step)
+        # -- prohibitive for the full training campaign (would turn
+        # hours of training into days) -- so use_pandapower=False
+        # (the vast majority of training) uses a fast analytical
+        # proxy instead, the same "real physics under pandapower,
+        # cheap approximation for training speed otherwise" pattern
+        # this codebase already uses for If_pri/If_bkp
+        # (network/pandapower_network.py's _analytical_fault_currents).
+        # P_dir has no real per-step signal available at all under
+        # the analytical path (no power-flow solve happens there),
+        # so it is always the analytical proxy: local DG injection
+        # (scaled by the current PV level) versus local load,
+        # bounded to [-1, 1] with -1 = normal substation-to-load
+        # flow, +1 = fully reversed by local generation.
+        is_dg_bus = self._is_dg_bus_arr
+        if self.use_pandapower and self.current_state and self.current_state.bus_voltages:
+            # Dict-keyed-by-bus lookup, not a (relay,) array -- multiple
+            # relays can share a bus, so this stays a small per-agent loop.
+            # Left as-is deliberately: this branch is the rare, already-
+            # ~28x-more-expensive opt-in path (real AC power-flow solve
+            # dominates its cost regardless), not the default training hot
+            # path the rest of this vectorization targets.
+            v_pu = np.array([
+                self.current_state.bus_voltages.get(bus, 1.0)
+                for bus in self._relay_bus_arr
+            ])
+        else:
+            v_pu = np.clip(
+                1.0 - 0.05 * If_norm + 0.05 * pv_level_obs * is_dg_bus, 0.85, 1.10
             )
-            viol = float(
-                any(delta[pidx] < CTI - 1e-6 for pidx in self.relay_pairs[i])
-            )
-            pri_pairs = [pidx for pidx in self.relay_pairs[i]
-                         if self.net.pairs[pidx].primary == i]
-            top_own = (float(np.mean([t_pri[pidx] for pidx in pri_pairs]))
-                       if pri_pairs else TOP_MAX)
-            top_norm = np.clip(top_own / TOP_MAX, 0.0, 1.0)
+        v_norm = np.clip((v_pu - 0.85) / 0.25, 0.0, 1.0)
+        p_dir = np.clip(2.0 * pv_level_obs * is_dg_bus - 1.0, -1.0, 1.0)
 
-            pv_level_obs = self.current_pv_level
-
-            # Objective 2: real local voltage (V) and power-flow
-            # direction (P_dir) at this relay's bus. Under
-            # use_pandapower=True, V comes from a genuine AC power-flow
-            # solve (self.current_state.bus_voltages, populated by
-            # environment/dynamic_network.py's real PandapowerNetwork
-            # path). That solve is ~28x slower per step than the
-            # analytical fallback (measured directly: 84ms vs 3ms/step)
-            # -- prohibitive for the full training campaign (would turn
-            # hours of training into days) -- so use_pandapower=False
-            # (the vast majority of training) uses a fast analytical
-            # proxy instead, the same "real physics under pandapower,
-            # cheap approximation for training speed otherwise" pattern
-            # this codebase already uses for If_pri/If_bkp
-            # (network/pandapower_network.py's _analytical_fault_currents).
-            # P_dir has no real per-step signal available at all under
-            # the analytical path (no power-flow solve happens there),
-            # so it is always the analytical proxy: local DG injection
-            # (scaled by the current PV level) versus local load,
-            # bounded to [-1, 1] with -1 = normal substation-to-load
-            # flow, +1 = fully reversed by local generation.
-            is_dg_bus = 1.0 if self.net.get_relay_bus(i) in self._dg_bus_set else 0.0
-            if self.use_pandapower and self.current_state and self.current_state.bus_voltages:
-                v_pu = self.current_state.bus_voltages.get(self.net.get_relay_bus(i), 1.0)
-            else:
-                v_pu = np.clip(
-                    1.0 - 0.05 * If_norm + 0.05 * pv_level_obs * is_dg_bus, 0.85, 1.10
-                )
-            v_norm = np.clip((v_pu - 0.85) / 0.25, 0.0, 1.0)
-            p_dir = np.clip(2.0 * pv_level_obs * is_dg_bus - 1.0, -1.0, 1.0)
-
-            obs[i] = [
-                tms_n,
-                ps_n,
-                If_norm,
-                cti_slack_norm,
-                viol,
-                top_norm,
-                ps_n,
-                pv_level_obs,
-                topology_flag,
-                sensor_quality,
-                v_norm,
-                p_dir,
-            ]
+        obs = np.stack([
+            tms_n,
+            ps_n,
+            If_norm,
+            cti_slack_norm,
+            viol,
+            top_norm,
+            ps_n,
+            pv_level_obs,
+            np.full(self.n_agents, topology_flag),
+            np.full(self.n_agents, sensor_quality),
+            v_norm,
+            p_dir,
+        ], axis=1)
 
         return obs
 
@@ -283,11 +387,15 @@ class DynamicDOCREnv:
         if max_neighbors == 0:
             return np.zeros((self.n_agents, 1, self.OBS_DIM))
 
-        neighbor_obs = np.zeros((self.n_agents, max_neighbors, self.OBS_DIM))
-        for i in range(self.n_agents):
-            for j, neighbor_idx in enumerate(self.neighbors[i]):
-                if j < max_neighbors:
-                    neighbor_obs[i, j] = obs[neighbor_idx]
+        # 2026-11-02: vectorized gather using the padded neighbor index/mask
+        # arrays precomputed once in _build_vectorized_pair_maps(), instead
+        # of a nested per-agent/per-neighbor Python loop. obs[neighbor_idx]
+        # at padding slots reads an arbitrary (index-0) observation, but
+        # those slots are then zeroed via the mask -- matching the
+        # original's padded-with-zero behavior exactly, since neighbor_obs
+        # there started as all-zeros and only real (i, j<len(neighbors[i]))
+        # slots were ever written.
+        neighbor_obs = obs[self._neighbor_idx_padded] * self._neighbor_mask[:, :, None]
         return neighbor_obs
 
     def step(
@@ -346,7 +454,6 @@ class DynamicDOCREnv:
         return self._get_obs(), rewards * self.reward_scale, done, info
 
     def _compute_rewards(self, t_pri, t_bkp, delta_cti, OF):
-        rewards    = np.zeros(self.n_agents)
         lam_coord  = 5.0
         bonus_cti  = 0.5
 
@@ -354,35 +461,52 @@ class DynamicDOCREnv:
         if self.current_pv_level > 0.5:
             pv_adaptation_bonus = 0.3 * self.current_pv_level
 
-        for i in range(self.n_agents):
-            my_pairs = self.relay_pairs[i]
-            if not my_pairs:
-                continue
-            pri_idxs = [p for p in my_pairs
-                        if self.net.pairs[p].primary == i]
-            r_speed = (-float(np.mean([t_pri[p] for p in pri_idxs])) / TOP_MAX
-                       if pri_idxs else 0.0)
-            r_coord = -lam_coord * np.sum(
-                np.maximum(0, CTI - delta_cti[my_pairs]))
-            r_bonus = bonus_cti if all(
-                delta_cti[p] >= CTI - 1e-6 for p in my_pairs) else 0.0
+        # 2026-11-02: vectorized across all agents at once, replacing the
+        # per-agent `for i in range(self.n_agents)` loop -- same padded
+        # index/mask arrays as _get_obs() (see _build_vectorized_pair_maps
+        # and that method's docstring for why relay_pairs' ragged structure
+        # needs this rather than a plain reshape). Verified bit-for-bit
+        # identical to the pre-vectorization per-agent loop.
+        has_pairs = self._pair_mask.any(axis=1)
 
-            topology_bonus = 0.0
-            if self.current_state and any(
-                not v for v in self.current_state.topology_state.line_status.values()
-            ):
-                topology_bonus = 0.2 if all(
-                    delta_cti[p] >= CTI - 1e-6 for p in my_pairs
-                ) else -0.1
+        t_pri_pri_padded = t_pri[self._pri_idx_padded]
+        has_pri = self._pri_mask.any(axis=1)
+        pri_sum = np.where(self._pri_mask, t_pri_pri_padded, 0.0).sum(axis=1)
+        pri_counts = self._pri_mask.sum(axis=1)
+        r_speed = np.where(has_pri, -(pri_sum / np.maximum(pri_counts, 1)) / TOP_MAX, 0.0)
 
-            # Communication efficiency penalty: not implemented (always 0).
-            # Kept as an explicit term so a future real implementation has
-            # an obvious place to plug in, rather than silently claiming
-            # (as an earlier docstring did) that comm cost already
-            # factors into the reward.
-            comm_penalty = 0.0
+        delta_cti_padded = delta_cti[self._pair_idx_padded]
+        viol_amt = np.where(self._pair_mask, np.maximum(0, CTI - delta_cti_padded), 0.0)
+        r_coord = -lam_coord * viol_amt.sum(axis=1)
 
-            rewards[i] = r_speed + r_coord + r_bonus + pv_adaptation_bonus + topology_bonus + comm_penalty
+        satisfied = delta_cti_padded >= (CTI - 1e-6)
+        # "all satisfied among my_pairs" -- padding slots must count as
+        # satisfied (True) so they never flip an otherwise-all-satisfied
+        # agent to False, matching Python's all() over only the real pairs.
+        all_satisfied = np.all(np.where(self._pair_mask, satisfied, True), axis=1)
+        r_bonus = np.where(all_satisfied, bonus_cti, 0.0)
+
+        topology_active = bool(self.current_state and any(
+            not v for v in self.current_state.topology_state.line_status.values()
+        ))
+        if topology_active:
+            topology_bonus = np.where(all_satisfied, 0.2, -0.1)
+        else:
+            topology_bonus = np.zeros(self.n_agents)
+
+        # Communication efficiency penalty: not implemented (always 0).
+        # Kept as an explicit term so a future real implementation has
+        # an obvious place to plug in, rather than silently claiming
+        # (as an earlier docstring did) that comm cost already
+        # factors into the reward.
+        comm_penalty = 0.0
+
+        rewards = r_speed + r_coord + r_bonus + pv_adaptation_bonus + topology_bonus + comm_penalty
+        # Agents with no pairs at all got no reward contribution in the
+        # original (the `for` loop's `if not my_pairs: continue` skipped
+        # straight past them, leaving rewards[i] at its zero-initialized
+        # value) -- only the shared OF term below ever reached them.
+        rewards = np.where(has_pairs, rewards, 0.0)
 
         rewards += 0.3 * (-OF / (self.n_agents * TOP_MAX))
         return rewards
