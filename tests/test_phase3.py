@@ -144,6 +144,81 @@ def test_lagrange_multiplier_updates():
     print(f"  Lagrange Update: λ_init={lambda_init.mean():.3f}, λ_after_viol={al.lambdas.mean():.3f}")
 
 
+def test_action_projector_batch():
+    """Phase V8 of the GPU-vectorized-environment redesign:
+    ActionProjector.project_batch()/project_with_cti_lookahead_batch() must
+    exactly match the existing single-env project()/
+    project_with_cti_lookahead() run independently per environment."""
+    from marl.safe_rl import ActionProjector, SafeRLConfig
+    from network.network_data import get_8bus
+
+    net = get_8bus()
+    n = net.n_relays
+    n_envs = 4
+    cfg = SafeRLConfig()
+    proj = ActionProjector(net, cfg)
+    rng = np.random.default_rng(5)
+
+    TMS_batch = rng.uniform(TMS_MIN, TMS_MAX, (n_envs, n))
+    PS_batch = np.stack([rng.uniform(*net.ps_bounds()) for _ in range(n_envs)])
+    dtms_batch = rng.uniform(-1, 1, (n_envs, n))
+    dps_batch = rng.uniform(-1, 1, (n_envs, n))
+
+    pdt_batch, pdp_batch = proj.project_batch(TMS_batch, PS_batch, dtms_batch, dps_batch, action_scale=0.05)
+    for e in range(n_envs):
+        pdt_ref, pdp_ref = proj.project(TMS_batch[e], PS_batch[e], dtms_batch[e], dps_batch[e], action_scale=0.05)
+        assert np.max(np.abs(pdt_ref - pdt_batch[e])) < 1e-12
+        assert np.max(np.abs(pdp_ref - pdp_batch[e])) < 1e-12
+
+    pdt_lh, pdp_lh = proj.project_with_cti_lookahead_batch(
+        TMS_batch, PS_batch, dtms_batch, dps_batch, net, action_scale=0.05, cti_margin=0.05)
+    for e in range(n_envs):
+        pdt_ref, pdp_ref = proj.project_with_cti_lookahead(
+            TMS_batch[e], PS_batch[e], dtms_batch[e], dps_batch[e], action_scale=0.05, cti_margin=0.05)
+        assert np.max(np.abs(pdt_ref - pdt_lh[e])) < 1e-9
+        assert np.max(np.abs(pdp_ref - pdp_lh[e])) < 1e-9
+
+
+def test_augmented_lagrangian_batch():
+    """Phase V8: AugmentedLagrangian.compute_constraint_cost_batch()/
+    update_lagrangian_batch() -- lambdas/rho stay one shared set of dual
+    variables across the whole n_envs batch (one policy, one Lagrangian),
+    not one per environment."""
+    from marl.safe_rl import AugmentedLagrangian, SafeRLConfig
+    from network.network_data import get_8bus
+
+    net = get_8bus()
+    n = net.n_relays
+    n_pairs = net.n_pairs
+    cfg = SafeRLConfig()
+    rng = np.random.default_rng(3)
+    n_envs = 4
+
+    lag_batch = AugmentedLagrangian(n_pairs, cfg, seed=1)
+    lag_batch.lambdas = rng.uniform(0.5, 2.0, n_pairs)
+
+    TMS_batch = rng.uniform(TMS_MIN, TMS_MAX, (n_envs, n))
+    PS_batch = np.stack([rng.uniform(*net.ps_bounds()) for _ in range(n_envs)])
+    cost_batch, g_batch, viol_batch = lag_batch.compute_constraint_cost_batch(TMS_batch, PS_batch, net)
+    assert cost_batch.shape == (n_envs,)
+    assert g_batch.shape == (n_envs, n_pairs)
+    assert viol_batch.shape == (n_envs, n_pairs)
+
+    for e in range(n_envs):
+        lag_ref = AugmentedLagrangian(n_pairs, cfg, seed=1)
+        lag_ref.lambdas = lag_batch.lambdas.copy()
+        cost_ref, g_ref, viol_ref = lag_ref.compute_constraint_cost(TMS_batch[e], PS_batch[e], net)
+        assert abs(cost_ref - cost_batch[e]) < 1e-9
+        assert np.max(np.abs(g_ref - g_batch[e])) < 1e-9
+        assert np.max(np.abs(viol_ref - viol_batch[e])) < 1e-9
+
+    lag_a = AugmentedLagrangian(n_pairs, cfg, seed=7)
+    lag_b = AugmentedLagrangian(n_pairs, cfg, seed=7)
+    lag_a.update_lagrangian_batch(g_batch, episode_violation_rate=0.3)
+    lag_b.update_lagrangian(g_batch.mean(axis=0), episode_violation_rate=0.3)
+    assert np.max(np.abs(lag_a.lambdas - lag_b.lambdas)) < 1e-12
+
+
 def test_pid_lagrangian():
     """Test PID-controlled Lagrange multiplier updates."""
     from marl.safe_rl import AugmentedLagrangian, SafeRLConfig

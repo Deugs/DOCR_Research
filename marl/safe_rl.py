@@ -52,7 +52,7 @@ from dataclasses import dataclass
 from network.network_data import NetworkData
 from network.relay_physics import (
     objective_function, check_constraints,
-    compute_operating_times,
+    compute_operating_times, compute_operating_times_batch,
     TMS_MIN, TMS_MAX, CTI, TOP_MIN, TOP_MAX,
 )
 
@@ -227,6 +227,108 @@ class ActionProjector:
 
         return proj_dt, proj_dp
 
+    def project_batch(self, TMS_batch: np.ndarray, PS_batch: np.ndarray,
+                       delta_tms_batch: np.ndarray, delta_ps_batch: np.ndarray,
+                       action_scale: float = 0.05) -> Tuple[np.ndarray, np.ndarray]:
+        """Batched counterpart of project() (Phase V8 of the
+        GPU-vectorized-environment redesign): TMS_batch/PS_batch/
+        delta_*_batch all (n_envs, n_agents). Identical boundary-clamping
+        formula, broadcasting self.ps_min/ps_max/ps_range (static, shared
+        across every environment -- one network's per-relay PS bounds don't
+        vary by environment) against the added n_envs axis. No torch here,
+        same reasoning as project() itself: these are 14-92-element-per-env
+        arrays, not GPU-relevant compute even batched across hundreds of
+        envs."""
+        if not self.config.project_actions:
+            return delta_tms_batch, delta_ps_batch
+
+        margin = self.config.projection_margin
+
+        proposed_tms = TMS_batch + delta_tms_batch * action_scale * self.tms_range
+        max_delta_lo = (TMS_MIN + margin - TMS_batch) / (action_scale * self.tms_range)
+        max_delta_hi = (TMS_MAX - margin - TMS_batch) / (action_scale * self.tms_range)
+        proj_dt = np.where(
+            proposed_tms < TMS_MIN + margin, np.clip(delta_tms_batch, max_delta_lo, 1.0),
+            np.where(proposed_tms > TMS_MAX - margin, np.clip(delta_tms_batch, -1.0, max_delta_hi),
+                     delta_tms_batch)
+        )
+
+        ps_min, ps_max, ps_range = self.ps_min[None, :], self.ps_max[None, :], self.ps_range[None, :]
+        proposed_ps = PS_batch + delta_ps_batch * action_scale * ps_range
+        max_delta_lo_ps = (ps_min + margin - PS_batch) / (action_scale * ps_range)
+        max_delta_hi_ps = (ps_max - margin - PS_batch) / (action_scale * ps_range)
+        proj_dp = np.where(
+            proposed_ps < ps_min + margin, np.clip(delta_ps_batch, max_delta_lo_ps, 1.0),
+            np.where(proposed_ps > ps_max - margin, np.clip(delta_ps_batch, -1.0, max_delta_hi_ps),
+                     delta_ps_batch)
+        )
+
+        return proj_dt, proj_dp
+
+    def project_with_cti_lookahead_batch(
+        self, TMS_batch: np.ndarray, PS_batch: np.ndarray,
+        delta_tms_batch: np.ndarray, delta_ps_batch: np.ndarray,
+        net: NetworkData, action_scale: float = 0.05, cti_margin: float = 0.05,
+        fault_type: str = "3ph", fault_currents_batch=None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Batched counterpart of project_with_cti_lookahead(): each
+        environment gets its OWN independent scalar `scale` and its own
+        independent binary-search stopping point (an env with no violation
+        never enters the reduction loop at all, exactly matching the
+        single-env version's `if np.any(violation)` skip-path; an env that
+        becomes feasible mid-loop stops reducing further while others
+        continue) -- via `needs_scaling` masking rather than a Python loop
+        over environments, so a batch of thousands of envs costs the same
+        10 iterations regardless of batch size.
+
+        `fault_currents_batch`: optional (If_pri_batch, If_bkp_batch), each
+        (n_envs, n_pairs) -- the per-env dynamic fault currents the
+        calling VectorizedDynamicDOCREnv already cached for this episode
+        (see that class's `_recompute_episode_cache`), passed straight
+        through to `compute_operating_times_batch`. None uses the static
+        shared fault currents (matches project_with_cti_lookahead()'s own
+        default, single-candidate behavior).
+        """
+        n_envs = TMS_batch.shape[0]
+        proj_dt, proj_dp = self.project_batch(TMS_batch, PS_batch, delta_tms_batch,
+                                               delta_ps_batch, action_scale)
+
+        if not self.config.enforce_cti:
+            return proj_dt, proj_dp
+
+        ps_min, ps_max, ps_range = self.ps_min[None, :], self.ps_max[None, :], self.ps_range[None, :]
+        proposed_TMS = np.clip(TMS_batch + proj_dt * action_scale * self.tms_range, TMS_MIN, TMS_MAX)
+        proposed_PS = np.clip(PS_batch + proj_dp * action_scale * ps_range, ps_min, ps_max)
+
+        t_pri, t_bkp = compute_operating_times_batch(
+            net, proposed_TMS, proposed_PS, fault_type=fault_type,
+            fault_currents_batch=fault_currents_batch,
+        )
+        delta_cti = t_bkp - t_pri  # (n_envs, n_pairs)
+
+        needs_scaling = np.any(delta_cti < CTI + cti_margin, axis=1)  # (n_envs,)
+        scale = np.ones(n_envs)
+
+        for _ in range(10):
+            if not np.any(needs_scaling):
+                break
+            trial_scale = np.where(needs_scaling, scale * 0.7, scale)
+            test_TMS = np.clip(TMS_batch + proj_dt * action_scale * self.tms_range * trial_scale[:, None],
+                                TMS_MIN, TMS_MAX)
+            test_PS = np.clip(PS_batch + proj_dp * action_scale * ps_range * trial_scale[:, None],
+                               ps_min, ps_max)
+            t_pri_t, t_bkp_t = compute_operating_times_batch(
+                net, test_TMS, test_PS, fault_type=fault_type,
+                fault_currents_batch=fault_currents_batch,
+            )
+            feasible_now = np.all(t_bkp_t - t_pri_t >= CTI + cti_margin, axis=1)  # (n_envs,)
+            scale = trial_scale
+            needs_scaling = needs_scaling & ~feasible_now
+
+        proj_dt = proj_dt * scale[:, None]
+        proj_dp = proj_dp * scale[:, None]
+        return proj_dt, proj_dp
+
 
 class AugmentedLagrangian:
     """
@@ -308,7 +410,55 @@ class AugmentedLagrangian:
 
         return total_cost * self.config.cost_scale, g_values, cti_violations
 
-    def update_lagrangian(self, 
+    def compute_constraint_cost_batch(
+        self, TMS_batch: np.ndarray, PS_batch: np.ndarray, net: NetworkData,
+        fault_type: str = "3ph", fault_currents_batch=None,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Batched counterpart of compute_constraint_cost() (Phase V8):
+        TMS_batch/PS_batch (n_envs, n_agents). `self.lambdas`/`self.rho`
+        stay a single (n_pairs,) array / scalar, SHARED across every
+        environment in the batch -- confirmed correct during planning, not
+        a gap: all envs in a vectorized rollout train one shared policy, so
+        there is exactly one set of dual variables for it, the same way
+        there is one shared actor/critic rather than one per environment.
+
+        Returns (total_cost, g_values, cti_violations), each (n_envs,) /
+        (n_envs, n_pairs) / (n_envs, n_pairs) -- the per-env batch
+        counterpart of compute_constraint_cost()'s (scalar, (n_pairs,),
+        (n_pairs,)) return.
+        """
+        t_pri, t_bkp = compute_operating_times_batch(
+            net, TMS_batch, PS_batch, fault_type=fault_type,
+            fault_currents_batch=fault_currents_batch,
+        )
+        delta_cti = t_bkp - t_pri  # (n_envs, n_pairs)
+
+        g_values = CTI - delta_cti  # (n_envs, n_pairs)
+        violation_mask = g_values > 0
+
+        linear_term = np.sum(self.lambdas[None, :] * np.maximum(0, g_values), axis=1)
+        quadratic_term = 0.5 * self.rho * np.sum(np.maximum(0, g_values) ** 2, axis=1)
+        total_cost = linear_term + quadratic_term
+
+        cti_violations = violation_mask.astype(float)
+        return total_cost * self.config.cost_scale, g_values, cti_violations
+
+    def update_lagrangian_batch(self, g_values_batch: np.ndarray,
+                                 episode_violation_rate: float = None):
+        """Batch-reduce g_values_batch (n_envs, n_pairs) to a single
+        (n_pairs,) vector by averaging across environments, then delegate to
+        the existing scalar update_lagrangian() -- since `self.lambdas` is
+        one shared set of dual variables for the whole batch's policy (see
+        compute_constraint_cost_batch's docstring), the dual-ascent update
+        itself is not re-derived here, just fed a batch-pooled constraint
+        signal instead of one environment's. Because all environments in
+        this redesign reset in lockstep (fixed max_steps, Phase V6), this
+        fires once per rollout/episode boundary for the whole batch at
+        once, with no per-env staggering to account for."""
+        g_values_mean = g_values_batch.mean(axis=0)
+        self.update_lagrangian(g_values_mean, episode_violation_rate)
+
+    def update_lagrangian(self,
                           g_values: np.ndarray,
                           episode_violation_rate: float = None):
         """
