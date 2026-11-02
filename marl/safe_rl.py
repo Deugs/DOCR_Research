@@ -22,6 +22,27 @@ References:
 - Stooke & Abbeel, "Responsive Safety in Reinforcement Learning by PID Lagrangian Methods", ICML 2020
 - Ray et al., "Benchmarking Safe Exploration in Deep Reinforcement Learning", 2019
 - Achiam et al., "Constrained Policy Optimization", ICML 2017
+
+2026-11-02 torch-port note: this module's compute-heavy step --
+compute_operating_times, called by both ActionProjector's CTI lookahead
+and AugmentedLagrangian's constraint-cost computation -- is already real
+torch (device-gated by the project's DOCR_USE_GPU=1 policy) as of the
+2026-10-26 relay_physics.py port; that benefit already flows through here
+transparently, no further change needed. ActionProjector.project()'s two
+per-relay Python loops are now vectorized (NumPy array ops, not torch --
+see that method's docstring for why tensors buy nothing at this size).
+AugmentedLagrangian's own PID/lambda bookkeeping (self.lambdas, self.rho,
+self.error_integral) deliberately stays plain NumPy, not torch tensors:
+it's accessed directly as a NumPy array (not through a method) by code
+outside this module -- experiments/exp_fig50_critical_pairs.py,
+marl/utils/exp_fig10_lagrange_evolution.py, and tests/test_phase3.py all
+call `.copy()` on AugmentedLagrangian.lambdas directly, which doesn't
+exist on a torch tensor -- so converting it would be a confirmed breaking
+change across multiple files, for an (n_pairs,)-sized array (14-92
+elements) with no plausible GPU benefit regardless. A deliberate exception
+to "move everything to torch", not an oversight -- flagged here the same
+way evaluation/stat_analysis.py was flagged in the project's torch-port
+plan.
 """
 
 import numpy as np
@@ -110,36 +131,35 @@ class ActionProjector:
         if not self.config.project_actions:
             return delta_tms, delta_ps
 
-        proj_dt = delta_tms.copy()
-        proj_dp = delta_ps.copy()
-
         margin = self.config.projection_margin
 
-        # Project TMS to maintain bounds
-        for i in range(len(TMS)):
-            proposed_tms = TMS[i] + delta_tms[i] * action_scale * self.tms_range
+        # 2026-11-02: vectorized across all relays at once -- same
+        # boundary-clamping formula as before (if the proposed setting
+        # would cross TMS_MIN/TMS_MAX or this relay's PS bounds, shrink
+        # that relay's delta just enough to land on the margin instead),
+        # just via np.where masking instead of a Python
+        # `for i in range(len(TMS))` loop recomputing the same scalar
+        # formula index by index. TMS/PS/delta_* here are tiny (n_relays,)
+        # arrays (14-92 elements) -- this isn't torch-tensor territory
+        # (no GPU-relevant compute exists at this size), just removing
+        # real per-element Python-loop overhead with plain NumPy array ops.
+        proposed_tms = TMS + delta_tms * action_scale * self.tms_range
+        max_delta_lo = (TMS_MIN + margin - TMS) / (action_scale * self.tms_range)
+        max_delta_hi = (TMS_MAX - margin - TMS) / (action_scale * self.tms_range)
+        proj_dt = np.where(
+            proposed_tms < TMS_MIN + margin, np.clip(delta_tms, max_delta_lo, 1.0),
+            np.where(proposed_tms > TMS_MAX - margin, np.clip(delta_tms, -1.0, max_delta_hi),
+                     delta_tms)
+        )
 
-            if proposed_tms < TMS_MIN + margin:
-                # Scale down to not violate lower bound
-                max_delta = (TMS_MIN + margin - TMS[i]) / (action_scale * self.tms_range)
-                proj_dt[i] = np.clip(delta_tms[i], max_delta, 1.0)
-
-            elif proposed_tms > TMS_MAX - margin:
-                # Scale down to not violate upper bound
-                max_delta = (TMS_MAX - margin - TMS[i]) / (action_scale * self.tms_range)
-                proj_dt[i] = np.clip(delta_tms[i], -1.0, max_delta)
-
-        # Project PS to maintain bounds
-        for i in range(len(PS)):
-            proposed_ps = PS[i] + delta_ps[i] * action_scale * self.ps_range[i]
-
-            if proposed_ps < self.ps_min[i] + margin:
-                max_delta = (self.ps_min[i] + margin - PS[i]) / (action_scale * self.ps_range[i])
-                proj_dp[i] = np.clip(delta_ps[i], max_delta, 1.0)
-
-            elif proposed_ps > self.ps_max[i] - margin:
-                max_delta = (self.ps_max[i] - margin - PS[i]) / (action_scale * self.ps_range[i])
-                proj_dp[i] = np.clip(delta_ps[i], -1.0, max_delta)
+        proposed_ps = PS + delta_ps * action_scale * self.ps_range
+        max_delta_lo_ps = (self.ps_min + margin - PS) / (action_scale * self.ps_range)
+        max_delta_hi_ps = (self.ps_max - margin - PS) / (action_scale * self.ps_range)
+        proj_dp = np.where(
+            proposed_ps < self.ps_min + margin, np.clip(delta_ps, max_delta_lo_ps, 1.0),
+            np.where(proposed_ps > self.ps_max - margin, np.clip(delta_ps, -1.0, max_delta_hi_ps),
+                     delta_ps)
+        )
 
         return proj_dt, proj_dp
 
