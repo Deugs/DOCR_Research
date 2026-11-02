@@ -165,6 +165,41 @@ class GNNAttention(_FlatParamsMixin, torch.nn.Module):
         with torch.no_grad():
             return self.compute_attention_t(messages_t, adjacency_t).cpu().numpy()
 
+    def compute_attention_batched_t(self, messages_t: torch.Tensor,
+                                     adjacency_t: torch.Tensor) -> torch.Tensor:
+        """Batched counterpart of compute_attention_t(), for the
+        GPU-vectorized-environment redesign (Phase V4): messages_t
+        (n_envs, n_agents, msg_dim), adjacency_t (n_agents, n_agents) --
+        shared across all environments, since a batch of parallel training
+        environments all use the same relay network topology (not a
+        per-environment randomized graph structure). Returns attention
+        (n_envs, n_agents, n_agents).
+
+        This is NOT simply compute_attention_t() fed a flattened
+        (n_envs*n_agents, msg_dim) input -- that would build h_i/h_j pairs
+        ACROSS different environments' agents (e.g. attention scores
+        between agent 3 of environment 0 and agent 5 of environment 1),
+        silently mixing unrelated environments' graphs together. Keeping
+        the env axis explicit throughout (h_i/h_j become (n_envs, n, n,
+        hidden) via broadcasting, not (n*n_envs, n*n_envs, hidden) via a
+        flattened einsum) guarantees each environment's attention is
+        computed only over its own agents -- verified in this module's
+        test file both for n_envs=1 (must exactly match
+        compute_attention_t()) and n_envs>1 (each environment's output
+        must exactly match what compute_attention_t() computes when called
+        on that environment alone, i.e. no cross-environment leakage).
+        """
+        n_envs, n, _ = messages_t.shape
+        h = self.W_att(messages_t)  # (n_envs, n, hidden_dim)
+        h_i = h.unsqueeze(2).expand(n_envs, n, n, -1)  # h_i[e,a,b] = h[e,a]
+        h_j = h.unsqueeze(1).expand(n_envs, n, n, -1)  # h_j[e,a,b] = h[e,b]
+        h_concat = torch.cat([h_i, h_j], dim=-1)  # (n_envs, n, n, 2*hidden_dim)
+        scores = (h_concat * self.a_vec).sum(dim=-1)  # (n_envs, n, n)
+        scores = torch.where(scores > 0, scores, 0.01 * scores)  # LeakyReLU
+        adj = adjacency_t.unsqueeze(0)  # (1, n, n) -- broadcasts over n_envs
+        scores = torch.where(adj > 0, scores, torch.full_like(scores, -1e9))
+        return torch.softmax(scores, dim=2)  # normalize over the neighbor ("j") axis
+
 
 class GNNMessageDecoder(_FlatParamsMixin, torch.nn.Module):
     """

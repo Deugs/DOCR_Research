@@ -14,8 +14,8 @@ from network.network_data import (
     NetworkData, RelayPair, _ensure_feasible_ps_bounds, NETWORKS,
 )
 from network.relay_physics import (
-    idmt_time, compute_operating_times, objective_function, 
-    check_constraints, CTI, TMS_MIN, TMS_MAX
+    idmt_time, compute_operating_times, objective_function,
+    check_constraints, CTI, TMS_MIN, TMS_MAX, objective_function_batch,
 )
 from pv_model.pv_inverter import PVInverter, PVPlant
 from pv_model.scenario_generator import MarkovCloudModel, ScenarioGenerator
@@ -390,6 +390,83 @@ def test_objective_function():
     assert "cti_satisfied" in constraints
     assert "cti_violations" in constraints
     print(f"  OF={OF:.4f}, CTI_ok={constraints['cti_satisfied']}, violations={constraints['cti_violations']}")
+
+
+def test_objective_function_batch_dynamic_fault_currents():
+    """2026-11-xx (Phase V3 of the GPU-vectorized-environment plan):
+    objective_function_batch()'s new fault_currents_batch parameter --
+    per-row (P, n_pairs) dynamic fault currents, for the vectorized
+    training path where each parallel environment has its own
+    topology/PV-driven fault currents, instead of the single shared static
+    vector every row previously had to use. Verified against the
+    single-candidate objective_function()'s existing dynamic-fault-current
+    path (topology_state={"fault_currents": {...}}), which this must match
+    exactly for a batch of size 1, and against a per-individual Python loop
+    for a real batch (P=5), confirming no cross-row leakage in the batched
+    broadcast."""
+    rng = np.random.default_rng(11)
+    max_diff = 0.0
+
+    for net_fn in (get_8bus, get_39bus):
+        net = net_fn()
+        n = net.n_relays
+        n_pairs = len(net.pairs)
+        ps_min, ps_max = net.ps_bounds()
+        for _ in range(10):
+            TMS = rng.uniform(TMS_MIN, TMS_MAX, n)
+            PS = rng.uniform(ps_min, ps_max)
+            fault_type = rng.choice(["3ph", "LL", "1ph", "2ph-g"])
+
+            fc = {f"pair_{i}_pri": rng.uniform(100, 5000) for i in range(n_pairs)}
+            fc.update({f"pair_{i}_bkp": rng.uniform(100, 5000) for i in range(n_pairs)})
+
+            of_ref, _, _ = objective_function(
+                net, TMS, PS, fault_type=fault_type, topology_state={"fault_currents": fc}
+            )
+
+            If_pri_arr = np.array([fc[f"pair_{i}_pri"] for i in range(n_pairs)])
+            If_bkp_arr = np.array([fc[f"pair_{i}_bkp"] for i in range(n_pairs)])
+            of_new = objective_function_batch(
+                net, TMS[None, :], PS[None, :], fault_type=fault_type,
+                fault_currents_batch=(If_pri_arr[None, :], If_bkp_arr[None, :]),
+            )[0]
+            max_diff = max(max_diff, abs(of_ref - of_new))
+
+    assert max_diff < 1e-6, f"single-candidate dynamic fault-current path diverged: {max_diff:.2e}"
+
+    # Real batching: P=5, different fault currents per row, vs a per-individual loop.
+    net = get_8bus()
+    n = net.n_relays
+    n_pairs = len(net.pairs)
+    ps_min, ps_max = net.ps_bounds()
+    P = 5
+    TMS_batch = rng.uniform(TMS_MIN, TMS_MAX, (P, n))
+    PS_batch = rng.uniform(ps_min, ps_max, (P, n))
+    If_pri_batch = rng.uniform(100, 5000, (P, n_pairs))
+    If_bkp_batch = rng.uniform(100, 5000, (P, n_pairs))
+
+    of_batch = objective_function_batch(
+        net, TMS_batch, PS_batch, fault_currents_batch=(If_pri_batch, If_bkp_batch)
+    )
+    of_loop = np.array([
+        objective_function(
+            net, TMS_batch[p], PS_batch[p],
+            topology_state={
+                "fault_currents": {
+                    **{f"pair_{i}_pri": If_pri_batch[p, i] for i in range(n_pairs)},
+                    **{f"pair_{i}_bkp": If_bkp_batch[p, i] for i in range(n_pairs)},
+                }
+            },
+        )[0]
+        for p in range(P)
+    ])
+    assert np.max(np.abs(of_batch - of_loop)) < 1e-6
+
+    # Backward compatibility: fault_currents_batch=None must be unchanged
+    # (every existing GA-SQP/metaheuristics caller relies on this).
+    of_static = objective_function_batch(net, TMS_batch, PS_batch)
+    assert of_static.shape == (P,)
+    assert np.all(np.isfinite(of_static))
 
 
 def test_pv_inverter():

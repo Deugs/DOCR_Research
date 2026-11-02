@@ -249,20 +249,33 @@ def objective_function(
 
 
 def objective_function_batch(net, TMS_batch, PS_batch, alpha1=1.0, alpha2=100.0,
-                              beta=50.0, fault_type="3ph", device=None):
+                              beta=50.0, fault_type="3ph", device=None,
+                              fault_currents_batch=None):
     """Batched counterpart of objective_function(): evaluates a whole
     POPULATION of (TMS, PS) candidates at once via torch tensors, for
     population-based metaheuristics (baselines/ga_sqp.py,
-    baselines/metaheuristics.py). 2026-10-26: unifies what was previously
-    a separate, GPU-only function (objective_function_batch_gpu, kept below
-    as a thin backward-compatible alias) with the rest of this module's
-    torch core (_idmt_time_tensor) -- same math, now device-gated via the
-    project's DOCR_USE_GPU=1 opt-in policy by default instead of hardcoding
-    CPU, consistent with every other torch-backed function here.
+    baselines/metaheuristics.py) and (2026-11-xx, Phase V3 of the
+    GPU-vectorized-environment plan) for per-environment dynamic fault
+    currents in the vectorized training path. 2026-10-26: unifies what was
+    previously a separate, GPU-only function (objective_function_batch_gpu,
+    kept below as a thin backward-compatible alias) with the rest of this
+    module's torch core (_idmt_time_tensor) -- same math, now device-gated
+    via the project's DOCR_USE_GPU=1 opt-in policy by default instead of
+    hardcoding CPU, consistent with every other torch-backed function here.
 
-    Only supports the static-fault-current path (no topology_state);
-    callers needing dynamic/topology-aware fault currents should fall
-    back to the per-individual objective_function() loop, same as before.
+    `fault_currents_batch`: optional `(If_pri_batch, If_bkp_batch)` pair,
+    each `(P, n_pairs)` -- one row per candidate/environment's own dynamic
+    fault currents (e.g. topology/PV-state-dependent), overriding the
+    default shared static `(n_pairs,)` vector broadcast to every row. When
+    given, these values are used AS-IS, with no additional `ft_scale`
+    multiplication -- matching compute_operating_times()'s single-candidate
+    dynamic-fault-current path, where fault_type scaling is already baked
+    into whatever produced the dict values (relay_physics.
+    compute_fault_currents_dynamic()), not reapplied on top. When None
+    (the original, still-default behavior), every row shares one static
+    `(n_pairs,)` vector scaled by `ft_scale` -- unchanged from before this
+    parameter existed, so every existing caller (GA-SQP, metaheuristics)
+    needs no changes.
 
     TMS_batch/PS_batch: (pop_size, n_relays) numpy arrays. Returns
     (pop_size,) numpy array of OF values.
@@ -284,14 +297,23 @@ def objective_function_batch(net, TMS_batch, PS_batch, alpha1=1.0, alpha2=100.0,
     # terms into real precision loss on the returned OF value.
     TMS_t = torch.as_tensor(TMS_batch, dtype=torch.float64, device=dev)  # (P, n_relays)
     PS_t = torch.as_tensor(PS_batch, dtype=torch.float64, device=dev)
-    If_pri_t = torch.as_tensor(if_pri_base * ft_scale, dtype=torch.float64, device=dev)  # (n_pairs,)
-    If_bkp_t = torch.as_tensor(if_bkp_base * ft_scale, dtype=torch.float64, device=dev)
     primary_t = torch.as_tensor(primary, dtype=torch.long, device=dev)
     backup_t = torch.as_tensor(backup, dtype=torch.long, device=dev)
 
+    if fault_currents_batch is not None:
+        If_pri_dyn_batch, If_bkp_dyn_batch = fault_currents_batch
+        If_pri_t = torch.as_tensor(If_pri_dyn_batch, dtype=torch.float64, device=dev)  # (P, n_pairs)
+        If_bkp_t = torch.as_tensor(If_bkp_dyn_batch, dtype=torch.float64, device=dev)
+    else:
+        If_pri_t = torch.as_tensor(if_pri_base * ft_scale, dtype=torch.float64, device=dev)  # (n_pairs,)
+        If_bkp_t = torch.as_tensor(if_bkp_base * ft_scale, dtype=torch.float64, device=dev)
+
     with torch.no_grad():
-        # (n_pairs,) fault-current arrays broadcast against (P, n_pairs)
-        # PS/TMS selections, same semantics as plain NumPy broadcasting.
+        # If_pri_t/If_bkp_t broadcast against (P, n_pairs) PS/TMS
+        # selections -- either a shared (n_pairs,) vector (static path,
+        # same semantics as plain NumPy broadcasting) or an already
+        # per-row (P, n_pairs) tensor (dynamic path), both handled
+        # identically by ordinary broadcasting/indexing rules.
         t_pri = _idmt_time_tensor(If_pri_t, PS_t[:, primary_t], TMS_t[:, primary_t])
         t_bkp = _idmt_time_tensor(If_bkp_t, PS_t[:, backup_t], TMS_t[:, backup_t])
 

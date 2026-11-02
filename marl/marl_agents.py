@@ -200,6 +200,43 @@ class SharedGaussianActor:
             -0.5 * (noise**2 + 2 * log_std_np + np.log(2 * np.pi))))
         return action, log_prob
 
+    def sample_batch(self, obs_batch, generator=None) -> Tuple[np.ndarray, np.ndarray]:
+        """Batched counterpart of sample(), for the GPU-vectorized-
+        environment redesign (Phase V5): obs_batch (N, obs_dim) -> (action
+        (N, act_dim), log_prob (N,)), one vectorized noise draw and
+        log-prob computation instead of sample()'s single-vector-per-call
+        interface (which MAPPOMARLTrainer._collect_rollout() previously
+        had to call once per agent in a Python loop -- see that method's
+        own docstring).
+
+        `generator`: an optional torch.Generator (matching self.device,
+        e.g. a CUDA generator for a GPU-resident trainer) for the noise
+        draw -- NOT an np.random.Generator. Keeping the random draw itself
+        in torch avoids a host round-trip the way np.random would force,
+        matching Phase V7's RNG strategy for the vectorized path. Formula
+        is identical to sample() (same mean/std/clip/log-prob computation),
+        verified in this module's test file both by feeding matched noise
+        to each (confirming the formula itself, independent of RNG source)
+        and by comparing output distributions over many draws (confirming
+        the actual random generation is statistically equivalent -- not
+        bit-identical, since NumPy's and torch's RNGs are different
+        streams, same "fine to diverge on RNG order" precedent as the
+        rest of this project's vectorization work).
+
+        Stays in torch tensors from input to the final conversion (not
+        reusing get_mean(), which round-trips through NumPy internally) --
+        same "round-trip once" principle as every other batched function
+        in this rewrite.
+        """
+        obs_t = torch.as_tensor(np.asarray(obs_batch), dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            mean = torch.tanh(self.net(obs_t))  # (N, act_dim)
+            std = torch.exp(torch.clamp(self.log_std, -3, 0))
+            noise = torch.randn(mean.shape, generator=generator, device=self.device, dtype=torch.float32)
+            action = torch.clamp(mean + std * noise, -1.0, 1.0)
+            log_prob = (-0.5 * (noise ** 2 + 2 * self.log_std + float(np.log(2 * np.pi)))).sum(dim=-1)
+        return action.cpu().numpy(), log_prob.cpu().numpy()
+
     def _log_prob_t(self, obs_t, act_t):
         """Differentiable log-prob, used by both log_prob() (under
         no_grad) and update() (with grad tracking)."""
@@ -470,6 +507,125 @@ class MAPPOBuffer:
 
             adv[:, ag] = ((adv[:, ag] - adv[:, ag].mean())
                           / (adv[:, ag].std() + 1e-8))
+        return adv, ret
+
+    def clear(self):
+        self.ptr = self.size = 0
+
+
+class VectorizedMAPPOBuffer:
+    """
+    GPU-vectorized counterpart of MAPPOBuffer (Phase V5 of the GPU-native
+    vectorized-environment redesign): every field gains a leading n_envs
+    axis, for N environments stepped as one batched torch computation per
+    step instead of one MAPPOBuffer per CPU worker. A new, parallel class --
+    MAPPOBuffer itself is untouched, so every existing single-environment
+    training run keeps using its already-verified path.
+
+    Stores torch tensors throughout (not NumPy), matching the device the
+    vectorized trainer runs on.
+    """
+
+    def __init__(self, n_envs, n_agents, obs_dim, act_dim, capacity, device=None,
+                 use_comm=False, msg_dim=8, raw_obs_dim=None, dtype=torch.float64):
+        dev = device or _default_device()
+        self.device = dev
+        self.dtype = dtype
+        self.obs = torch.zeros((capacity, n_envs, n_agents, obs_dim), dtype=dtype, device=dev)
+        self.actions = torch.zeros((capacity, n_envs, n_agents, act_dim), dtype=dtype, device=dev)
+        self.rewards = torch.zeros((capacity, n_envs, n_agents), dtype=dtype, device=dev)
+        self.log_probs = torch.zeros((capacity, n_envs, n_agents), dtype=dtype, device=dev)
+        self.values = torch.zeros((capacity, n_envs), dtype=dtype, device=dev)
+        self.dones = torch.zeros((capacity, n_envs), dtype=torch.bool, device=dev)
+        self.pv_levels = torch.zeros((capacity, n_envs), dtype=dtype, device=dev)
+        self.top_flags = torch.zeros((capacity, n_envs), dtype=dtype, device=dev)
+        self.tms = torch.zeros((capacity, n_envs, n_agents), dtype=dtype, device=dev)
+        self.ps = torch.zeros((capacity, n_envs, n_agents), dtype=dtype, device=dev)
+
+        self.use_comm = use_comm
+        if use_comm:
+            self.messages = torch.zeros((capacity, n_envs, n_agents, msg_dim), dtype=dtype, device=dev)
+            self.attention = torch.zeros((capacity, n_envs, n_agents, n_agents), dtype=dtype, device=dev)
+            self.raw_obs = torch.zeros((capacity, n_envs, n_agents, raw_obs_dim or obs_dim), dtype=dtype, device=dev)
+
+        self.ptr = self.size = 0
+        self.capacity = capacity
+        self.n_envs = n_envs
+        self.n_agents = n_agents
+
+    def add(self, obs, actions, rewards, log_probs, value, done,
+            pv_level=0.0, topology_flag=0.0, messages=None, attention=None,
+            tms=None, ps=None, raw_obs=None):
+        i = self.ptr % self.capacity
+
+        def _t(x):
+            return torch.as_tensor(x, dtype=self.dtype, device=self.device)
+
+        self.obs[i] = _t(obs)
+        self.actions[i] = _t(actions)
+        self.rewards[i] = _t(rewards)
+        self.log_probs[i] = _t(log_probs)
+        self.values[i] = _t(value)
+        self.dones[i] = torch.as_tensor(done, dtype=torch.bool, device=self.device)
+        self.pv_levels[i] = _t(pv_level)
+        if tms is not None:
+            self.tms[i] = _t(tms)
+        if ps is not None:
+            self.ps[i] = _t(ps)
+        self.top_flags[i] = _t(topology_flag)
+        if self.use_comm and raw_obs is not None:
+            self.raw_obs[i] = _t(raw_obs)
+        if self.use_comm and messages is not None:
+            self.messages[i] = _t(messages)
+        if self.use_comm and attention is not None:
+            self.attention[i] = _t(attention)
+
+        self.ptr += 1
+        self.size = min(self.ptr, self.capacity)
+
+    def compute_gae(self, gamma=0.99, lam=0.95, last_value=0.0) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Batched GAE across (n_envs, n_agents) -- the reverse-time recursion
+        itself stays a Python loop over T (pure elementwise math, no
+        cross-env/cross-agent coupling, so there is nothing to vectorize
+        there beyond adding the batch axis; see elegant-rolling-map.md's
+        Phase V5 note), but every per-timestep operation inside the loop is
+        now one batched tensor op across all n_envs*n_agents at once instead
+        of MAPPOBuffer's nested per-agent Python loop.
+
+        Advantage normalization is per (env, agent) over time T -- matching
+        MAPPOBuffer.compute_gae()'s per-agent normalization exactly, so
+        n_envs=1 reproduces it bit-for-bit. Pooling normalization statistics
+        across envs (the more common choice for vectorized-env PPO) is a
+        trainer-level design decision deferred to Phase V9, not made here.
+        """
+        T = self.size
+        n_envs, n_agents = self.n_envs, self.n_agents
+        adv = torch.zeros((T, n_envs, n_agents), dtype=self.dtype, device=self.device)
+        ret = torch.zeros((T, n_envs, n_agents), dtype=self.dtype, device=self.device)
+
+        last_value_t = torch.as_tensor(last_value, dtype=self.dtype, device=self.device)
+        if last_value_t.dim() == 0:
+            last_value_t = last_value_t.expand(n_envs)
+
+        gae = torch.zeros(n_envs, n_agents, dtype=self.dtype, device=self.device)
+        for t in reversed(range(T)):
+            is_last_step = (t == T - 1)
+            next_values = self.values[t + 1] if not is_last_step else last_value_t
+            Vn = torch.where(self.dones[t] | is_last_step, last_value_t, next_values)
+            not_done = (~self.dones[t]).to(self.dtype)  # (n_envs,)
+            delta = (self.rewards[t]
+                     + gamma * (Vn * not_done).unsqueeze(-1)
+                     - self.values[t].unsqueeze(-1))  # (n_envs, n_agents)
+            gae = delta + gamma * lam * not_done.unsqueeze(-1) * gae
+            adv[t] = gae
+            ret[t] = gae + self.values[t].unsqueeze(-1)
+
+        mean = adv.mean(dim=0, keepdim=True)
+        # unbiased=False: matches numpy .std()'s default (population, ddof=0)
+        # that MAPPOBuffer.compute_gae() uses -- torch's default is ddof=1.
+        std = adv.std(dim=0, keepdim=True, unbiased=False)
+        adv = (adv - mean) / (std + 1e-8)
         return adv, ret
 
     def clear(self):

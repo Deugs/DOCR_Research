@@ -82,6 +82,48 @@ def test_gnn_attention():
     print(f"  GNN Attention: shape={attn_weights.shape}, row_sums_ok={np.allclose(row_sums, 1.0)}")
 
 
+def test_gnn_attention_batched():
+    """2026-11-xx (Phase V4 of the GPU-vectorized-environment plan):
+    GNNAttention.compute_attention_batched_t() -- the batched attention
+    path for N parallel training environments, which (unlike the
+    encoder/decoder, confirmed to already batch over any leading shape for
+    free) needed a real rewrite: naively flattening (n_envs, n_agents,
+    msg_dim) to (n_envs*n_agents, msg_dim) and calling the existing
+    compute_attention_t() would compute attention scores ACROSS agents
+    from different environments, silently mixing unrelated environments'
+    graphs. Verifies both: (1) n_envs=1 matches compute_attention_t()
+    exactly, and (2) n_envs>1 matches calling compute_attention_t()
+    independently per environment -- the actual property that matters here
+    (zero cross-environment leakage), not just "it runs"."""
+    import torch
+    from marl.comm_graph import GNNAttention
+
+    torch.manual_seed(0)
+    n_agents, msg_dim = 6, 8
+    att = GNNAttention(msg_dim, hidden_dim=16, seed=3)
+    adjacency = (torch.rand(n_agents, n_agents) > 0.4).float()
+    adjacency.fill_diagonal_(1.0)
+
+    messages = torch.randn(n_agents, msg_dim, dtype=torch.float32)
+    single_out = att.compute_attention_t(messages, adjacency)
+    batched_out = att.compute_attention_batched_t(messages.unsqueeze(0), adjacency)[0]
+    assert (single_out - batched_out).abs().max().item() < 1e-10, "n_envs=1 should exactly match compute_attention_t()"
+
+    n_envs = 4
+    messages_batch = torch.randn(n_envs, n_agents, msg_dim, dtype=torch.float32)
+    batched_out = att.compute_attention_batched_t(messages_batch, adjacency)
+    assert batched_out.shape == (n_envs, n_agents, n_agents)
+    assert torch.allclose(batched_out.sum(dim=2), torch.ones(n_envs, n_agents), atol=1e-5), (
+        "each environment's attention rows must still sum to 1 (softmax)"
+    )
+    for e in range(n_envs):
+        individual_out = att.compute_attention_t(messages_batch[e], adjacency)
+        diff = (batched_out[e] - individual_out).abs().max().item()
+        assert diff < 1e-10, f"env {e}: batched vs individual diff {diff:.2e} -- possible cross-environment leakage"
+
+    print(f"  GNN Attention (batched): n_envs={n_envs} shape={batched_out.shape}, no cross-env leakage")
+
+
 def test_gnn_decoder():
     """Test GNN message decoder."""
     rng = np.random.default_rng(42)
@@ -442,6 +484,122 @@ def test_mappo_buffer():
     assert ret.shape == (11, n_agents)
 
     print(f"  MAPPO Buffer: size={buffer.size}, adv_shape={adv.shape}")
+
+
+def test_actor_sample_batch():
+    """
+    Phase V5 (GPU-vectorized-environment redesign): SharedGaussianActor.sample_batch()
+    must (a) reproduce sample()'s exact math given matched noise, and (b) be
+    statistically equivalent to sample() over many independent draws (RNG
+    source differs -- torch.Generator vs. np.random.Generator -- so this is a
+    distributional check, not bit-identical, same bar as this project's other
+    RNG-order-changing vectorizations).
+    """
+    import torch
+    import unittest.mock
+    from marl.marl_agents import SharedGaussianActor
+
+    obs_dim, act_dim = 14, 2
+    actor = SharedGaussianActor(obs_dim, act_dim, seed=5, device="cpu")
+    rng = np.random.default_rng(3)
+    N = 10
+    obs_batch = rng.standard_normal((N, obs_dim)).astype(np.float32)
+    noise_arr = rng.standard_normal((N, act_dim)).astype(np.float32)
+
+    mean_np = actor.get_mean(obs_batch)
+    log_std_np = actor.log_std.detach().numpy()
+    std_np = np.exp(np.clip(log_std_np, -3, 0))
+    action_ref = np.clip(mean_np + std_np * noise_arr, -1.0, 1.0)
+    log_prob_ref = -0.5 * np.sum(noise_arr**2 + 2 * log_std_np + np.log(2 * np.pi), axis=1)
+
+    with unittest.mock.patch("torch.randn", return_value=torch.as_tensor(noise_arr)):
+        action_new, log_prob_new = actor.sample_batch(obs_batch)
+
+    assert np.max(np.abs(action_ref - action_new)) < 1e-5
+    assert np.max(np.abs(log_prob_ref - log_prob_new)) < 1e-5
+
+    # Statistical equivalence over many draws at a fixed observation.
+    N2 = 3000
+    obs_fixed = rng.standard_normal(obs_dim).astype(np.float32)
+    obs_tile = np.tile(obs_fixed, (N2, 1))
+
+    rng2 = np.random.default_rng(99)
+    old_actions = np.array([actor.sample(obs_fixed, rng2)[0] for _ in range(N2)])
+    old_lps = np.array([actor.sample(obs_fixed, rng2)[1] for _ in range(N2)])
+
+    gen = torch.Generator().manual_seed(123)
+    new_actions, new_lps = actor.sample_batch(obs_tile, generator=gen)
+
+    assert abs(old_actions.mean() - new_actions.mean()) < 0.05
+    assert abs(old_actions.std() - new_actions.std()) < 0.05
+    assert abs(old_lps.mean() - new_lps.mean()) < 0.3
+
+    print(f"  sample_batch: action mean old={old_actions.mean():.4f} new={new_actions.mean():.4f}")
+
+
+def test_vectorized_mappo_buffer():
+    """
+    Phase V5: VectorizedMAPPOBuffer (new, parallel class -- MAPPOBuffer stays
+    untouched) must reproduce MAPPOBuffer.compute_gae() exactly at n_envs=1,
+    and must show zero cross-environment leakage at n_envs>1 (each env's GAE
+    output must match an independently-run MAPPOBuffer fed the same per-env
+    trajectory).
+    """
+    from marl.marl_agents import MAPPOBuffer, VectorizedMAPPOBuffer
+
+    rng = np.random.default_rng(7)
+    n_agents, obs_dim, act_dim, T = 4, 10, 2, 20
+
+    buf_old = MAPPOBuffer(n_agents, obs_dim, act_dim, capacity=T)
+    buf_new = VectorizedMAPPOBuffer(1, n_agents, obs_dim, act_dim, capacity=T, device="cpu")
+    dones_seq = (rng.random(T) < 0.15)
+    dones_seq[-1] = False
+    for t in range(T):
+        obs = rng.standard_normal((n_agents, obs_dim))
+        actions = rng.standard_normal((n_agents, act_dim))
+        rewards = rng.standard_normal(n_agents)
+        log_probs = rng.standard_normal(n_agents)
+        value = float(rng.standard_normal())
+        done = bool(dones_seq[t])
+        tms = rng.standard_normal(n_agents)
+        ps = rng.standard_normal(n_agents)
+        buf_old.add(obs, actions, rewards, log_probs, value, done, tms=tms, ps=ps)
+        buf_new.add(obs[None], actions[None], rewards[None], log_probs[None],
+                    np.array([value]), np.array([done]), tms=tms[None], ps=ps[None])
+
+    adv_old, ret_old = buf_old.compute_gae(last_value=0.3)
+    adv_new, ret_new = buf_new.compute_gae(last_value=0.3)
+    assert np.max(np.abs(adv_old - adv_new[:, 0, :].numpy())) < 1e-9
+    assert np.max(np.abs(ret_old - ret_new[:, 0, :].numpy())) < 1e-9
+
+    # n_envs=3: no cross-environment leakage.
+    n_envs = 3
+    buf_multi = VectorizedMAPPOBuffer(n_envs, n_agents, obs_dim, act_dim, capacity=T, device="cpu")
+    per_env_bufs = [MAPPOBuffer(n_agents, obs_dim, act_dim, capacity=T) for _ in range(n_envs)]
+    per_env_dones = [(rng.random(T) < 0.2) for _ in range(n_envs)]
+    for e in range(n_envs):
+        per_env_dones[e][-1] = False
+    for t in range(T):
+        obs_t = rng.standard_normal((n_envs, n_agents, obs_dim))
+        act_t = rng.standard_normal((n_envs, n_agents, act_dim))
+        rew_t = rng.standard_normal((n_envs, n_agents))
+        lp_t = rng.standard_normal((n_envs, n_agents))
+        val_t = rng.standard_normal(n_envs)
+        tms_t = rng.standard_normal((n_envs, n_agents))
+        ps_t = rng.standard_normal((n_envs, n_agents))
+        done_t = np.array([per_env_dones[e][t] for e in range(n_envs)])
+        buf_multi.add(obs_t, act_t, rew_t, lp_t, val_t, done_t, tms=tms_t, ps=ps_t)
+        for e in range(n_envs):
+            per_env_bufs[e].add(obs_t[e], act_t[e], rew_t[e], lp_t[e], val_t[e], bool(done_t[e]),
+                                 tms=tms_t[e], ps=ps_t[e])
+
+    adv_multi, ret_multi = buf_multi.compute_gae(last_value=0.0)
+    for e in range(n_envs):
+        adv_e, ret_e = per_env_bufs[e].compute_gae(last_value=0.0)
+        assert np.max(np.abs(adv_e - adv_multi[:, e, :].numpy())) < 1e-9
+        assert np.max(np.abs(ret_e - ret_multi[:, e, :].numpy())) < 1e-9
+
+    print(f"  VectorizedMAPPOBuffer: n_envs=1 exact match, n_envs={n_envs} no cross-env leakage")
 
 
 def test_single_ppo():
