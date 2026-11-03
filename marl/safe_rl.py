@@ -809,6 +809,201 @@ class SafeRLWrapper:
         return np.zeros((self.n_agents, 1, self.OBS_DIM))
 
 
+class VectorizedSafeRLWrapper:
+    """
+    GPU-vectorized counterpart of SafeRLWrapper (Phase V12 of the
+    GPU-vectorized-environment redesign): wraps a VectorizedDynamicDOCREnv
+    with Safe RL action projection + Augmented Lagrangian dual ascent,
+    batched across n_envs, using the already-verified Phase V8 batched
+    primitives (ActionProjector.project_batch/.project_with_cti_lookahead_batch,
+    AugmentedLagrangian.compute_constraint_cost_batch/.update_lagrangian_batch).
+
+    Faithfully mirrors SafeRLWrapper.step()'s REAL behavior, not an
+    idealized one: project_with_cti_lookahead() doesn't accept dynamic
+    fault currents at all (it always uses compute_operating_times()'s
+    static fallback, a deliberate "fast analytical check, not full power
+    flow" per its own docstring), so project_with_cti_lookahead_batch() is
+    called here the same way, with fault_currents_batch=None.
+    compute_constraint_cost(), by contrast, DOES receive real per-step
+    dynamic fault currents in the single-env wrapper, via
+    `topology_state=env.current_state` -> `current_state.fault_currents`'s
+    "pair_i_pri"/"pair_i_bkp" dict (built by the same
+    compute_fault_currents_dynamic() Phase V6 already verified
+    VectorizedDynamicDOCREnv's own cached `_If_pri_dyn`/`_If_bkp_dyn`
+    arrays against) -- so compute_constraint_cost_batch() is called here
+    WITH fault_currents_batch=(env._If_pri_dyn, env._If_bkp_dyn), to match.
+
+    Unlike SafeRLWrapper, which snapshots a handful of the wrapped env's
+    attributes once at __init__/reset() time (current_pv_level, fault_type,
+    TMS, PS, step_count, current_state) as plain instance attributes -- a
+    real staleness risk for any attribute the underlying env mutates after
+    construction without a matching wrapper-side refresh (confirmed:
+    SafeRLWrapper.current_pv_level/fault_type are set once in __init__ and
+    never updated on reset(), so any PV-level/fault-type change after the
+    wrapper is built goes unseen by anything reading it through the
+    wrapper) -- this class forwards every attribute it doesn't explicitly
+    define straight through to the live wrapped env via __getattr__, so
+    VectorizedMAPPOTrainer always sees the environment's actual current
+    state, not a frozen copy. This is a deliberate improvement made only in
+    this new, parallel class -- the pre-existing SafeRLWrapper staleness is
+    a separate, already-production single-env class this redesign's "never
+    modify the verified original" rule keeps untouched; flagged, not fixed,
+    there.
+
+    Lagrangian state (self.lagrangian.lambdas/.rho) is one shared set of
+    dual variables for the whole n_envs batch -- confirmed correct in
+    Phase V8's own design note (all envs in a vectorized rollout train one
+    shared policy) -- and since VectorizedDynamicDOCREnv.step() returns one
+    shared `done` bool across the whole lockstep batch, the dual-ascent
+    update fires once per rollout boundary for the whole batch, exactly
+    mirroring SafeRLWrapper's single done-triggered call.
+    """
+
+    def __init__(self, env, projector: ActionProjector, lagrangian: AugmentedLagrangian,
+                 config: SafeRLConfig = None):
+        self.env = env
+        self.projector = projector
+        self.lagrangian = lagrangian
+        self.config = config or SafeRLConfig()
+        self.action_scale = getattr(env, 'action_scale', 0.05)
+
+        self.n_updates = 0
+        self.episode_violations = np.zeros(env.n_envs)
+        self.episode_steps = 0
+
+    def __getattr__(self, name):
+        # Only invoked when normal attribute lookup fails on this wrapper
+        # itself -- forwards to the live wrapped env (see class docstring).
+        return getattr(self.env, name)
+
+    def reset(self, *args, **kwargs):
+        """Reset environment and safe RL episode bookkeeping."""
+        self.episode_violations = np.zeros(self.env.n_envs)
+        self.episode_steps = 0
+        return self.env.reset(*args, **kwargs)
+
+    def step(self, actions: np.ndarray) -> Tuple[np.ndarray, np.ndarray, bool, Dict]:
+        """
+        Step with safe action projection and Lagrangian penalty, batched
+        across n_envs.
+
+        Parameters:
+            actions: (n_envs, n_agents, 2) raw actions from policy
+
+        Returns:
+            obs, rewards, done, info (with batched safe RL metrics)
+        """
+        TMS, PS = self.env.get_state()  # each (n_envs, n_agents)
+
+        delta_tms = actions[:, :, 0]
+        delta_ps = actions[:, :, 1]
+
+        proj_dt, proj_dp = self.projector.project_batch(
+            TMS, PS, delta_tms, delta_ps, action_scale=self.action_scale,
+        )
+
+        if self.config.enforce_cti:
+            proj_dt, proj_dp = self.projector.project_with_cti_lookahead_batch(
+                TMS, PS, proj_dt, proj_dp, self.env.net,
+                action_scale=self.action_scale, cti_margin=0.05,
+                fault_type=self.env.fault_type, fault_currents_batch=None,
+            )
+
+        safe_actions = np.stack([proj_dt, proj_dp], axis=2)  # (n_envs, n_agents, 2)
+
+        obs, rewards, done, info = self.env.step(safe_actions)
+
+        if self.config.enforce_cti:
+            new_TMS, new_PS = self.env.get_state()
+
+            cost, g_values, violations = self.lagrangian.compute_constraint_cost_batch(
+                new_TMS, new_PS, self.env.net, fault_type=self.env.fault_type,
+                fault_currents_batch=(self.env._If_pri_dyn, self.env._If_bkp_dyn),
+            )
+
+            n_viol_per_env = violations.sum(axis=1)  # (n_envs,)
+            self.episode_violations = self.episode_violations + n_viol_per_env
+            self.episode_steps += 1
+
+            # Apply penalty to all agents equally within each environment
+            # (shared constraint per env), same broadcast rule as the
+            # single-env wrapper's `penalty_per_agent = ... ; rewards -=
+            # penalty_per_agent`, now with an added n_envs axis.
+            penalty_per_agent = self.config.reward_penalty_coef * cost / self.n_agents  # (n_envs,)
+            rewards = rewards - penalty_per_agent[:, None]
+
+            # Tier-2: projection magnitude (Fig 21), per environment.
+            proj_delta_l2 = np.linalg.norm(
+                (safe_actions - actions).reshape(self.env.n_envs, -1), axis=1)  # (n_envs,)
+            proj_applied = proj_delta_l2 > 1e-6
+
+            info["safe_rl"] = {
+                "constraint_cost":       cost,                                   # (n_envs,)
+                "cti_violations":        n_viol_per_env,                         # (n_envs,)
+                "g_mean":                g_values.mean(axis=1),                  # (n_envs,)
+                "g_max":                 g_values.max(axis=1),                   # (n_envs,)
+                "lambda_mean":           float(np.mean(self.lagrangian.lambdas)),  # shared
+                "lambda_per_pair":       self.lagrangian.lambdas.tolist(),         # shared
+                "rho":                   self.lagrangian.rho,                      # shared
+                "projected_actions":     proj_applied,                          # (n_envs,)
+                "projection_magnitude":  proj_delta_l2,                         # (n_envs,)
+                "action_projection_ratio": np.mean(
+                    np.abs(safe_actions - actions) >= 1e-6, axis=(1, 2)),       # (n_envs,)
+            }
+        else:
+            info["safe_rl"] = {"projected_actions": True}
+
+        if done and self.config.enforce_cti:
+            self.update_lagrangian()
+
+        return obs, rewards, done, info
+
+    def update_lagrangian(self):
+        """Update Lagrangian multipliers after episode/rollout, batch-pooled
+        across all n_envs (see AugmentedLagrangian.update_lagrangian_batch's
+        own docstring for why pooling, not per-env state, is correct here)."""
+        if not self.config.enforce_cti:
+            return
+
+        TMS, PS = self.env.get_state()
+        _, g_values, _ = self.lagrangian.compute_constraint_cost_batch(
+            TMS, PS, self.env.net, fault_type=self.env.fault_type,
+            fault_currents_batch=(self.env._If_pri_dyn, self.env._If_bkp_dyn),
+        )
+
+        violation_rate = float(np.mean(self.episode_violations / max(self.episode_steps, 1)))
+        self.lagrangian.update_lagrangian_batch(g_values, violation_rate)
+        self.n_updates += 1
+
+        self.episode_violations = np.zeros(self.env.n_envs)
+        self.episode_steps = 0
+
+    def get_safe_rl_stats(self) -> Dict:
+        """Get comprehensive safe RL statistics."""
+        stats = self.lagrangian.get_constraint_stats()
+        stats["n_updates"] = self.n_updates
+        stats["projected_actions"] = self.config.project_actions
+        return stats
+
+
+def create_vectorized_safe_rl_env(env, safe_config: SafeRLConfig = None):
+    """
+    Factory function mirroring create_safe_rl_env() for a
+    VectorizedDynamicDOCREnv.
+
+    Usage:
+        env = VectorizedDynamicDOCREnv(net, n_envs=64)
+        safe_env = create_vectorized_safe_rl_env(env)
+        trainer = VectorizedMAPPOTrainer(safe_env, ...)
+    """
+    safe_config = safe_config or SafeRLConfig()
+
+    projector = ActionProjector(env.net, safe_config)
+    lagrangian = AugmentedLagrangian(env.net.n_pairs, safe_config)
+
+    return VectorizedSafeRLWrapper(env, projector, lagrangian, safe_config)
+
+
 def create_safe_rl_env(env, safe_config: SafeRLConfig = None):
     """
     Factory function to wrap any DOCR environment with Safe RL.

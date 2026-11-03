@@ -322,6 +322,188 @@ def test_comm_graph_top_k_sparsify_uses_real_degree_not_n_agents():
     print("  CommGraph top-k sparsification: real per-node degree, not n_agents, drives k")
 
 
+def test_comm_graph_forward_batched_t_matches_single():
+    """Phase V11 of the GPU-vectorized-environment plan: CommGraph.
+    forward_batched_t() (differentiable path, no degradation) must exactly
+    match forward_t() at n_envs=1, and match n_envs independent forward_t()
+    calls per environment at n_envs>1 (zero cross-environment leakage in
+    the attention step) -- same verification bar Phase V4 established for
+    compute_attention_batched_t alone, now extended to the full
+    encode->attend->decode pipeline."""
+    import torch
+    from marl.comm_graph import CommGraph, CommConfig, build_relay_adjacency
+
+    net = get_8bus()
+    adj = build_relay_adjacency(net)
+    config = CommConfig(message_dim=8, hidden_dim=32, use_attention=True)
+    comm = CommGraph(n_agents=net.n_relays, obs_dim=10, enhanced_dim=18,
+                      adjacency=adj, config=config, seed=7)
+
+    rng = np.random.default_rng(0)
+    obs_single = rng.standard_normal((net.n_relays, 10))
+    obs_t = torch.as_tensor(obs_single, dtype=torch.float32)
+
+    single_out = comm.forward_t(obs_t)
+    batched_out = comm.forward_batched_t(obs_t.unsqueeze(0))[0]
+    diff = (single_out - batched_out).abs().max().item()
+    assert diff < 1e-10, f"n_envs=1 should exactly match forward_t(): diff={diff:.2e}"
+
+    n_envs = 3
+    obs_batch = rng.standard_normal((n_envs, net.n_relays, 10))
+    obs_batch_t = torch.as_tensor(obs_batch, dtype=torch.float32)
+    batched_out = comm.forward_batched_t(obs_batch_t)
+    assert batched_out.shape == (n_envs, net.n_relays, 18)
+    for e in range(n_envs):
+        individual_out = comm.forward_t(obs_batch_t[e])
+        diff = (batched_out[e] - individual_out).abs().max().item()
+        # float32 tolerance (not 1e-10 like the n_envs=1 case above): torch.bmm
+        # over a real (n_envs>1) batch can select a different BLAS kernel than
+        # per-call 2D matmul, same float32 rounding-noise category this
+        # project has accepted elsewhere (e.g. Phase V5's actor sample_batch,
+        # ~6e-8) -- not evidence of cross-environment leakage, which would
+        # show up as a difference many orders of magnitude larger.
+        assert diff < 1e-5, f"env {e}: batched vs individual diff {diff:.2e} -- possible cross-environment leakage"
+
+    print(f"  CommGraph.forward_batched_t: n_envs={n_envs}, exact match, no cross-env leakage")
+
+
+def test_comm_graph_forward_batched_matches_single_n_envs_1():
+    """forward_batched() (Phase V11, full degradation model -- dropout,
+    quantization, packet loss, latency) must exactly match forward() at
+    n_envs=1 across several sequential steps (latency_steps needs a
+    multi-step history buffer to exercise meaningfully)."""
+    from marl.comm_graph import CommGraph, CommConfig, build_relay_adjacency
+
+    net = get_8bus()
+    adj = build_relay_adjacency(net)
+    config = CommConfig(message_dim=8, hidden_dim=32, use_attention=True, dropout=0.2)
+
+    def make_comm():
+        c = CommGraph(n_agents=net.n_relays, obs_dim=10, enhanced_dim=18,
+                       adjacency=adj, config=config, seed=11)
+        c.packet_loss_rate = 0.3
+        c.latency_steps = 2
+        c.quantization_bits = 4
+        return c
+
+    comm_single = make_comm()
+    comm_batched = make_comm()
+    rng_single = np.random.default_rng(5)
+    rng_batched = np.random.default_rng(5)
+    data_rng = np.random.default_rng(1)
+
+    for step in range(4):
+        obs = data_rng.standard_normal((net.n_relays, 10))
+        enhanced_single, messages_single, info_single = comm_single.forward(obs, rng=rng_single)
+        enhanced_batched, messages_batched, info_batched = comm_batched.forward_batched(
+            obs[None, :, :], rng=rng_batched)
+
+        assert np.abs(enhanced_single - enhanced_batched[0]).max() < 1e-10, f"step {step}: enhanced_obs mismatch"
+        assert np.abs(messages_single - messages_batched[0]).max() < 1e-10, f"step {step}: messages mismatch"
+        assert np.abs(info_single["attention"] - info_batched["attention"][0]).max() < 1e-10, \
+            f"step {step}: attention mismatch"
+
+    print("  CommGraph.forward_batched: n_envs=1 exactly matches forward() across 4 steps "
+          "(dropout+packet_loss+quantization+latency all exercised)")
+
+
+def test_comm_graph_forward_batched_no_cross_env_leakage():
+    """forward_batched()'s batch-reduction ops (quantization's per-env max,
+    packet-loss's per-env draw, latency's per-env history slot) must never
+    mix data across environments. Verified by comparing two batched runs
+    that are IDENTICAL except for one environment's observations: with the
+    rng reseeded identically before each run (so every random mask is
+    drawn identically regardless of observation content), every OTHER
+    environment's output must stay bit-for-bit identical despite env 1's
+    input changing."""
+    from marl.comm_graph import CommGraph, CommConfig, build_relay_adjacency
+
+    net = get_8bus()
+    adj = build_relay_adjacency(net)
+    config = CommConfig(message_dim=8, hidden_dim=32, use_attention=True, dropout=0.2)
+    n_envs = 3
+
+    def make_comm():
+        c = CommGraph(n_agents=net.n_relays, obs_dim=10, enhanced_dim=18,
+                       adjacency=adj, config=config, seed=11)
+        c.packet_loss_rate = 0.3
+        c.latency_steps = 2
+        c.quantization_bits = 4
+        return c
+
+    data_rng = np.random.default_rng(2)
+    obs_steps = [data_rng.standard_normal((n_envs, net.n_relays, 10)) for _ in range(4)]
+    obs_steps_perturbed = [o.copy() for o in obs_steps]
+    for o in obs_steps_perturbed:
+        o[1] += 50.0  # large perturbation to env 1 only
+
+    comm_a = make_comm()
+    comm_b = make_comm()
+    rng_a = np.random.default_rng(9)
+    rng_b = np.random.default_rng(9)
+
+    for step in range(4):
+        enhanced_a, _, _ = comm_a.forward_batched(obs_steps[step], rng=rng_a)
+        enhanced_b, _, _ = comm_b.forward_batched(obs_steps_perturbed[step], rng=rng_b)
+        for e in (0, 2):
+            diff = np.abs(enhanced_a[e] - enhanced_b[e]).max()
+            assert diff < 1e-10, (
+                f"step {step}, env {e}: output changed when only env 1's observations "
+                f"were perturbed -- cross-environment leakage (diff={diff:.2e})"
+            )
+        assert not np.allclose(enhanced_a[1], enhanced_b[1]), \
+            f"step {step}: env 1's own output should differ after its observations were perturbed"
+
+    print("  CommGraph.forward_batched: perturbing one environment's observations leaves "
+          "every other environment's output unchanged (no cross-env leakage)")
+
+
+def test_comm_graph_update_batched_matches_single_n_envs_1():
+    """update_batched() (Phase V11) must exactly match update() at n_envs=1
+    -- same PPO-clip loss formula and gradient step on the GNN, verified
+    via the resulting loss value and the GNN's post-update parameters."""
+    from marl.comm_graph import CommGraph, CommConfig, build_relay_adjacency
+    from marl.marl_agents import SharedGaussianActor
+
+    net = get_8bus()
+    adj = build_relay_adjacency(net)
+    config = CommConfig(message_dim=8, hidden_dim=16, use_attention=True)
+    n_agents = net.n_relays
+    T = 3
+
+    def make_comm():
+        return CommGraph(n_agents=n_agents, obs_dim=10, enhanced_dim=18,
+                          adjacency=adj, config=config, seed=13, lr=1e-3)
+
+    comm_single = make_comm()
+    comm_batched = make_comm()
+    actor_single = SharedGaussianActor(18, 2, hidden=16, seed=4)
+    actor_batched = SharedGaussianActor(18, 2, hidden=16, seed=4)
+
+    rng = np.random.default_rng(3)
+    raw_obs = rng.standard_normal((T, n_agents, 10))
+    act = rng.uniform(-1, 1, (T, n_agents, 2))
+    adv = rng.standard_normal((T, n_agents))
+    old_lp = rng.standard_normal((T, n_agents))
+
+    result_single = comm_single.update(raw_obs, act, adv, old_lp, actor_single, clip_eps=0.2)
+    result_batched = comm_batched.update_batched(
+        raw_obs[:, None, :, :], act[:, None, :, :], adv[:, None, :], old_lp[:, None, :],
+        actor_batched, clip_eps=0.2,
+    )
+
+    assert abs(result_single["loss"] - result_batched["loss"]) < 1e-6, (
+        f"loss mismatch: single={result_single['loss']:.6f} batched={result_batched['loss']:.6f}"
+    )
+    params_single = comm_single.get_all_params()
+    params_batched = comm_batched.get_all_params()
+    assert np.abs(params_single - params_batched).max() < 1e-6, \
+        "post-update GNN parameters diverge between update() and update_batched() at n_envs=1"
+
+    print(f"  CommGraph.update_batched: n_envs=1 exactly matches update() "
+          f"(loss={result_batched['loss']:.4f})")
+
+
 def test_relay_adjacency():
     """Test relay adjacency matrix for different systems."""
     from marl.comm_graph import build_relay_adjacency

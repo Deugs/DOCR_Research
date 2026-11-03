@@ -30,20 +30,15 @@ given `n_envs` holds (same seed -> same batched draws); reproducibility
 explicitly not a goal (same "fine to diverge on RNG order" precedent as
 every other vectorization in this project).
 
-Scope, documented rather than silently incomplete: GNN communication
-(`use_comm=True`) is NOT wired into this first cut of the trainer. Phase V4
-built and verified the batched attention primitive
-(`GNNAttention.compute_attention_batched_t`) this would need, but
-integrating `CommGraph`'s full encoder/decoder/update pipeline with an added
-`n_envs` axis (including its own `update()`'s backprop path and bandwidth/
-attention-snapshot bookkeeping) is a substantial separate piece of work, not
-yet done. `VectorizedMAPPOTrainer` only supports the `use_comm=False`
-configuration today -- a documented limitation, not an oversight, the same
-category as `use_pandapower=True`/`sensor_noise=True` being out of scope for
-the vectorized path elsewhere in this redesign. Similarly, `VectorizedSafeRLWrapper`
-(a Phase-V8-powered analogue of `SafeRLWrapper`) is also not implemented here
-yet -- Safe RL integration is deferred to a follow-up pass, the same
-documented-scope-cut pattern.
+Phase V11 wires GNN communication (`use_comm=True`) into this trainer, via
+`CommGraph.forward_batched()`/`.forward_batched_t()`/`.update_batched()`
+(the full degradation model included -- packet loss, latency, quantization,
+top-k sparsification -- not just the clean training pipeline), mirroring
+`MAPPOMARLTrainer`'s use_comm wiring exactly (same enhanced-vs-raw obs split,
+same once-per-rollout GNN update call). `VectorizedSafeRLWrapper` (a
+Phase-V8-powered analogue of `SafeRLWrapper`) is still not implemented here
+-- Safe RL integration is deferred to a follow-up pass (Phase V12), the same
+documented-scope-cut pattern used throughout this redesign.
 """
 
 from __future__ import annotations
@@ -74,10 +69,12 @@ class VectorizedMAPPOTrainer:
     def __init__(
         self,
         env: VectorizedDynamicDOCREnv,
+        use_comm: bool = False,
         hidden_actor: int = 64,
         hidden_critic: int = 128,
         lr_actor: float = 3e-4,
         lr_critic: float = 1e-3,
+        lr_comm: float = 1e-3,
         clip_eps: float = 0.2,
         gamma: float = 0.99,
         lam: float = 0.95,
@@ -85,10 +82,13 @@ class VectorizedMAPPOTrainer:
         n_epochs: int = 4,
         seed: int = 0,
         device=None,
+        curriculum: bool = False,
+        curriculum_stages: int = 6,
     ):
         self.env = env
         self.n_envs = env.n_envs
         self.n_agents = env.n_agents
+        self.use_comm = use_comm
         self.clip_eps = clip_eps
         self.gamma = gamma
         self.lam = lam
@@ -96,16 +96,64 @@ class VectorizedMAPPOTrainer:
         self.n_epochs = n_epochs
         self.device = device if device is not None else _default_device()
 
+        # Curriculum learning (Phase V13): same auto-advance trigger as
+        # MAPPOMARLTrainer.train() -- recent CTI-satisfaction rate clearing
+        # a threshold past a step checkpoint -- wiring
+        # VectorizedDynamicDOCREnv.set_curriculum_stage() (already present,
+        # previously a dead stub with zero callers in this trainer).
+        self.curriculum = curriculum
+        self.curriculum_stages = curriculum_stages
+        self.current_stage = 0
+        self.stage_success_threshold = 0.95
+
         import torch
         self.generator = torch.Generator(device=self.device)
         self.generator.manual_seed(seed)
 
-        self.actor = SharedGaussianActor(env.OBS_DIM, env.ACT_DIM, hidden_actor, seed,
+        # Communication module (must be created before the actor to know
+        # enhanced_dim), mirroring MAPPOMARLTrainer.__init__'s ordering
+        # exactly. See CommGraph.forward_batched()/.update_batched() (Phase
+        # V11) for the batched comm pipeline this wires in.
+        self.comm_graph = None
+        if use_comm:
+            from marl.comm_graph import CommGraph, build_relay_adjacency
+            adj = build_relay_adjacency(env.net)
+            self.comm_graph = CommGraph(
+                n_agents=self.n_agents,
+                obs_dim=env.OBS_DIM,
+                enhanced_dim=env.OBS_DIM + 8,  # Original + message features
+                adjacency=adj,
+                seed=seed + 100,
+                device=self.device,
+                lr=lr_comm,
+            )
+
+        actor_obs_dim = env.OBS_DIM
+        buffer_obs_dim = env.OBS_DIM
+        if self.use_comm and self.comm_graph is not None:
+            actor_obs_dim = self.comm_graph.decoder.enhanced_dim
+            buffer_obs_dim = self.comm_graph.decoder.enhanced_dim
+
+        self.actor = SharedGaussianActor(actor_obs_dim, env.ACT_DIM, hidden_actor, seed,
                                           lr=lr_actor, device=self.device)
         self.critic = MAPPOCentralCritic(self.n_agents, hidden_critic, seed + 999,
                                           use_global_state=True, lr=lr_critic, device=self.device)
-        self.buffer = VectorizedMAPPOBuffer(self.n_envs, self.n_agents, env.OBS_DIM, env.ACT_DIM,
-                                             rollout_len, device=self.device, use_comm=False)
+        self.buffer = VectorizedMAPPOBuffer(self.n_envs, self.n_agents, buffer_obs_dim, env.ACT_DIM,
+                                             rollout_len, device=self.device, use_comm=use_comm,
+                                             msg_dim=8 if use_comm else 0, raw_obs_dim=env.OBS_DIM)
+
+        # Communication statistics (mirrors MAPPOMARLTrainer's Tier-2
+        # bookkeeping for Figs 8/13/22/38, reduced per-rollout-step instead
+        # of per-agent since this trainer never calls the GNN per-agent).
+        self.comm_bandwidth_history: list = []
+        self.attention_checkpoint_interval = 500
+        self.attention_snapshots: list = []
+
+        # CommGraph.forward_batched()'s degradation model (dropout, packet
+        # loss) needs a np.random.Generator, not the torch.Generator this
+        # trainer otherwise uses exclusively for Phase V7's GPU-resident
+        # actor noise draw -- kept as a separate, dedicated stream.
+        self.comm_rng = np.random.default_rng(seed + 300)
 
         self._global_step = 0
 
@@ -135,9 +183,18 @@ class VectorizedMAPPOTrainer:
         `n_workers` separate CPU processes each running their own Python
         rollout loop."""
         self.buffer.clear()
+        actor_obs_dim = self.comm_graph.decoder.enhanced_dim if self.use_comm else self.env.OBS_DIM
 
         for _ in range(self.rollout_len):
-            obs_flat = obs.reshape(self.n_envs * self.n_agents, self.env.OBS_DIM)
+            if self.use_comm and self.comm_graph is not None:
+                enhanced_obs, messages, comm_info = self.comm_graph.forward_batched(obs, self.comm_rng)
+                current_obs = enhanced_obs
+            else:
+                current_obs = obs
+                messages = None
+                comm_info = {}
+
+            obs_flat = current_obs.reshape(self.n_envs * self.n_agents, actor_obs_dim)
             actions_flat, log_probs_flat = self.actor.sample_batch(obs_flat, generator=self.generator)
             actions = actions_flat.reshape(self.n_envs, self.n_agents, self.env.ACT_DIM)
             log_probs = log_probs_flat.reshape(self.n_envs, self.n_agents)
@@ -145,6 +202,11 @@ class VectorizedMAPPOTrainer:
             TMS, PS = self.env.get_state()  # each (n_envs, n_agents)
             pv_level = self.env.current_pv_level  # (n_envs,)
             topology_flag = self._topology_flag_batch()  # (n_envs,)
+            # Neighbor stats always come from the RAW observation, never the
+            # GNN-enhanced one -- it indexes raw feature columns (tms_norm,
+            # ps_norm, cti_slack_norm, viol_flag) that don't exist in the
+            # decoded enhanced representation, same reasoning as
+            # MAPPOMARLTrainer._collect_rollout()'s identical comment.
             neighbor_stats = self._get_neighbor_stats_batch_envs(obs)  # (n_envs, 6)
             value = self.critic.value_batch(
                 TMS, PS, pv_level, topology_flag, neighbor_stats,
@@ -154,11 +216,37 @@ class VectorizedMAPPOTrainer:
             next_obs, rewards, done, info = self.env.step(actions)
 
             self.buffer.add(
-                obs, actions, rewards, log_probs, value, np.full(self.n_envs, done),
+                current_obs, actions, rewards, log_probs, value, np.full(self.n_envs, done),
                 pv_level=pv_level, topology_flag=topology_flag, tms=TMS, ps=PS,
+                messages=messages, attention=comm_info.get("attention") if comm_info else None,
+                raw_obs=obs if self.use_comm else None,
             )
 
+            if self.use_comm and comm_info:
+                bw = self.comm_graph.get_bandwidth_usage(steps_per_second=1.0)
+                self.comm_bandwidth_history.append(bw["kbps"])
+
+            prev_global_step = self._global_step
             self._global_step += self.n_envs
+            if (self.use_comm and comm_info and
+                    self._global_step // self.attention_checkpoint_interval >
+                    prev_global_step // self.attention_checkpoint_interval):
+                attn_raw = comm_info.get("attention")  # (n_envs, n_agents, n_agents) or None
+                if attn_raw is not None:
+                    # Snapshot env 0's attention matrix -- a representative
+                    # single-graph sample, matching Figs 8/38's existing
+                    # single-env attention-snapshot shape/consumer exactly.
+                    attn_mat = np.array(attn_raw[0])
+                    eps_e = 1e-9
+                    p = np.clip(attn_mat, eps_e, 1.0)
+                    p /= p.sum(axis=1, keepdims=True) + eps_e
+                    entropy = float(-np.mean(np.sum(p * np.log(p + eps_e), axis=1)))
+                    self.attention_snapshots.append({
+                        "step": self._global_step,
+                        "attn_matrix": attn_mat.copy(),
+                        "entropy": entropy,
+                    })
+
             obs = next_obs
             if done:
                 obs = self.env.reset()
@@ -197,6 +285,7 @@ class VectorizedMAPPOTrainer:
             print(f"\n{'-' * 55}")
             print(f"  VectorizedMAPPO  ·  {self.env.net.name}  ·  n_envs={self.n_envs}  ·  "
                   f"{self.n_agents} agents")
+            print(f"  GNN Communication: {'ON' if self.use_comm else 'OFF'}")
             print(f"{'-' * 55}")
 
         while step < total_steps:
@@ -217,18 +306,25 @@ class VectorizedMAPPOTrainer:
             advs_np = advs.cpu().numpy()
             rets_np = rets.cpu().numpy()
 
-            obs_buf = self.buffer.obs[:T].cpu().numpy()      # (T, n_envs, n_agents, OBS_DIM)
+            obs_buf = self.buffer.obs[:T].cpu().numpy()      # (T, n_envs, n_agents, actor_obs_dim)
             act_buf = self.buffer.actions[:T].cpu().numpy()
             lp_buf = self.buffer.log_probs[:T].cpu().numpy()
             tms_buf = self.buffer.tms[:T].cpu().numpy()
             ps_buf = self.buffer.ps[:T].cpu().numpy()
             pv_buf = self.buffer.pv_levels[:T].cpu().numpy()
             topo_buf = self.buffer.top_flags[:T].cpu().numpy()
+            # buffer.obs holds the GNN-enhanced observation when use_comm is
+            # on (same split as MAPPOBuffer) -- neighbor_stats/the critic
+            # need the true raw obs instead, since they index raw feature
+            # columns (tms_norm, ps_norm, ...) that don't exist in the
+            # decoded enhanced representation.
+            raw_obs_buf = self.buffer.raw_obs[:T].cpu().numpy() if self.use_comm else obs_buf
 
+            actor_obs_dim = self.comm_graph.decoder.enhanced_dim if self.use_comm else self.env.OBS_DIM
             TN = T * self.n_envs
             actor_losses = []
             for ag in range(self.n_agents):
-                obs_ag = obs_buf[:, :, ag, :].reshape(TN, self.env.OBS_DIM)
+                obs_ag = obs_buf[:, :, ag, :].reshape(TN, actor_obs_dim)
                 act_ag = act_buf[:, :, ag, :].reshape(TN, self.env.ACT_DIM)
                 adv_ag = advs_np[:, :, ag].reshape(TN)
                 lp_ag = lp_buf[:, :, ag].reshape(TN)
@@ -237,7 +333,7 @@ class VectorizedMAPPOTrainer:
                     actor_losses.append(loss)
 
             neighbor_stats_buf = np.stack(
-                [self._get_neighbor_stats_batch_envs(obs_buf[t]) for t in range(T)], axis=0
+                [self._get_neighbor_stats_batch_envs(raw_obs_buf[t]) for t in range(T)], axis=0
             )  # (T, n_envs, 6)
 
             critic_losses = []
@@ -252,6 +348,16 @@ class VectorizedMAPPOTrainer:
                     fault_type_idx=_fault_type_idx(self.env.fault_type),
                 )
                 critic_losses.append(closs)
+
+            # Update GNN communication weights (encoder/attention/decoder) --
+            # real PPO-clip backprop through the actual actor objective (see
+            # CommGraph.update_batched()'s docstring), once per rollout,
+            # mirroring MAPPOMARLTrainer.train()'s identical call. Without
+            # this, the GNN's params never move from random initialization.
+            if self.use_comm and self.comm_graph is not None:
+                self.comm_graph.update_batched(
+                    raw_obs_buf, act_buf, advs_np, lp_buf, self.actor, clip_eps=self.clip_eps,
+                )
 
             mean_reward = float(self.buffer.rewards[:T].mean().item())
             actor_loss = float(np.mean(actor_losses)) if actor_losses else 0.0
@@ -286,10 +392,28 @@ class VectorizedMAPPOTrainer:
             critic_loss_history.append(critic_loss)
             mean_reward_history.append(mean_reward)
 
+            # Curriculum stage advancement -- identical trigger formula to
+            # MAPPOMARLTrainer.train()'s (recent_cti_rate here is already a
+            # per-rollout MEAN satisfaction RATE across n_envs, not a 0/1
+            # flag like the single-env version's per-rollout value, but the
+            # same np.mean(...[-100:]) threshold check applies unchanged).
+            if self.curriculum:
+                recent_cti_rate = (np.mean(cti_satisfaction_history[-100:])
+                                    if len(cti_satisfaction_history) >= 100 else 0.0)
+                if (recent_cti_rate > self.stage_success_threshold and
+                        self.current_stage < self.curriculum_stages - 1 and
+                        step > (self.current_stage + 1) * total_steps // self.curriculum_stages):
+                    self.current_stage += 1
+                    if hasattr(self.env, 'set_curriculum_stage'):
+                        self.env.set_curriculum_stage(self.current_stage)
+                    if verbose:
+                        print(f"  ^ Advanced to curriculum stage {self.current_stage}")
+
             if verbose and step % log_every < T * self.n_envs:
+                stage_info = f"  stage={self.current_stage}" if self.curriculum else ""
                 print(f"  step={step:>8d}  OF_mean={OF_mean:.4f}  best_OF={best_OF:.4f}  "
                       f"cti_rate={cti_rate:.2f}  mean_reward={mean_reward:+.4f}  "
-                      f"actor_loss={actor_loss:.4f}  critic_loss={critic_loss:.4f}")
+                      f"actor_loss={actor_loss:.4f}  critic_loss={critic_loss:.4f}{stage_info}")
 
         elapsed = time.perf_counter() - t0
         if verbose:
@@ -309,4 +433,45 @@ class VectorizedMAPPOTrainer:
             "mean_reward_history": mean_reward_history,
             "elapsed": elapsed,
             "stopped_at_step": step,
+            "use_comm": self.use_comm,
+            "comm_bandwidth_history": self.comm_bandwidth_history,
+            "curriculum_stage": self.current_stage if self.curriculum else 0,
         }
+
+    def get_fisher_diagonal_from_buffer(self, n_samples: Optional[int] = None) -> np.ndarray:
+        """EWC (Phase V13) Fisher-diagonal estimation via the real
+        per-sample torch.autograd.grad-based SharedGaussianActor.
+        estimate_fisher_diagonal() -- already actor-generic and already
+        more faithful than run_core_training.py's own finite-difference
+        approximation -- fed from this trainer's own last rollout buffer
+        instead of porting that single-env-structured trajectory-collection
+        loop. Works unchanged with
+        marl.continual_trainer.ContinualMAPPOTrainer(base_trainer=self, ...),
+        which only ever touches `base_trainer.actor.get_all_params()`/
+        `.set_all_params()` -- both already satisfied by this trainer's
+        actor (the same SharedGaussianActor class MAPPOMARLTrainer uses);
+        feed its result straight into
+        `ewc_wrapper.ewc_regularizer.update_fisher(task_name, fisher)`.
+
+        Uses `self.buffer.obs` -- what the actor actually consumes each
+        step (the GNN-enhanced observation when use_comm, matching the
+        actor's real input dimension; raw_obs would be the wrong shape).
+        Must be called after at least one `_collect_rollout()`/`train()`
+        call has populated the buffer.
+
+        n_samples: optional cap on how many (obs, action) rows to use (a
+        random subset of the buffer, without replacement). None uses every
+        sample currently in the buffer.
+        """
+        T = self.buffer.size
+        if T == 0:
+            raise RuntimeError("buffer is empty -- call train() or _collect_rollout() first")
+        actor_obs_dim = self.comm_graph.decoder.enhanced_dim if self.use_comm else self.env.OBS_DIM
+        obs_buf = self.buffer.obs[:T].cpu().numpy().reshape(-1, actor_obs_dim)
+        act_buf = self.buffer.actions[:T].cpu().numpy().reshape(-1, self.env.ACT_DIM)
+
+        if n_samples is not None and n_samples < obs_buf.shape[0]:
+            idx = np.random.default_rng(0).choice(obs_buf.shape[0], size=n_samples, replace=False)
+            obs_buf, act_buf = obs_buf[idx], act_buf[idx]
+
+        return self.actor.estimate_fisher_diagonal(obs_buf, act_buf)

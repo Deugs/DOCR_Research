@@ -200,6 +200,16 @@ class GNNAttention(_FlatParamsMixin, torch.nn.Module):
         scores = torch.where(adj > 0, scores, torch.full_like(scores, -1e9))
         return torch.softmax(scores, dim=2)  # normalize over the neighbor ("j") axis
 
+    def compute_attention_batched(self, messages: np.ndarray, adjacency: np.ndarray) -> np.ndarray:
+        """NumPy in/out, no-grad counterpart of compute_attention_batched_t()
+        -- the rollout-collection hot path for the vectorized-environment
+        redesign (Phase V11), same relationship compute_attention() has to
+        compute_attention_t()."""
+        messages_t = torch.as_tensor(messages, dtype=torch.float32, device=self._device)
+        adjacency_t = torch.as_tensor(adjacency, dtype=torch.float32, device=self._device)
+        with torch.no_grad():
+            return self.compute_attention_batched_t(messages_t, adjacency_t).cpu().numpy()
+
 
 class GNNMessageDecoder(_FlatParamsMixin, torch.nn.Module):
     """
@@ -505,6 +515,133 @@ class CommGraph(torch.nn.Module):
         aggregated_t = attention_t @ messages_t
         return self.decoder.decode_t(observations_t, aggregated_t)
 
+    def forward_batched_t(self, observations_batch_t: torch.Tensor) -> torch.Tensor:
+        """Batched counterpart of forward_t() for n_envs parallel training
+        environments (GPU-vectorized-environment redesign, Phase V11):
+        observations_batch_t (n_envs, n_agents, obs_dim) -> enhanced_obs_t
+        (n_envs, n_agents, enhanced_dim). encoder.encode_t/decoder.decode_t
+        are plain per-row MLPs and already batch over the added n_envs axis
+        with no changes; the one genuinely new step is routing through
+        compute_attention_batched_t (Phase V4) instead of compute_attention_t,
+        and torch.bmm instead of `@` for the per-env matrix-vector aggregate.
+        Same "no degradation knobs during training" rationale as forward_t()
+        -- used only by update_batched() below, never by rollout collection
+        (which uses forward_batched(), with the full degradation model)."""
+        n_envs = observations_batch_t.shape[0]
+        messages_t = self.encoder.encode_t(observations_batch_t)  # (n_envs, n_agents, msg_dim)
+        if self.attention is not None:
+            attention_t = self.attention.compute_attention_batched_t(messages_t, self._adjacency_t)
+        else:
+            row_sums = self._adjacency_t.sum(dim=1, keepdim=True)
+            attn_single = self._adjacency_t / torch.clamp(row_sums, min=1e-8)
+            attention_t = attn_single.unsqueeze(0).expand(n_envs, -1, -1)
+        aggregated_t = torch.bmm(attention_t, messages_t)  # (n_envs, n_agents, msg_dim)
+        return self.decoder.decode_t(observations_batch_t, aggregated_t)
+
+    def forward_batched(self, observations_batch: np.ndarray, rng: Optional[np.random.Generator] = None
+                        ) -> Tuple[np.ndarray, np.ndarray, Dict]:
+        """Batched counterpart of forward() for n_envs parallel environments
+        (GPU-vectorized-environment redesign, Phase V11) -- the full
+        degradation model (dropout, quantization, packet loss, latency,
+        top-k sparsification), not just the clean encode-attend-decode
+        pipeline, so comm-robustness figures remain reproducible from the
+        vectorized path.
+
+        observations_batch: (n_envs, n_agents, obs_dim). Every degradation
+        knob is applied independently per environment using ONE shared rng
+        (same batched-draw convention as every other phase in this redesign,
+        e.g. VectorizedScenarioGenerator's Markov chain -- not a separate
+        np.random.Generator per environment). quantization's per-step scale
+        and packet-loss's per-agent drop mask are both computed per
+        environment (axis-respecting reductions/draws), matching the
+        physical reality that each environment is an independent
+        transmission system. _message_history now stores one
+        (n_envs, n_agents, msg_dim) array per timestep instead of
+        (n_agents, msg_dim); since all environments in a vectorized rollout
+        step in lockstep (see VectorizedDynamicDOCREnv's shared `done`),
+        the existing list-based ring-buffer logic is reused completely
+        unchanged -- each environment's history only ever lives in its own
+        slice of each entry, so there is no cross-environment leakage risk
+        to add new logic for.
+
+        Returns enhanced_obs (n_envs, n_agents, enhanced_dim), messages
+        (n_envs, n_agents, msg_dim), comm_info (same keys as forward(),
+        values now carrying the extra n_envs axis).
+        """
+        n_envs = observations_batch.shape[0]
+        messages = self.encoder.encode(observations_batch)  # (n_envs, n_agents, msg_dim)
+
+        if rng is not None and self.config.dropout > 0:
+            mask = rng.random(messages.shape) > self.config.dropout
+            messages = messages * mask
+
+        if self.quantization_bits < 32:
+            qmax = max(2 ** (self.quantization_bits - 1) - 1, 1)
+            max_abs = np.max(np.abs(messages), axis=(1, 2), keepdims=True)  # (n_envs, 1, 1)
+            safe = max_abs > 1e-9
+            # scale = max_abs / qmax (identical expression to forward()'s
+            # scalar path, so safe entries are bit-identical to it); the 1.0
+            # placeholder where unsafe only avoids a div-by-zero -- that
+            # entry's quantized value is discarded by the np.where below.
+            scale = np.where(safe, max_abs / qmax, 1.0)
+            quantized = np.clip(np.round(messages / scale), -qmax - 1, qmax) * scale
+            messages = np.where(safe, quantized, messages)
+
+        if self.packet_loss_rate > 0 and rng is not None:
+            lost = rng.random((n_envs, self.n_agents)) < self.packet_loss_rate
+            messages = messages.copy()
+            messages[lost] = 0.0
+
+        if self.latency_steps > 0:
+            self._message_history.append(messages)
+            delay_idx = len(self._message_history) - 1 - self.latency_steps
+            messages_for_agg = self._message_history[delay_idx] if delay_idx >= 0 else np.zeros_like(messages)
+            max_len = self.latency_steps + 1
+            if len(self._message_history) > max_len:
+                self._message_history = self._message_history[-max_len:]
+        else:
+            messages_for_agg = messages
+
+        if self.attention is not None:
+            attention = self.attention.compute_attention_batched(messages_for_agg, self.adjacency)
+        else:
+            row_sums = self.adjacency.sum(axis=1, keepdims=True)
+            attn_single = self.adjacency / np.maximum(row_sums, 1e-8)
+            attention = np.broadcast_to(attn_single, (n_envs, self.n_agents, self.n_agents)).copy()
+
+        if self.top_k_sparsify_fraction < 1.0:
+            sparse_attention = np.zeros_like(attention)
+            env_idx = np.arange(n_envs)[:, None]
+            for i in range(self.n_agents):
+                degree = int(np.count_nonzero(self.adjacency[i]))
+                k = max(1, int(np.ceil(degree * self.top_k_sparsify_fraction)))
+                if k >= degree:
+                    sparse_attention[:, i, :] = attention[:, i, :]
+                    continue
+                row = attention[:, i, :]  # (n_envs, n_agents)
+                top_idx = np.argpartition(row, -k, axis=1)[:, -k:]  # (n_envs, k)
+                sparse_attention[env_idx, i, top_idx] = row[env_idx, top_idx]
+            row_sums = sparse_attention.sum(axis=2, keepdims=True)
+            attention = sparse_attention / np.maximum(row_sums, 1e-8)
+
+        aggregated = attention @ messages_for_agg  # batched matmul: (n_envs,n,n) @ (n_envs,n,msg_dim)
+
+        enhanced_obs = self.decoder.decode(observations_batch, aggregated)
+
+        self.total_messages_sent += n_envs * self.n_agents
+        bytes_per_message = self.msg_dim * 4
+        self.total_bytes_sent += n_envs * self.n_agents * bytes_per_message
+
+        comm_info = {
+            "messages": messages,
+            "attention": attention,
+            "aggregated": aggregated,
+            "bytes_per_step": self.n_agents * bytes_per_message,
+            "msg_dim": self.msg_dim,
+        }
+
+        return enhanced_obs, messages, comm_info
+
     def update(self, raw_obs_batch: np.ndarray, act_batch: np.ndarray,
                adv_batch: np.ndarray, old_lp_batch: np.ndarray, actor,
                clip_eps: float = 0.2) -> Dict[str, float]:
@@ -549,6 +686,44 @@ class CommGraph(torch.nn.Module):
         flat_enhanced = enhanced_t.reshape(T * self.n_agents, -1)
         flat_act = act_t.reshape(T * self.n_agents, -1)
         new_lp = actor._log_prob_t(flat_enhanced, flat_act).reshape(T, self.n_agents)
+
+        ratio = torch.exp(torch.clamp(new_lp - old_lp_t, -5, 5))
+        clip_r = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
+        loss = -torch.minimum(ratio * adv_t, clip_r * adv_t).mean()
+        loss.backward()
+        self.optimizer.step()
+
+        return {"loss": float(loss.item()), "n_params": sum(p.numel() for p in self.parameters())}
+
+    def update_batched(self, raw_obs_batch: np.ndarray, act_batch: np.ndarray,
+                        adv_batch: np.ndarray, old_lp_batch: np.ndarray, actor,
+                        clip_eps: float = 0.2) -> Dict[str, float]:
+        """Batched counterpart of update() for n_envs parallel training
+        environments (GPU-vectorized-environment redesign, Phase V11): same
+        real PPO-clip backprop step through the actor's own objective, now
+        over (T, n_envs, n_agents, ...) instead of (T, n_agents, ...).
+
+        raw_obs_batch: (T, n_envs, n_agents, obs_dim). act_batch/
+        old_lp_batch: (T, n_envs, n_agents, act_dim)/(T, n_envs, n_agents).
+        adv_batch: (T, n_envs, n_agents). actor: the SharedGaussianActor
+        these enhanced observations feed (the same shared-parameter actor
+        VectorizedMAPPOTrainer already uses for its own update() calls)."""
+        obs_t = torch.as_tensor(raw_obs_batch, dtype=torch.float32, device=self.device)
+        act_t = torch.as_tensor(act_batch, dtype=torch.float32, device=self.device)
+        adv_t = torch.as_tensor(adv_batch, dtype=torch.float32, device=self.device)
+        old_lp_t = torch.as_tensor(old_lp_batch, dtype=torch.float32, device=self.device)
+        T, n_envs = obs_t.shape[0], obs_t.shape[1]
+
+        self.optimizer.zero_grad()
+        # forward_batched_t already batches n_envs natively (same reasoning
+        # as forward_t()); still loop over T for the per-timestep attention
+        # graph op, exactly as update() does.
+        enhanced_list = [self.forward_batched_t(obs_t[t]) for t in range(T)]
+        enhanced_t = torch.stack(enhanced_list, dim=0)  # (T, n_envs, n_agents, enhanced_dim)
+
+        flat_enhanced = enhanced_t.reshape(T * n_envs * self.n_agents, -1)
+        flat_act = act_t.reshape(T * n_envs * self.n_agents, -1)
+        new_lp = actor._log_prob_t(flat_enhanced, flat_act).reshape(T, n_envs, self.n_agents)
 
         ratio = torch.exp(torch.clamp(new_lp - old_lp_t, -5, 5))
         clip_r = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)

@@ -219,6 +219,122 @@ def test_augmented_lagrangian_batch():
     assert np.max(np.abs(lag_a.lambdas - lag_b.lambdas)) < 1e-12
 
 
+def test_vectorized_safe_rl_wrapper_matches_single_n_envs_1():
+    """Phase V12 of the GPU-vectorized-environment plan:
+    VectorizedSafeRLWrapper must exactly match SafeRLWrapper at n_envs=1
+    across many steps -- action projection, reward penalty, every
+    info["safe_rl"] value, and the shared Lagrangian's lambda trajectory
+    (the dual-ascent state accumulates across updates, so this needs many
+    consecutive updates to be a meaningful regression check, not just one).
+
+    TMS/PS are set directly via set_state() each step (rather than relying
+    on env.reset()/step()'s own internal dynamics to stay synchronized
+    between the single-env and vectorized env classes) -- that equivalence
+    is Phase V6's job, already verified elsewhere; this test isolates the
+    Safe RL wrapper layer itself.
+    """
+    from network.network_data import get_8bus
+    from marl.vectorized_marl_env import VectorizedDynamicDOCREnv
+    from marl.marl_env import DynamicDOCREnv
+    from marl.safe_rl import (
+        ActionProjector, AugmentedLagrangian, SafeRLConfig,
+        SafeRLWrapper, VectorizedSafeRLWrapper,
+    )
+
+    net = get_8bus()
+    config = SafeRLConfig()
+    n_relays = net.n_relays
+    ps_min, ps_max = net.ps_bounds()
+
+    single_env = DynamicDOCREnv(net, use_pandapower=False, max_steps=1000, seed=3)
+    single_wrapper = SafeRLWrapper(single_env, ActionProjector(net, config),
+                                    AugmentedLagrangian(net.n_pairs, config, seed=11), config)
+    single_wrapper.reset(seed=3)
+
+    vec_env = VectorizedDynamicDOCREnv(net, n_envs=1, max_steps=1000, seed=3)
+    vec_wrapper = VectorizedSafeRLWrapper(vec_env, ActionProjector(net, config),
+                                           AugmentedLagrangian(net.n_pairs, config, seed=11), config)
+    vec_wrapper.reset(seed=3)
+
+    rng = np.random.default_rng(7)
+    for step in range(10):
+        TMS = rng.uniform(TMS_MIN + 0.05, TMS_MAX - 0.05, n_relays)
+        PS = rng.uniform(ps_min, ps_max)
+        single_env.set_state(TMS.copy(), PS.copy())
+        vec_env.set_state(TMS[None, :].copy(), PS[None, :].copy())
+
+        actions = rng.uniform(-1, 1, (n_relays, 2))
+        obs_s, rew_s, done_s, info_s = single_wrapper.step(actions)
+        obs_v, rew_v, done_v, info_v = vec_wrapper.step(actions[None, :, :])
+
+        assert np.abs(rew_s - rew_v[0]).max() < 1e-6, f"step {step}: reward mismatch"
+        sr_s, sr_v = info_s["safe_rl"], info_v["safe_rl"]
+        assert abs(sr_s["constraint_cost"] - float(sr_v["constraint_cost"][0])) < 1e-6, \
+            f"step {step}: constraint_cost mismatch"
+        assert sr_s["cti_violations"] == int(sr_v["cti_violations"][0]), \
+            f"step {step}: cti_violations mismatch"
+        assert abs(sr_s["g_mean"] - float(sr_v["g_mean"][0])) < 1e-6
+        assert abs(sr_s["projection_magnitude"] - float(sr_v["projection_magnitude"][0])) < 1e-5
+        assert sr_s["projected_actions"] == bool(sr_v["projected_actions"][0])
+
+        single_wrapper.update_lagrangian()
+        vec_wrapper.update_lagrangian()
+        assert abs(single_wrapper.lagrangian.rho - vec_wrapper.lagrangian.rho) < 1e-8, \
+            f"step {step}: rho diverged"
+        assert np.abs(single_wrapper.lagrangian.lambdas - vec_wrapper.lagrangian.lambdas).max() < 1e-6, \
+            f"step {step}: lambda trajectory diverged"
+
+    print("  VectorizedSafeRLWrapper: n_envs=1 exactly matches SafeRLWrapper across 10 steps "
+          "(projection, reward penalty, constraint cost, 10-update lambda trajectory)")
+
+
+def test_vectorized_safe_rl_wrapper_no_cross_env_leakage():
+    """VectorizedSafeRLWrapper.step()'s own orchestration (not the
+    already-verified Phase V8 batched math primitives it calls) must not
+    mix data across environments: perturbing one environment's actions
+    must leave every OTHER environment's reward/info output unchanged.
+    """
+    from network.network_data import get_8bus
+    from marl.vectorized_marl_env import VectorizedDynamicDOCREnv
+    from marl.safe_rl import (
+        ActionProjector, AugmentedLagrangian, SafeRLConfig, VectorizedSafeRLWrapper,
+    )
+
+    net = get_8bus()
+    config = SafeRLConfig()
+    n_relays = net.n_relays
+    n_envs = 3
+
+    env = VectorizedDynamicDOCREnv(net, n_envs=n_envs, max_steps=1000, seed=5)
+    wrapper = VectorizedSafeRLWrapper(env, ActionProjector(net, config),
+                                       AugmentedLagrangian(net.n_pairs, config), config)
+    wrapper.reset(seed=5)
+
+    rng = np.random.default_rng(13)
+    ps_min, ps_max = net.ps_bounds()
+    TMS = np.stack([rng.uniform(TMS_MIN + 0.05, TMS_MAX - 0.05, n_relays) for _ in range(n_envs)])
+    PS = np.stack([rng.uniform(ps_min, ps_max) for _ in range(n_envs)])
+
+    actions = rng.uniform(-1, 1, (n_envs, n_relays, 2))
+    actions_perturbed = actions.copy()
+    actions_perturbed[1] = rng.uniform(-1, 1, (n_relays, 2))  # only env 1 differs
+
+    env.set_state(TMS.copy(), PS.copy())
+    _, rew_a, _, info_a = wrapper.step(actions)
+
+    env.set_state(TMS.copy(), PS.copy())
+    _, rew_b, _, info_b = wrapper.step(actions_perturbed)
+
+    for e in (0, 2):
+        assert np.abs(rew_a[e] - rew_b[e]).max() < 1e-10, \
+            f"env {e}: reward changed when only env 1's actions were perturbed -- cross-env leakage"
+        assert abs(info_a["safe_rl"]["constraint_cost"][e] - info_b["safe_rl"]["constraint_cost"][e]) < 1e-10, \
+            f"env {e}: constraint_cost changed -- cross-env leakage"
+
+    print("  VectorizedSafeRLWrapper: perturbing one environment's actions leaves every "
+          "other environment's reward/cost unchanged (no cross-env leakage)")
+
+
 def test_pid_lagrangian():
     """Test PID-controlled Lagrange multiplier updates."""
     from marl.safe_rl import AugmentedLagrangian, SafeRLConfig
