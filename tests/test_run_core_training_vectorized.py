@@ -17,10 +17,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
 
+from network.network_data import load_network
 from run_core_training import CacheManager, CACHE_DIR
 from run_core_training_vectorized import (
     run_core_A_vectorized, _run_core_A_vectorized_single,
     run_core_B_vectorized, _run_curriculum_single_vectorized,
+    run_core_C_vectorized, _run_baseline_single_vectorized,
+    _evaluate_traditional_vectorized, _CORE_C_METHODS,
 )
 
 
@@ -187,3 +190,92 @@ def test_run_core_B_vectorized_cache_hit_on_second_call():
         first["with_ewc"][0]["task_performances"],
         second["with_ewc"][0]["task_performances"],
     )
+
+
+# ═════════════════════════════════════════════════════════════════
+# Core C (Phase V14.3) -- 5-method baseline comparison
+# ═════════════════════════════════════════════════════════════════
+
+def test_run_core_C_vectorized_traditional_schema():
+    """The zero-action "Traditional" baseline has no trainer at all --
+    verify its own dedicated function's schema directly."""
+    returns, metrics = _evaluate_traditional_vectorized(
+        load_network("8bus"), n_episodes=2, seed=3030)
+    assert returns.shape == (2,)
+    assert np.all(np.isfinite(returns))
+    assert set(metrics.keys()) == {
+        "cti_satisfaction_rate", "convergence_ep", "sample_efficiency",
+        "robustness", "top_pri_mean", "delta_cti_mean", "final_of",
+    }
+    assert metrics["convergence_ep"] == 0
+    assert metrics["robustness"] == 1.0
+    assert metrics["sample_efficiency"] is None
+    assert metrics["final_of"] is None
+    assert np.isfinite(metrics["top_pri_mean"])
+    assert np.isfinite(metrics["delta_cti_mean"])
+
+
+def test_run_core_C_vectorized_single_schema_per_method():
+    """Every non-Traditional method must carry the same real metrics
+    schema, with real (non-None) convergence_ep/sample_efficiency/
+    robustness/top_pri_mean/delta_cti_mean/final_of -- confirming the
+    real boolean table (use_comm/use_safe/use_ewc per method) and the
+    EWC path (MAPPO-Safe-EWC only) all actually ran rather than silently
+    no-op'ing."""
+    expected_keys = {
+        "cti_satisfaction_rate", "convergence_ep", "sample_efficiency",
+        "robustness", "top_pri_mean", "delta_cti_mean", "final_of",
+    }
+    for method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO"]:
+        returns, metrics = _run_baseline_single_vectorized(
+            method, seed=4040, n_episodes=2, system="8bus")
+        assert returns.shape == (2,), f"{method}: wrong returns shape"
+        assert np.all(np.isfinite(returns)), f"{method}: non-finite returns"
+        assert set(metrics.keys()) == expected_keys, f"{method}: wrong metric keys"
+        for key in ["convergence_ep", "sample_efficiency", "robustness",
+                    "top_pri_mean", "delta_cti_mean", "final_of"]:
+            assert metrics[key] is not None, f"{method}: {key} unexpectedly None"
+            assert np.isfinite(metrics[key]), f"{method}: {key} non-finite"
+
+
+def test_run_core_C_vectorized_matches_real_aggregation_schema():
+    """The cached result must carry one np.ndarray per method (the exact
+    shape the real run_core_C() returns), plus a separately-cached
+    per-method metrics entry under its own (non-colliding) name --
+    loadable through run_post_processing.py's real load_cache()."""
+    cache = CacheManager(CACHE_DIR)
+    result = run_core_C_vectorized(n_runs=1, n_episodes=2, seed=5050, system="8bus", cache=cache)
+
+    assert set(result.keys()) == set(_CORE_C_METHODS)
+    for method, returns in result.items():
+        assert returns.shape == (1, 2), f"{method}: wrong shape {returns.shape}"
+        assert np.all(np.isfinite(returns))
+
+    expected_name = "core_C_baselines_8bus_vectorized"
+    assert expected_name != "core_C_baselines_8bus", (
+        "must never collide with the real Core C cache name"
+    )
+
+    import run_post_processing as rpp
+    loaded = rpp.load_cache(expected_name)
+    assert loaded is not None
+    assert set(loaded.keys()) == set(_CORE_C_METHODS)
+    assert loaded["Traditional"].shape[1] == 2
+
+    metrics_loaded = rpp.load_cache("core_C_metrics_8bus_vectorized")
+    assert metrics_loaded is not None
+    # Traditional's metrics are real (non-None values throughout), so it
+    # must be present alongside the 4 trainer-based methods.
+    assert set(metrics_loaded.keys()) == set(_CORE_C_METHODS)
+    assert "per_run" in metrics_loaded["MAPPO-Safe-EWC"]
+
+
+def test_run_core_C_vectorized_cache_hit_on_second_call():
+    """Calling with an identical config must hit the cache, not retrain."""
+    cache = CacheManager(CACHE_DIR)
+    first = run_core_C_vectorized(n_runs=1, n_episodes=2, seed=6060, system="8bus", cache=cache)
+    hits_before = cache.get_stats()["hits"]
+    second = run_core_C_vectorized(n_runs=1, n_episodes=2, seed=6060, system="8bus", cache=cache)
+    assert cache.get_stats()["hits"] == hits_before + 1
+    for method in _CORE_C_METHODS:
+        assert np.allclose(first[method], second[method])

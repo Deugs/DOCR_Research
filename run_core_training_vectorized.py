@@ -53,7 +53,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from network.network_data import get_8bus, NETWORKS
+from network.network_data import get_8bus, NETWORKS, load_network
 from network.relay_physics import check_constraints, objective_function
 from marl.vectorized_marl_env import VectorizedDynamicDOCREnv
 from marl.vectorized_marl_agents import VectorizedMAPPOTrainer
@@ -64,11 +64,11 @@ from run_core_training import (
     UnifiedTrainingLogger, CacheManager, topology_fp, _aggregate_runs,
     CACHE_DIR, CHECKPOINT_DIR, FAULT_TYPE, SEED,
     N_RUNS_DEFAULT, N_RUNS_FAST, EPISODES_DEFAULT, EPISODES_FAST, FAST_MODE,
-    N_RUNS_BASELINE, N_RUNS_BASELINE_FAST,
+    N_RUNS_BASELINE, N_RUNS_BASELINE_FAST, _method_seed_offset,
 )
 
 
-def _run_eval_episode(safe_env, trainer, rng, seed):
+def _run_eval_episode(safe_env, trainer, rng, seed, noise_std: float = 0.0):
     """Run one full episode with the current policy against an n_envs=1
     VectorizedDynamicDOCREnv/VectorizedSafeRLWrapper pair, sequentially --
     see module docstring for why eval episodes across this whole script
@@ -76,19 +76,26 @@ def _run_eval_episode(safe_env, trainer, rng, seed):
     structurally-repeated single-env eval loop pattern throughout
     run_core_training.py's real Cores (act_fn + safe_env.step() in a
     while-not-done loop). Returns (ep_reward, final_TMS, final_PS) --
-    enough for every Core B eval loop's needs (return-only or
+    enough for every Core B/C eval loop's needs (return-only or
     final-state-only); Core A's own eval loop needed extra per-step
     info["safe_rl"] tracking and action-projection sampling, so it stays
-    hand-written rather than forced through this shared helper."""
+    hand-written rather than forced through this shared helper.
+
+    noise_std, when >0, adds fresh IID Gaussian noise to the policy's
+    observation input each step (NOT to the env's own evolving state) --
+    mirrors Core C's real "Robustness" eval (run_core_training.py:
+    1925-1939), which perturbs only what the policy sees, not what
+    actually happens physically, each step independently."""
     n_agents = trainer.n_agents
     obs = safe_env.reset(seed=seed)[0]
     done = False
     ep_reward = 0.0
     while not done:
+        obs_in = obs + rng.normal(0, noise_std, size=obs.shape) if noise_std > 0 else obs
         if trainer.use_comm and trainer.comm_graph is not None:
-            enhanced_obs, _, _ = trainer.comm_graph.forward(obs, rng)
+            enhanced_obs, _, _ = trainer.comm_graph.forward(obs_in, rng)
         else:
-            enhanced_obs = obs
+            enhanced_obs = obs_in
         actions = np.zeros((n_agents, trainer.env.ACT_DIM))
         for i in range(n_agents):
             a, _ = trainer.actor.sample(enhanced_obs[i], rng)
@@ -438,13 +445,216 @@ def run_core_B_vectorized(n_runs: Optional[int] = None, episodes_per_task: Optio
     return all_results
 
 
+# ═════════════════════════════════════════════════════════════════
+# Core C (Phase V14.3) -- Baseline comparison (5 methods)
+# ═════════════════════════════════════════════════════════════════
+def _evaluate_traditional_vectorized(net, n_episodes: int, seed: int) -> "tuple[np.ndarray, Dict]":
+    """Vectorized-path counterpart of run_core_training.py's
+    _evaluate_traditional() -- zero-action baseline, no trainer at all.
+    n_envs=1, sequential (see module docstring)."""
+    env = VectorizedDynamicDOCREnv(net, n_envs=1, seed=seed, fault_type=FAULT_TYPE, curriculum_stage=3)
+    returns: List[float] = []
+    cti_satisfied_flags: List[bool] = []
+    TMS = PS = None
+    for ep in range(n_episodes):
+        env.reset(seed=seed + ep)
+        done = False
+        ep_return = 0.0
+        zero_actions = np.zeros((1, env.n_agents, env.ACT_DIM))
+        while not done:
+            _, reward, done, _info = env.step(zero_actions)
+            ep_return += float(np.mean(reward[0]))
+        returns.append(ep_return)
+        TMS, PS = env.get_state()
+        TMS, PS = TMS[0], PS[0]
+        cti_satisfied_flags.append(check_constraints(net, TMS, PS, fault_type=FAULT_TYPE)["cti_satisfied"])
+
+    returns_arr = np.array(returns)
+    final_constraints = check_constraints(net, TMS, PS, fault_type=FAULT_TYPE)
+    metrics = {
+        "cti_satisfaction_rate": float(np.mean(cti_satisfied_flags)) if cti_satisfied_flags else None,
+        "convergence_ep": 0,
+        "sample_efficiency": None,
+        "robustness": 1.0,
+        "top_pri_mean": final_constraints["top_pri_mean"],
+        "delta_cti_mean": float(np.mean(final_constraints["delta_cti"])),
+        "final_of": None,
+    }
+    return returns_arr, metrics
+
+
+def _run_baseline_single_vectorized(method: str, seed: int, n_episodes: int,
+                                     system: str = "8bus") -> "tuple[np.ndarray, Optional[Dict]]":
+    """Vectorized-path counterpart of run_core_training.py's
+    _run_baseline_single() (Core C). Confirmed from the real code (not
+    assumed): "IPPO" here is NOT a separate single-agent-PPO trainer --
+    MAPPO-Safe-EWC/MAPPO-Safe/MAPPO/IPPO all route through the same
+    MAPPOMARLTrainer class, differing only in use_comm/use_safe/use_ewc;
+    only "Traditional" (handled by _evaluate_traditional_vectorized) has
+    no trainer at all. use_comm/use_safe/use_ewc per method mirror the
+    real function's exact boolean table
+    (run_core_training.py:1826-1828). EWC (when use_ewc) uses the real
+    per-sample Fisher estimator from the trainer's own rollout buffer
+    (Phase V13's get_fisher_diagonal_from_buffer), not the real
+    function's manual finite-difference estimate -- same established
+    decision as Core A/B."""
+    net = load_network(system)
+    if method == "Traditional":
+        return _evaluate_traditional_vectorized(net, n_episodes, seed)
+
+    use_safe = method in ["MAPPO-Safe-EWC", "MAPPO-Safe"]
+    use_ewc = method == "MAPPO-Safe-EWC"
+    use_comm = method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO"]
+
+    env = VectorizedDynamicDOCREnv(net, n_envs=1, seed=seed, fault_type=FAULT_TYPE, curriculum_stage=3)
+    train_env = env
+    if use_safe:
+        train_env = create_vectorized_safe_rl_env(env, SafeRLConfig(
+            project_actions=True, enforce_cti=True,
+            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+            use_pid=True, adaptive_rho=True,
+        ))
+    trainer = VectorizedMAPPOTrainer(train_env, use_comm=use_comm, seed=seed)
+
+    total_steps = n_episodes * env.max_steps
+    trainer.train(total_steps=total_steps, verbose=False)
+
+    if use_ewc:
+        ewc_trainer = create_ewc_trainer(trainer, EWCConfig())
+        cur = trainer.actor.get_all_params()
+        fisher = trainer.get_fisher_diagonal_from_buffer()
+        ewc_trainer.ewc_regularizer.register_task(method, cur)
+        ewc_trainer.ewc_regularizer.update_fisher(method, fisher)
+        ewc_trainer.ewc_regularizer.finalize()
+
+    rng = np.random.default_rng(seed + 9999)
+    returns: List[float] = []
+    cti_satisfied_flags: List[bool] = []
+    final_TMS = final_PS = None
+    for ep in range(min(n_episodes, 200)):
+        ep_reward, TMS, PS = _run_eval_episode(train_env, trainer, rng, seed=seed + ep)
+        returns.append(ep_reward)
+        final_TMS, final_PS = TMS, PS
+        cti_satisfied_flags.append(
+            check_constraints(net, TMS, PS, fault_type=FAULT_TYPE)["cti_satisfied"])
+    returns_arr = np.array(returns)
+
+    # Fig 33: real "Robustness" -- relative performance under observation
+    # noise (see _run_eval_episode's noise_std docstring for exactly what
+    # is and isn't perturbed).
+    noisy_rng = np.random.default_rng(seed + 20000)
+    noisy_returns = []
+    for ep in range(min(10, n_episodes)):
+        ep_reward, _, _ = _run_eval_episode(
+            train_env, trainer, noisy_rng, seed=seed + 30000 + ep, noise_std=0.1)
+        noisy_returns.append(ep_reward)
+    clean_mean = float(np.mean(returns_arr[-100:] if len(returns_arr) > 100 else returns_arr))
+    noisy_mean = float(np.mean(noisy_returns))
+    robustness = float(noisy_mean / clean_mean) if clean_mean else None
+
+    n_eps = len(returns_arr)
+    plateau = float(np.mean(returns_arr[-max(1, n_eps // 5):]))
+    tolerance = 0.1 * abs(plateau) if plateau else 1e-6
+    converged = np.where(np.abs(returns_arr - plateau) <= tolerance)[0]
+    convergence_ep = int(converged[0]) if len(converged) else n_eps
+    first_half_mean = float(np.mean(returns_arr[:max(1, n_eps // 2)]))
+    sample_efficiency = float(first_half_mean / plateau) if plateau else None
+
+    metrics = {
+        "cti_satisfaction_rate": float(np.mean(cti_satisfied_flags)) if cti_satisfied_flags else None,
+        "convergence_ep": convergence_ep,
+        "sample_efficiency": sample_efficiency,
+        "robustness": robustness,
+        "top_pri_mean": None,
+        "delta_cti_mean": None,
+        "final_of": None,
+    }
+    if final_TMS is not None:
+        final_constraints = check_constraints(net, final_TMS, final_PS, fault_type=FAULT_TYPE)
+        metrics["top_pri_mean"] = final_constraints["top_pri_mean"]
+        metrics["delta_cti_mean"] = float(np.mean(final_constraints["delta_cti"]))
+        of_val, _, _ = objective_function(net, final_TMS, final_PS, fault_type=FAULT_TYPE)
+        metrics["final_of"] = float(of_val)
+
+    return returns_arr, metrics
+
+
+_CORE_C_METHODS = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
+
+
+def run_core_C_vectorized(n_runs: Optional[int] = None, n_episodes: Optional[int] = None,
+                           seed: Optional[int] = None, system: str = "8bus",
+                           cache: Optional[CacheManager] = None) -> Dict:
+    """Vectorized-path counterpart of run_core_training.py's run_core_C()
+    (5-method baseline comparison). Writes to a cache entry under a
+    DIFFERENT name (f"core_C_baselines_{system}_vectorized") so it never
+    collides with the real Core C cache entry -- see module docstring.
+    Mirrors the real function's TWO-cache-entry pattern exactly: the
+    returned {method: np.ndarray} dict is cached under this function's own
+    name, and real per-method metrics (Figs 33/55/56) are cached
+    separately under f"core_C_metrics_{system}_vectorized" (only for
+    methods with real -- not None -- metrics), matching
+    run_core_training.py:1796-1802's reasoning: every existing consumer
+    iterating `results.keys()` expecting only method names keeps working
+    unchanged."""
+    n_runs = n_runs if n_runs is not None else (N_RUNS_FAST if FAST_MODE else N_RUNS_DEFAULT)
+    n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
+    seed = seed if seed is not None else SEED
+    cache = cache if cache is not None else CacheManager(CACHE_DIR)
+
+    config = {
+        "name": f"core_C_baselines_{system}_vectorized",
+        "system": system,
+        "methods": _CORE_C_METHODS,
+        "n_runs": n_runs,
+        "n_episodes": n_episodes,
+        "seed": seed,
+        "fault_type": FAULT_TYPE,
+        "vectorized_path_v14_3": True,
+        "topology_fp": topology_fp(system),
+    }
+    cached = cache.get(config)
+    if cached is not None:
+        return cached
+
+    results: Dict[str, List[Optional[np.ndarray]]] = {method: [None] * n_runs for method in _CORE_C_METHODS}
+    metrics_by_method: Dict[str, List[Dict]] = {method: [] for method in _CORE_C_METHODS}
+    for method in _CORE_C_METHODS:
+        for run_idx in range(n_runs):
+            run_seed = seed + run_idx + _method_seed_offset(method)
+            returns, run_metrics = _run_baseline_single_vectorized(method, run_seed, n_episodes, system=system)
+            results[method][run_idx] = returns
+            if run_metrics is not None:
+                metrics_by_method[method].append(run_metrics)
+
+    final_results: Dict = {method: np.array(arr) for method, arr in results.items()}
+
+    metric_keys = ["cti_satisfaction_rate", "convergence_ep", "sample_efficiency",
+                   "robustness", "top_pri_mean", "delta_cti_mean", "final_of"]
+    real_metrics = {}
+    for method, runs_metrics in metrics_by_method.items():
+        if not runs_metrics:
+            continue
+        real_metrics[method] = {
+            key: float(np.mean([m[key] for m in runs_metrics if m.get(key) is not None]))
+                 if any(m.get(key) is not None for m in runs_metrics) else None
+            for key in metric_keys
+        }
+        real_metrics[method]["per_run"] = runs_metrics
+    if real_metrics:
+        cache.put({**config, "name": f"core_C_metrics_{system}_vectorized"}, real_metrics)
+
+    cache.put(config, final_results)
+    return final_results
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--core", choices=["A", "B"], default="A")
+    parser.add_argument("--core", choices=["A", "B", "C"], default="A")
     parser.add_argument("--n-runs", type=int, default=None)
-    parser.add_argument("--n-episodes", type=int, default=None, help="Core A only")
+    parser.add_argument("--n-episodes", type=int, default=None, help="Core A/C only")
     parser.add_argument("--episodes-per-task", type=int, default=None, help="Core B only")
-    parser.add_argument("--system", default="8bus", help="Core B only")
+    parser.add_argument("--system", default="8bus", help="Core B/C only")
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
@@ -453,9 +663,15 @@ if __name__ == "__main__":
         print(f"Core A (vectorized): n_runs={result['n_runs']}  "
               f"final global_return_mean={result['global_returns_mean'][-1]:.4f}  "
               f"final cti_violation_rate_mean={result['cti_violation_rates_mean'][-1]:.2f}%")
-    else:
+    elif args.core == "B":
         result = run_core_B_vectorized(n_runs=args.n_runs, episodes_per_task=args.episodes_per_task,
                                         seed=args.seed, system=args.system)
         last_ewc = result["with_ewc"][-1]
         print(f"Core B (vectorized, {args.system}): n_runs={len(result['with_ewc'])}  "
               f"pv_evaluation={last_ewc['pv_evaluation']}")
+    else:
+        result = run_core_C_vectorized(n_runs=args.n_runs, n_episodes=args.n_episodes,
+                                        seed=args.seed, system=args.system)
+        for method, returns in result.items():
+            print(f"Core C (vectorized, {args.system}) {method}: "
+                  f"mean_final_return={np.mean(returns[:, -1]) if returns.size else float('nan'):.4f}")
