@@ -25,6 +25,7 @@ from run_core_training_vectorized import (
     run_core_C_vectorized, _run_baseline_single_vectorized,
     _evaluate_traditional_vectorized, _CORE_C_METHODS,
     run_core_D_vectorized, _run_ablation_single_vectorized, _CORE_D_CONFIGS,
+    run_core_E_vectorized, _run_hparam_single_vectorized,
 )
 
 
@@ -335,3 +336,69 @@ def test_run_core_D_vectorized_cache_hit_on_second_call():
     assert cache.get_stats()["hits"] == hits_before + 1
     for cfg_name in _CORE_D_CONFIGS:
         assert first[cfg_name][0]["OF"] == second[cfg_name][0]["OF"]
+
+
+# ═════════════════════════════════════════════════════════════════
+# Core E (Phase V14.5) -- hyperparameter grid
+# ═════════════════════════════════════════════════════════════════
+# The real grid is 5x4x4=80 points x n_seeds -- grid overrides below use a
+# single (lambda_ewc, alpha_lambda, hidden_dim) point purely for test
+# runtime (each point is a full two-phase training run + fixed 30-episode
+# eval loop, ~3 minutes even at this tiny n_steps) -- see
+# run_core_E_vectorized's docstring.
+
+def test_run_core_E_vectorized_single_point_schema():
+    """One grid point must return a finite (OF, CTI) scalar pair --
+    confirming the warm-start -> EWC-correction -> target-task training
+    structure and the fixed 30-episode eval loop both run end to end."""
+    of_val, cti_val = _run_hparam_single_vectorized(
+        lambda_ewc=1e4, alpha_lambda=1e-3, hidden_dim=16, seed=12120, n_steps=4)
+    assert np.isfinite(of_val)
+    assert np.isfinite(cti_val)
+    assert cti_val >= 0.0
+
+
+def test_run_core_E_vectorized_matches_real_aggregation_schema():
+    """The cached result must carry the exact structure the real
+    run_core_E() produces: a flat list of per-grid-point dicts, each with
+    the same keys the real _core_E_job() returns, loadable through
+    run_post_processing.py's real load_cache()."""
+    cache = CacheManager(CACHE_DIR)
+    result = run_core_E_vectorized(
+        n_seeds=1, n_steps=4, seed=13130, cache=cache,
+        lambda_ewc_grid=[1e4], alpha_lambda_grid=[1e-3], hidden_dim_grid=[16])
+
+    assert isinstance(result, list)
+    assert len(result) == 1
+    entry = result[0]
+    assert set(entry.keys()) == {"lambda_ewc", "alpha_lambda", "hidden_dim", "seed", "OF", "CTI"}
+    assert entry["lambda_ewc"] == 1e4
+    assert entry["alpha_lambda"] == 1e-3
+    assert entry["hidden_dim"] == 16
+    assert np.isfinite(entry["OF"])
+    assert np.isfinite(entry["CTI"])
+
+    expected_name = "core_E_hparam_vectorized"
+    assert expected_name != "core_E_hparam", (
+        "must never collide with the real Core E cache name"
+    )
+
+    import run_post_processing as rpp
+    loaded = rpp.load_cache(expected_name)
+    assert loaded is not None
+    assert isinstance(loaded, list)
+    assert set(loaded[0].keys()) == {"lambda_ewc", "alpha_lambda", "hidden_dim", "seed", "OF", "CTI"}
+
+
+def test_run_core_E_vectorized_cache_hit_on_second_call():
+    """Calling with an identical config must hit the cache, not retrain."""
+    cache = CacheManager(CACHE_DIR)
+    first = run_core_E_vectorized(
+        n_seeds=1, n_steps=4, seed=14140, cache=cache,
+        lambda_ewc_grid=[1e4], alpha_lambda_grid=[1e-3], hidden_dim_grid=[16])
+    hits_before = cache.get_stats()["hits"]
+    second = run_core_E_vectorized(
+        n_seeds=1, n_steps=4, seed=14140, cache=cache,
+        lambda_ewc_grid=[1e4], alpha_lambda_grid=[1e-3], hidden_dim_grid=[16])
+    assert cache.get_stats()["hits"] == hits_before + 1
+    assert first[0]["OF"] == second[0]["OF"]

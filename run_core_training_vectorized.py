@@ -49,6 +49,7 @@ duplicate.
 from __future__ import annotations
 
 import argparse
+import itertools
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -65,6 +66,7 @@ from run_core_training import (
     CACHE_DIR, CHECKPOINT_DIR, FAULT_TYPE, SEED,
     N_RUNS_DEFAULT, N_RUNS_FAST, EPISODES_DEFAULT, EPISODES_FAST, FAST_MODE,
     N_RUNS_BASELINE, N_RUNS_BASELINE_FAST, _method_seed_offset,
+    N_RUNS_HPARAM, N_RUNS_HPARAM_FAST, EPISODES_HPARAM, EPISODES_HPARAM_FAST,
 )
 
 
@@ -798,9 +800,146 @@ def run_core_D_vectorized(n_runs: Optional[int] = None, n_episodes: Optional[int
     return results
 
 
+# ═════════════════════════════════════════════════════════════════
+# Core E (Phase V14.5) -- Hyperparameter grid (lambda_ewc x alpha_lambda x hidden_dim)
+# ═════════════════════════════════════════════════════════════════
+_CORE_E_LAMBDA_EWC_GRID = [1e2, 1e3, 1e4, 1e5, 1e6]
+_CORE_E_ALPHA_LAMBDA_GRID = [1e-5, 1e-4, 1e-3, 1e-2]
+_CORE_E_HIDDEN_DIM_GRID = [16, 32, 64, 128]
+
+
+def _run_hparam_single_vectorized(lambda_ewc: float, alpha_lambda: float, hidden_dim: int,
+                                   seed: int, n_steps: int) -> "tuple[float, float]":
+    """Vectorized-path counterpart of run_core_training.py's
+    _run_hparam_single() (Core E). use_comm=False/use_pid=False are
+    REQUIRED here, not incidental -- the real function's own comment
+    (run_core_training.py:2429-2432) explains AugmentedLagrangian's PID
+    update branch never reads lambda_lr at all, so use_pid=True would
+    silently void alpha_lambda's entire sweep. hidden_dim sweeps BOTH
+    hidden_actor and hidden_critic to the same value (confirmed from the
+    real call, not just hidden_actor). lambda_ewc only has a real effect
+    across a task transition -- replicates the real function's
+    warm-start-then-switch-with-EWC-correction structure exactly (train
+    on 0% PV for warm_steps, register+finalize a single "warmstart" EWC
+    task, apply one gradient correction, then train on 60% PV for the
+    remainder), reusing get_fisher_diagonal_from_buffer() (Phase V13's
+    real per-sample estimator) instead of the real function's manual
+    finite-difference Fisher estimate -- same established decision as
+    every other vectorized Core. Eval is a fixed 30 episodes tracking
+    the real per-step info["OF"] minimum and the SUM (not a rate or a
+    final-state count) of info["safe_rl"]["cti_violations"] across each
+    episode -- a third distinct CTI-metric convention alongside Core
+    A/B/C's rate and Core D's final-state count, faithfully reproduced
+    as-is."""
+    net = get_8bus()
+    env = VectorizedDynamicDOCREnv(net, n_envs=1, seed=seed, fault_type=FAULT_TYPE, curriculum_stage=0)
+    safe_env = create_vectorized_safe_rl_env(env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=alpha_lambda, rho_penalty=10.0,
+        use_pid=False, adaptive_rho=True,
+    ))
+    trainer = VectorizedMAPPOTrainer(safe_env, use_comm=False,
+                                      hidden_actor=hidden_dim, hidden_critic=hidden_dim, seed=seed)
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig(lambda_ewc=lambda_ewc))
+    rng = np.random.default_rng(seed + 9999)
+
+    warm_steps = max(n_steps // 4, 300)
+    env.set_curriculum_stage(0)
+    trainer.train(total_steps=warm_steps, verbose=False)
+
+    cur = trainer.actor.get_all_params()
+    fisher = trainer.get_fisher_diagonal_from_buffer()
+    ewc_trainer.ewc_regularizer.register_task("warmstart", cur)
+    ewc_trainer.ewc_regularizer.update_fisher("warmstart", fisher)
+    ewc_trainer.ewc_regularizer.finalize()
+    ewc_grad = ewc_trainer.apply_ewc_to_gradient(cur, np.zeros_like(cur))
+    trainer.actor.set_all_params(cur - 0.01 * ewc_grad)
+
+    env.set_curriculum_stage(3)
+    trainer.train(total_steps=max(n_steps - warm_steps, 300), verbose=False)
+
+    of_values, cti_values = [], []
+    for ep in range(30):
+        obs = safe_env.reset(seed=seed + 999 + ep)[0]
+        done = False
+        ep_of = float("inf")
+        ep_cti = 0
+        while not done:
+            actions = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                a, _ = trainer.actor.sample(obs[i], rng)
+                actions[i] = a
+            next_obs, _, done, info = safe_env.step(actions[None, :, :])
+            obs = next_obs[0]
+            ep_of = min(ep_of, float(np.asarray(info.get("OF", float("inf"))).reshape(-1)[0]))
+            safe_rl_info = info.get("safe_rl", {})
+            ep_cti += int(np.asarray(safe_rl_info.get("cti_violations", 0)).reshape(-1)[0])
+        of_values.append(ep_of)
+        cti_values.append(ep_cti)
+
+    return float(np.mean(of_values)), float(np.mean(cti_values))
+
+
+def run_core_E_vectorized(n_seeds: Optional[int] = None, n_steps: Optional[int] = None,
+                           seed: Optional[int] = None, cache: Optional[CacheManager] = None,
+                           lambda_ewc_grid: Optional[List[float]] = None,
+                           alpha_lambda_grid: Optional[List[float]] = None,
+                           hidden_dim_grid: Optional[List[int]] = None) -> List[Dict]:
+    """Vectorized-path counterpart of run_core_training.py's run_core_E()
+    (80-point hyperparameter grid: 5 lambda_ewc x 4 alpha_lambda x 4
+    hidden_dim by default). Writes to a cache entry under a DIFFERENT
+    name ("core_E_hparam_vectorized") so it never collides with the real
+    Core E cache entry -- see module docstring.
+
+    lambda_ewc_grid/alpha_lambda_grid/hidden_dim_grid default to the
+    real 80-point grid; tests override them down to a tiny grid purely
+    for runtime -- each grid point is a full two-phase training run plus
+    a fixed 30-episode eval loop, so the real 80-point x n_seeds grid is
+    far too slow for a schema/correctness smoke test -- same
+    test-ergonomics pattern as Core B's n_eval_episodes override."""
+    n_seeds = n_seeds if n_seeds is not None else (N_RUNS_HPARAM_FAST if FAST_MODE else N_RUNS_HPARAM)
+    n_steps = n_steps if n_steps is not None else (EPISODES_HPARAM_FAST if FAST_MODE else EPISODES_HPARAM)
+    seed = seed if seed is not None else SEED
+    cache = cache if cache is not None else CacheManager(CACHE_DIR)
+    lambda_ewc_grid = lambda_ewc_grid if lambda_ewc_grid is not None else _CORE_E_LAMBDA_EWC_GRID
+    alpha_lambda_grid = alpha_lambda_grid if alpha_lambda_grid is not None else _CORE_E_ALPHA_LAMBDA_GRID
+    hidden_dim_grid = hidden_dim_grid if hidden_dim_grid is not None else _CORE_E_HIDDEN_DIM_GRID
+
+    config = {
+        "name": "core_E_hparam_vectorized",
+        "lambda_ewc": lambda_ewc_grid,
+        "alpha_lambda": alpha_lambda_grid,
+        "hidden_dim": hidden_dim_grid,
+        "n_seeds": n_seeds,
+        "n_steps": n_steps,
+        "seed": seed,
+        "fault_type": FAULT_TYPE,
+        "vectorized_path_v14_5": True,
+        "topology_fp": topology_fp("8bus"),
+    }
+    cached = cache.get(config)
+    if cached is not None:
+        return cached
+
+    grid = list(itertools.product(lambda_ewc_grid, alpha_lambda_grid, hidden_dim_grid))
+    results_grid: List[List[Optional[Dict]]] = [[None] * len(grid) for _ in range(n_seeds)]
+    for seed_idx in range(n_seeds):
+        for idx, (lamb, alpha, hid) in enumerate(grid):
+            run_seed = seed + seed_idx
+            of_val, cti_val = _run_hparam_single_vectorized(lamb, alpha, hid, run_seed, n_steps)
+            results_grid[seed_idx][idx] = {
+                "lambda_ewc": lamb, "alpha_lambda": alpha, "hidden_dim": hid,
+                "seed": seed_idx, "OF": of_val, "CTI": cti_val,
+            }
+
+    results = [r for row in results_grid for r in row]
+    cache.put(config, results)
+    return results
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--core", choices=["A", "B", "C", "D"], default="A")
+    parser.add_argument("--core", choices=["A", "B", "C", "D", "E"], default="A")
     parser.add_argument("--n-runs", type=int, default=None)
     parser.add_argument("--n-episodes", type=int, default=None, help="Core A/C only")
     parser.add_argument("--episodes-per-task", type=int, default=None, help="Core B only")
@@ -825,9 +964,14 @@ if __name__ == "__main__":
         for method, returns in result.items():
             print(f"Core C (vectorized, {args.system}) {method}: "
                   f"mean_final_return={np.mean(returns[:, -1]) if returns.size else float('nan'):.4f}")
-    else:
+    elif args.core == "D":
         result = run_core_D_vectorized(n_runs=args.n_runs, n_episodes=args.n_episodes, seed=args.seed)
         for cfg_name, runs in result.items():
             of_mean = np.mean([r["OF"] for r in runs])
             cti_mean = np.mean([r["CTI"] for r in runs])
             print(f"Core D (vectorized) {cfg_name}: OF_mean={of_mean:.4f}  CTI_mean={cti_mean:.4f}")
+    else:
+        result = run_core_E_vectorized(n_seeds=args.n_runs, n_steps=args.n_episodes, seed=args.seed)
+        print(f"Core E (vectorized): {len(result)} grid points  "
+              f"mean_OF={np.mean([r['OF'] for r in result]):.4f}  "
+              f"mean_CTI={np.mean([r['CTI'] for r in result]):.4f}")
