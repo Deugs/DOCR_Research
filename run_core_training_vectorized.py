@@ -648,9 +648,159 @@ def run_core_C_vectorized(n_runs: Optional[int] = None, n_episodes: Optional[int
     return final_results
 
 
+# ═════════════════════════════════════════════════════════════════
+# Core D (Phase V14.4) -- 5-arm ablation study
+# ═════════════════════════════════════════════════════════════════
+_CORE_D_CONFIGS = ["MAPPO", "MAPPO+GNN", "MAPPO+GNN+Safe", "MAPPO+GNN+Safe+EWC", "MAPPO+GNN+Safe+EWC+Curr"]
+
+
+def _run_ablation_single_vectorized(config_name: str, seed: int, n_episodes: int) -> "tuple[float, float]":
+    """Vectorized-path counterpart of run_core_training.py's
+    _run_ablation_single() (Core D). use_comm/use_safe/use_ewc/use_curr
+    are parsed from config_name exactly as the real function does
+    ("GNN"/"Safe"/"EWC"/"Curr" substring checks, run_core_training.py:
+    2138-2141). EWC (when use_ewc) uses the real per-sample Fisher
+    estimator from the trainer's own rollout buffer
+    (get_fisher_diagonal_from_buffer, Phase V13), not the real
+    function's manual finite-difference estimate -- same established
+    decision as Core A/B/C. The use_curr arm's 4-stage curriculum +
+    per-task-transition EWC mirrors Core B's vectorized counterpart's
+    structure exactly. Eval is a fixed 50 episodes (NOT
+    min(n_episodes, 200) like Core A/C -- confirmed from the real
+    function's hardcoded `for ep in range(50)`), tracking the real
+    per-step info["OF"] minimum over the episode (not a post-episode
+    objective_function() call) and check_constraints()'s raw
+    cti_violations COUNT (not a rate, unlike Core A/B/C) -- both
+    faithfully reproduced as-is, not "corrected" to match other Cores'
+    conventions."""
+    use_comm = "GNN" in config_name
+    use_safe = "Safe" in config_name
+    use_ewc = "EWC" in config_name
+    use_curr = "Curr" in config_name
+
+    net = get_8bus()
+    env = VectorizedDynamicDOCREnv(net, n_envs=1, seed=seed, fault_type=FAULT_TYPE,
+                                    curriculum_stage=0 if use_curr else 3)
+    train_env = env
+    if use_safe:
+        train_env = create_vectorized_safe_rl_env(env, SafeRLConfig(
+            project_actions=True, enforce_cti=True,
+            lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+            use_pid=True, adaptive_rho=True,
+        ))
+    trainer = VectorizedMAPPOTrainer(train_env, use_comm=use_comm, seed=seed)
+    ewc_trainer = create_ewc_trainer(trainer, EWCConfig()) if use_ewc else None
+
+    total_steps = n_episodes * env.max_steps
+    rng = np.random.default_rng(seed + 9999)
+
+    if use_curr:
+        steps_per_task = total_steps // 4
+        TASKS = [0.0, 0.20, 0.40, 0.60]
+        prev_task_name = prev_fisher = None
+        prev_conditions = prev_params = None
+        similarity_estimator = TaskSimilarityEstimator() if use_ewc else None
+        for pv in TASKS:
+            env.set_curriculum_stage(int(pv * 5))
+
+            if use_ewc and prev_task_name is not None:
+                cur = trainer.actor.get_all_params()
+                ewc_grad = ewc_trainer.apply_ewc_to_gradient(cur, np.zeros_like(cur))
+                trainer.actor.set_all_params(cur - 0.01 * ewc_grad)
+
+            trainer.train(total_steps=steps_per_task, verbose=False)
+            task_name = f"PV{int(pv * 100):03d}"
+
+            if use_ewc:
+                cur = trainer.actor.get_all_params()
+                fisher = trainer.get_fisher_diagonal_from_buffer()
+                cur_conditions = {"pv_level": pv}
+                ewc_trainer.ewc_regularizer.register_task(task_name, cur)
+                if prev_conditions is not None:
+                    similarity = similarity_estimator.estimate_similarity(
+                        prev_conditions, prev_params, cur_conditions, cur)
+                    ewc_trainer.ewc_regularizer.adapt_lambda(similarity)
+                if prev_task_name is not None:
+                    ewc_trainer.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+                prev_task_name, prev_fisher = task_name, fisher
+                prev_conditions, prev_params = cur_conditions, cur.copy()
+        if use_ewc:
+            ewc_trainer.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+            ewc_trainer.ewc_regularizer.finalize()
+    else:
+        trainer.train(total_steps=total_steps, verbose=False)
+        if use_ewc:
+            cur = trainer.actor.get_all_params()
+            fisher = trainer.get_fisher_diagonal_from_buffer()
+            ewc_trainer.ewc_regularizer.register_task(config_name, cur)
+            ewc_trainer.ewc_regularizer.update_fisher(config_name, fisher)
+            ewc_trainer.ewc_regularizer.finalize()
+
+    of_values, cti_values = [], []
+    for ep in range(50):
+        obs = train_env.reset(seed=seed + 999 + ep)[0]
+        done = False
+        ep_of = float("inf")
+        while not done:
+            if trainer.use_comm and trainer.comm_graph is not None:
+                enhanced_obs, _, _ = trainer.comm_graph.forward(obs, rng)
+            else:
+                enhanced_obs = obs
+            actions = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                a, _ = trainer.actor.sample(enhanced_obs[i], rng)
+                actions[i] = a
+            next_obs, _, done, info = train_env.step(actions[None, :, :])
+            obs = next_obs[0]
+            ep_of = min(ep_of, float(np.asarray(info.get("OF", float("inf"))).reshape(-1)[0]))
+        of_values.append(ep_of)
+        TMS, PS = train_env.get_state()
+        TMS, PS = TMS[0], PS[0]
+        c = check_constraints(net, TMS, PS, fault_type=FAULT_TYPE)
+        cti_values.append(c["cti_violations"])
+
+    return float(np.mean(of_values)), float(np.mean(cti_values))
+
+
+def run_core_D_vectorized(n_runs: Optional[int] = None, n_episodes: Optional[int] = None,
+                           seed: Optional[int] = None, cache: Optional[CacheManager] = None) -> Dict:
+    """Vectorized-path counterpart of run_core_training.py's run_core_D()
+    (5-arm ablation study). Writes to a cache entry under a DIFFERENT
+    name ("core_D_ablation_vectorized") so it never collides with the
+    real Core D cache entry -- see module docstring."""
+    n_runs = n_runs if n_runs is not None else (N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE)
+    n_episodes = n_episodes if n_episodes is not None else (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT)
+    seed = seed if seed is not None else SEED
+    cache = cache if cache is not None else CacheManager(CACHE_DIR)
+
+    config = {
+        "name": "core_D_ablation_vectorized",
+        "configs": _CORE_D_CONFIGS,
+        "n_runs": n_runs,
+        "n_episodes": n_episodes,
+        "seed": seed,
+        "fault_type": FAULT_TYPE,
+        "vectorized_path_v14_4": True,
+        "topology_fp": topology_fp("8bus"),
+    }
+    cached = cache.get(config)
+    if cached is not None:
+        return cached
+
+    results: Dict[str, List[Optional[Dict]]] = {name: [None] * n_runs for name in _CORE_D_CONFIGS}
+    for cfg_name in _CORE_D_CONFIGS:
+        for run_idx in range(n_runs):
+            run_seed = seed + run_idx + _method_seed_offset(cfg_name, 1000)
+            of_val, cti_val = _run_ablation_single_vectorized(cfg_name, run_seed, n_episodes)
+            results[cfg_name][run_idx] = {"OF": of_val, "CTI": cti_val}
+
+    cache.put(config, results)
+    return results
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--core", choices=["A", "B", "C"], default="A")
+    parser.add_argument("--core", choices=["A", "B", "C", "D"], default="A")
     parser.add_argument("--n-runs", type=int, default=None)
     parser.add_argument("--n-episodes", type=int, default=None, help="Core A/C only")
     parser.add_argument("--episodes-per-task", type=int, default=None, help="Core B only")
@@ -669,9 +819,15 @@ if __name__ == "__main__":
         last_ewc = result["with_ewc"][-1]
         print(f"Core B (vectorized, {args.system}): n_runs={len(result['with_ewc'])}  "
               f"pv_evaluation={last_ewc['pv_evaluation']}")
-    else:
+    elif args.core == "C":
         result = run_core_C_vectorized(n_runs=args.n_runs, n_episodes=args.n_episodes,
                                         seed=args.seed, system=args.system)
         for method, returns in result.items():
             print(f"Core C (vectorized, {args.system}) {method}: "
                   f"mean_final_return={np.mean(returns[:, -1]) if returns.size else float('nan'):.4f}")
+    else:
+        result = run_core_D_vectorized(n_runs=args.n_runs, n_episodes=args.n_episodes, seed=args.seed)
+        for cfg_name, runs in result.items():
+            of_mean = np.mean([r["OF"] for r in runs])
+            cti_mean = np.mean([r["CTI"] for r in runs])
+            print(f"Core D (vectorized) {cfg_name}: OF_mean={of_mean:.4f}  CTI_mean={cti_mean:.4f}")

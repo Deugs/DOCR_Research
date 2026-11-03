@@ -24,6 +24,7 @@ from run_core_training_vectorized import (
     run_core_B_vectorized, _run_curriculum_single_vectorized,
     run_core_C_vectorized, _run_baseline_single_vectorized,
     _evaluate_traditional_vectorized, _CORE_C_METHODS,
+    run_core_D_vectorized, _run_ablation_single_vectorized, _CORE_D_CONFIGS,
 )
 
 
@@ -279,3 +280,58 @@ def test_run_core_C_vectorized_cache_hit_on_second_call():
     assert cache.get_stats()["hits"] == hits_before + 1
     for method in _CORE_C_METHODS:
         assert np.allclose(first[method], second[method])
+
+
+# ═════════════════════════════════════════════════════════════════
+# Core D (Phase V14.4) -- 5-arm ablation study
+# ═════════════════════════════════════════════════════════════════
+
+def test_run_core_D_vectorized_single_arm_schema():
+    """Every ablation arm must return a finite (OF, CTI) scalar pair --
+    covering the plain arm (no comm/safe/EWC/curriculum) and the fully-
+    loaded arm (comm+safe+EWC+curriculum, exercising the 4-stage
+    curriculum-with-EWC-task-transition branch) confirms both code paths
+    inside _run_ablation_single_vectorized actually run end to end."""
+    for config_name in ["MAPPO", "MAPPO+GNN+Safe+EWC+Curr"]:
+        of_val, cti_val = _run_ablation_single_vectorized(config_name, seed=8080, n_episodes=1)
+        assert np.isfinite(of_val), f"{config_name}: non-finite OF"
+        assert np.isfinite(cti_val), f"{config_name}: non-finite CTI"
+        assert cti_val >= 0.0
+
+
+def test_run_core_D_vectorized_matches_real_aggregation_schema():
+    """The cached result must carry the exact key set the real
+    run_core_D() produces: one list of {"OF", "CTI"} dicts per ablation
+    config, loadable through run_post_processing.py's real
+    load_cache()."""
+    cache = CacheManager(CACHE_DIR)
+    result = run_core_D_vectorized(n_runs=1, n_episodes=1, seed=9090, cache=cache)
+
+    assert set(result.keys()) == set(_CORE_D_CONFIGS)
+    for cfg_name, runs in result.items():
+        assert len(runs) == 1, f"{cfg_name}: wrong n_runs"
+        assert set(runs[0].keys()) == {"OF", "CTI"}, f"{cfg_name}: wrong keys"
+        assert np.isfinite(runs[0]["OF"])
+        assert np.isfinite(runs[0]["CTI"])
+
+    expected_name = "core_D_ablation_vectorized"
+    assert expected_name != "core_D_ablation", (
+        "must never collide with the real Core D cache name"
+    )
+
+    import run_post_processing as rpp
+    loaded = rpp.load_cache(expected_name)
+    assert loaded is not None
+    assert set(loaded.keys()) == set(_CORE_D_CONFIGS)
+    assert set(loaded["MAPPO"][0].keys()) == {"OF", "CTI"}
+
+
+def test_run_core_D_vectorized_cache_hit_on_second_call():
+    """Calling with an identical config must hit the cache, not retrain."""
+    cache = CacheManager(CACHE_DIR)
+    first = run_core_D_vectorized(n_runs=1, n_episodes=1, seed=10100, cache=cache)
+    hits_before = cache.get_stats()["hits"]
+    second = run_core_D_vectorized(n_runs=1, n_episodes=1, seed=10100, cache=cache)
+    assert cache.get_stats()["hits"] == hits_before + 1
+    for cfg_name in _CORE_D_CONFIGS:
+        assert first[cfg_name][0]["OF"] == second[cfg_name][0]["OF"]
