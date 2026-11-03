@@ -16,6 +16,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
+import pytest
 
 from network.network_data import load_network
 from run_core_training import CacheManager, CACHE_DIR
@@ -26,6 +27,7 @@ from run_core_training_vectorized import (
     _evaluate_traditional_vectorized, _CORE_C_METHODS,
     run_core_D_vectorized, _run_ablation_single_vectorized, _CORE_D_CONFIGS,
     run_core_E_vectorized, _run_hparam_single_vectorized,
+    run_core_F_vectorized, _run_scalability_single_vectorized,
 )
 
 
@@ -402,3 +404,62 @@ def test_run_core_E_vectorized_cache_hit_on_second_call():
         lambda_ewc_grid=[1e4], alpha_lambda_grid=[1e-3], hidden_dim_grid=[16])
     assert cache.get_stats()["hits"] == hits_before + 1
     assert first[0]["OF"] == second[0]["OF"]
+
+
+# ═════════════════════════════════════════════════════════════════
+# Core F (Phase V14.6) -- scalability analysis
+# ═════════════════════════════════════════════════════════════════
+# Each system's run has a FIXED cost (100*300=30000 training steps + 10
+# eval episodes, not parametrized by any n_episodes-style override -- see
+# run_core_F_vectorized's docstring) -- tests use the smallest supported
+# system (8bus) to keep runtime down, not a reduced-budget variant.
+
+def test_run_core_F_vectorized_unsupported_system_raises():
+    """VectorizedPowerFlowSolver requires real per-branch impedance data,
+    which only 8bus/14bus/39bus have -- confirms the real, pre-existing
+    Phase V-PF limitation surfaces as a clear error rather than silently
+    producing wrong results for systems like 3bus/30bus/57bus/118bus."""
+    with pytest.raises(ValueError, match="per-branch impedance data"):
+        _run_scalability_single_vectorized("3bus", seed=16160)
+
+
+def test_run_core_F_vectorized_single_system_schema():
+    """One system's raw result must carry every field the real
+    _run_scalability_single() returns, with finite values."""
+    result = _run_scalability_single_vectorized("8bus", seed=17170)
+    assert set(result.keys()) == {"n_relays", "train_time", "final_performance"}
+    assert result["n_relays"] > 0
+    assert result["train_time"] > 0.0
+    assert np.isfinite(result["final_performance"])
+
+
+def test_run_core_F_vectorized_matches_real_aggregation_schema():
+    """The cached result must carry the exact {sys_name: {...}} structure
+    the real run_core_F() produces, loadable through
+    run_post_processing.py's real load_cache()."""
+    cache = CacheManager(CACHE_DIR)
+    result = run_core_F_vectorized(systems=["8bus"], seed=18180, cache=cache)
+
+    assert set(result.keys()) == {"8bus"}
+    assert set(result["8bus"].keys()) == {"n_relays", "train_time", "final_performance"}
+
+    expected_name = "core_F_scalability_vectorized"
+    assert expected_name != "core_F_scalability", (
+        "must never collide with the real Core F cache name"
+    )
+
+    import run_post_processing as rpp
+    loaded = rpp.load_cache(expected_name)
+    assert loaded is not None
+    assert "8bus" in loaded
+    assert set(loaded["8bus"].keys()) == {"n_relays", "train_time", "final_performance"}
+
+
+def test_run_core_F_vectorized_cache_hit_on_second_call():
+    """Calling with an identical config must hit the cache, not retrain."""
+    cache = CacheManager(CACHE_DIR)
+    first = run_core_F_vectorized(systems=["8bus"], seed=19190, cache=cache)
+    hits_before = cache.get_stats()["hits"]
+    second = run_core_F_vectorized(systems=["8bus"], seed=19190, cache=cache)
+    assert cache.get_stats()["hits"] == hits_before + 1
+    assert first["8bus"]["final_performance"] == second["8bus"]["final_performance"]

@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import time
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -937,9 +938,114 @@ def run_core_E_vectorized(n_seeds: Optional[int] = None, n_steps: Optional[int] 
     return results
 
 
+# ═════════════════════════════════════════════════════════════════
+# Core F (Phase V14.6) -- Scalability analysis
+# ═════════════════════════════════════════════════════════════════
+def _run_scalability_single_vectorized(sys_name: str, seed: int) -> Dict:
+    """Vectorized-path counterpart of run_core_training.py's
+    _run_scalability_single() (Core F). The simplest recipe of any Core
+    in this plan -- no Safe RL, no EWC, no curriculum: use_comm=True,
+    curriculum_stage=3 fixed, one trainer.train(total_steps=100*300)
+    call (the real function's own comment: this Core measures
+    training-time SCALING across network sizes, not final performance,
+    so the budget is deliberately short and NOT parametrized by
+    n_episodes the way every other Core's training call is), wall-clock
+    timed. Eval is a fixed 10 episodes tracking the real per-step
+    info["OF"] minimum (same convention as Core D/E)."""
+    net = load_network(sys_name)
+    n_relays = net.n_relays
+    env = VectorizedDynamicDOCREnv(net, n_envs=1, seed=seed, fault_type=FAULT_TYPE, curriculum_stage=3)
+    trainer = VectorizedMAPPOTrainer(env, use_comm=True, seed=seed)
+    rng = np.random.default_rng(seed)
+
+    t0 = time.time()
+    trainer.train(total_steps=100 * env.max_steps, verbose=False)
+    train_time = time.time() - t0
+
+    of_values = []
+    for ep in range(10):
+        obs = env.reset(seed=seed + 999 + ep)[0]
+        done = False
+        ep_of = float("inf")
+        while not done:
+            if trainer.use_comm and trainer.comm_graph is not None:
+                enhanced_obs, _, _ = trainer.comm_graph.forward(obs, rng)
+            else:
+                enhanced_obs = obs
+            actions = np.zeros((env.n_agents, env.ACT_DIM))
+            for i in range(env.n_agents):
+                a, _ = trainer.actor.sample(enhanced_obs[i], rng)
+                actions[i] = a
+            next_obs, _, done, info = env.step(actions[None, :, :])
+            obs = next_obs[0]
+            ep_of = min(ep_of, float(np.asarray(info.get("OF", float("inf"))).reshape(-1)[0]))
+        of_values.append(ep_of)
+
+    return {
+        "n_relays": n_relays,
+        "train_time": train_time,
+        "final_performance": float(np.mean(of_values)),
+    }
+
+
+#: Real finding, confirmed empirically (not assumed): VectorizedPowerFlow-
+#: Solver (Phase V-PF) requires real per-branch impedance data
+#: (NetworkData.line_data["lines"]) and only 8bus/14bus/39bus have it --
+#: 3bus/30bus/57bus/118bus raise a ValueError on construction. This is a
+#: pre-existing Phase V-PF scope boundary (not a bug introduced here, and
+#: not fixable within V14's "pipeline integration" scope -- it would mean
+#: extending the power-flow solver itself to systems with no real
+#: impedance data at all). Real Core F's own system lists (both the
+#: fast-mode default ["8bus","14bus","30bus"] and the full 7-system
+#: suite) each include at least one unsupported system, so NEITHER of
+#: the real function's default system lists can run end-to-end on this
+#: vectorized path as-is -- the default here is narrowed to exactly the
+#: 3 genuinely-supported systems instead of silently reusing either real
+#: default and crashing.
+_CORE_F_SUPPORTED_SYSTEMS = ["8bus", "14bus", "39bus"]
+
+
+def run_core_F_vectorized(systems: Optional[List[str]] = None, seed: Optional[int] = None,
+                           cache: Optional[CacheManager] = None) -> Dict:
+    """Vectorized-path counterpart of run_core_training.py's run_core_F()
+    (scalability analysis across network sizes). Writes to a cache entry
+    under a DIFFERENT name ("core_F_scalability_vectorized") so it never
+    collides with the real Core F cache entry -- see module docstring.
+
+    `systems` defaults to _CORE_F_SUPPORTED_SYSTEMS (8bus/14bus/39bus),
+    NOT the real function's fast/full system lists -- see that
+    constant's comment for why neither real default can run on this
+    vectorized path. Passing an unsupported system raises the same
+    ValueError VectorizedPowerFlowSolver already raises
+    ("...requires real per-branch impedance data..."), not a silent
+    fallback -- this is a genuine capability gap for Core F's
+    full-scalability-sweep claim, not something to paper over."""
+    seed = seed if seed is not None else SEED
+    cache = cache if cache is not None else CacheManager(CACHE_DIR)
+    if systems is None:
+        systems = list(_CORE_F_SUPPORTED_SYSTEMS)
+
+    config = {
+        "name": "core_F_scalability_vectorized",
+        "systems": systems, "seed": seed, "fault_type": FAULT_TYPE,
+        "vectorized_path_v14_6": True,
+        "topology_fp": topology_fp(systems),
+    }
+    cached = cache.get(config)
+    if cached is not None:
+        return cached
+
+    results: Dict[str, Dict] = {}
+    for sys_name in systems:
+        results[sys_name] = _run_scalability_single_vectorized(sys_name, seed)
+
+    cache.put(config, results)
+    return results
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--core", choices=["A", "B", "C", "D", "E"], default="A")
+    parser.add_argument("--core", choices=["A", "B", "C", "D", "E", "F"], default="A")
     parser.add_argument("--n-runs", type=int, default=None)
     parser.add_argument("--n-episodes", type=int, default=None, help="Core A/C only")
     parser.add_argument("--episodes-per-task", type=int, default=None, help="Core B only")
@@ -970,8 +1076,13 @@ if __name__ == "__main__":
             of_mean = np.mean([r["OF"] for r in runs])
             cti_mean = np.mean([r["CTI"] for r in runs])
             print(f"Core D (vectorized) {cfg_name}: OF_mean={of_mean:.4f}  CTI_mean={cti_mean:.4f}")
-    else:
+    elif args.core == "E":
         result = run_core_E_vectorized(n_seeds=args.n_runs, n_steps=args.n_episodes, seed=args.seed)
         print(f"Core E (vectorized): {len(result)} grid points  "
               f"mean_OF={np.mean([r['OF'] for r in result]):.4f}  "
               f"mean_CTI={np.mean([r['CTI'] for r in result]):.4f}")
+    else:
+        result = run_core_F_vectorized(seed=args.seed)
+        for sys_name, r in result.items():
+            print(f"Core F (vectorized) {sys_name}: n_relays={r['n_relays']}  "
+                  f"train_time={r['train_time']:.1f}s  final_performance={r['final_performance']:.4f}")
