@@ -49,23 +49,55 @@ duplicate.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 
-from network.network_data import get_8bus
-from network.relay_physics import check_constraints
+from network.network_data import get_8bus, NETWORKS
+from network.relay_physics import check_constraints, objective_function
 from marl.vectorized_marl_env import VectorizedDynamicDOCREnv
 from marl.vectorized_marl_agents import VectorizedMAPPOTrainer
 from marl.safe_rl import create_vectorized_safe_rl_env, SafeRLConfig
-from marl.continual_trainer import create_ewc_trainer, EWCConfig
+from marl.continual_trainer import create_ewc_trainer, EWCConfig, TaskSimilarityEstimator
 
 from run_core_training import (
     UnifiedTrainingLogger, CacheManager, topology_fp, _aggregate_runs,
     CACHE_DIR, CHECKPOINT_DIR, FAULT_TYPE, SEED,
     N_RUNS_DEFAULT, N_RUNS_FAST, EPISODES_DEFAULT, EPISODES_FAST, FAST_MODE,
+    N_RUNS_BASELINE, N_RUNS_BASELINE_FAST,
 )
+
+
+def _run_eval_episode(safe_env, trainer, rng, seed):
+    """Run one full episode with the current policy against an n_envs=1
+    VectorizedDynamicDOCREnv/VectorizedSafeRLWrapper pair, sequentially --
+    see module docstring for why eval episodes across this whole script
+    stay n_envs=1/sequential rather than batched. Mirrors the
+    structurally-repeated single-env eval loop pattern throughout
+    run_core_training.py's real Cores (act_fn + safe_env.step() in a
+    while-not-done loop). Returns (ep_reward, final_TMS, final_PS) --
+    enough for every Core B eval loop's needs (return-only or
+    final-state-only); Core A's own eval loop needed extra per-step
+    info["safe_rl"] tracking and action-projection sampling, so it stays
+    hand-written rather than forced through this shared helper."""
+    n_agents = trainer.n_agents
+    obs = safe_env.reset(seed=seed)[0]
+    done = False
+    ep_reward = 0.0
+    while not done:
+        if trainer.use_comm and trainer.comm_graph is not None:
+            enhanced_obs, _, _ = trainer.comm_graph.forward(obs, rng)
+        else:
+            enhanced_obs = obs
+        actions = np.zeros((n_agents, trainer.env.ACT_DIM))
+        for i in range(n_agents):
+            a, _ = trainer.actor.sample(enhanced_obs[i], rng)
+            actions[i] = a
+        next_obs, reward, done, _info = safe_env.step(actions[None, :, :])
+        obs = next_obs[0]
+        ep_reward += float(np.mean(reward[0]))
+    TMS, PS = safe_env.get_state()
+    return ep_reward, TMS[0], PS[0]
 
 
 def _run_core_A_vectorized_single(n_episodes: int, seed: int) -> Dict:
@@ -95,7 +127,7 @@ def _run_core_A_vectorized_single(n_episodes: int, seed: int) -> Dict:
     rng = np.random.default_rng(seed)
 
     total_steps = n_episodes * env.max_steps
-    history = trainer.train(total_steps=total_steps, verbose=False)
+    trainer.train(total_steps=total_steps, verbose=False)
 
     # Attention snapshots: same subsampling as the real Core A (avoids
     # Fig 38's gridspec crash on hundreds of raw per-checkpoint snapshots).
@@ -228,14 +260,202 @@ def run_core_A_vectorized(n_runs: Optional[int] = None, n_episodes: Optional[int
     return aggregated
 
 
+# ═════════════════════════════════════════════════════════════════
+# Core B (Phase V14.2) -- Curriculum training (0% -> 60% PV)
+# ═════════════════════════════════════════════════════════════════
+def _run_curriculum_single_vectorized(use_ewc: bool, seed: int, episodes_per_task: int,
+                                       system: str = "8bus",
+                                       n_eval_episodes: int = 30) -> Dict:
+    """Vectorized-path counterpart of run_core_training.py's
+    _run_curriculum_single() (Core B). Same real recipe: the 4-stage PV
+    curriculum [0.0, 0.20, 0.40, 0.60], use_comm=True, the identical
+    literal SafeRLConfig, EWCConfig() defaults with real per-task-
+    transition Fisher + TaskSimilarityEstimator-driven adapt_lambda.
+    Deliberately NOT replicating Core B's manual short-rollout +
+    finite-difference Fisher estimate -- same Phase V13 "use the real
+    per-sample estimator instead" decision as Core A's vectorized
+    counterpart. Eval loops use _run_eval_episode() (n_envs=1, sequential
+    -- see module docstring).
+
+    n_eval_episodes defaults to 30 to faithfully match the real Core B's
+    hardcoded range(30) eval loops (run_core_training.py:1551,1601 -- NOT
+    reduced by FAST_MODE there either). Tests override this down (e.g. 2)
+    purely for runtime -- real Core B's per-task-transition eval sweep is
+    4 tasks x 4 eval_pv x 30 episodes = 480 (task_perf) + 120 (pv_evaluation)
+    = 600 sequential full episodes per use_ewc arm, which is correct
+    fidelity but far too slow for a schema/correctness smoke test."""
+    TASKS = [0.0, 0.20, 0.40, 0.60]
+    net = NETWORKS[system]()
+    env = VectorizedDynamicDOCREnv(net, n_envs=1, seed=seed, fault_type=FAULT_TYPE, curriculum_stage=0)
+    safe_env = create_vectorized_safe_rl_env(env, SafeRLConfig(
+        project_actions=True, enforce_cti=True,
+        lambda_init=1.0, lambda_lr=0.01, rho_penalty=10.0,
+        use_pid=True, adaptive_rho=True,
+    ))
+    base_trainer = VectorizedMAPPOTrainer(safe_env, use_comm=True, seed=seed)
+    ewc_wrapper = create_ewc_trainer(base_trainer, EWCConfig()) if use_ewc else None
+    similarity_estimator = TaskSimilarityEstimator() if use_ewc else None
+
+    rng = np.random.default_rng(seed)
+    steps_per_task = episodes_per_task * env.max_steps
+
+    task_performances = []
+    curriculum_history = []
+    prev_task_name = None
+    prev_fisher = None
+    prev_conditions = None
+    prev_params = None
+
+    for pv in TASKS:
+        env.set_curriculum_stage(int(pv * 5))  # 0.0->0, 0.2->1, 0.4->2, 0.6->3
+
+        if use_ewc and ewc_wrapper is not None and prev_task_name is not None:
+            cur = base_trainer.actor.get_all_params()
+            ewc_grad = ewc_wrapper.apply_ewc_to_gradient(cur, np.zeros_like(cur))
+            base_trainer.actor.set_all_params(cur - 0.01 * ewc_grad)
+
+        stage_result = base_trainer.train(total_steps=steps_per_task, verbose=False)
+        curriculum_history.extend(stage_result.get("history", []))
+        task_name = f"PV{int(pv * 100):03d}"
+
+        if use_ewc and ewc_wrapper is not None:
+            cur = base_trainer.actor.get_all_params()
+            fisher = base_trainer.get_fisher_diagonal_from_buffer()
+
+            cur_conditions = {"pv_level": pv}
+            ewc_wrapper.ewc_regularizer.register_task(task_name, cur)
+            if prev_conditions is not None:
+                similarity = similarity_estimator.estimate_similarity(
+                    prev_conditions, prev_params, cur_conditions, cur
+                )
+                ewc_wrapper.ewc_regularizer.adapt_lambda(similarity)
+            if prev_task_name is not None:
+                ewc_wrapper.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+            prev_task_name = task_name
+            prev_fisher = fisher
+            prev_conditions = cur_conditions
+            prev_params = cur.copy()
+
+        task_perf = []
+        for eval_pv in TASKS:
+            env.set_curriculum_stage(int(eval_pv * 5))
+            rewards = []
+            for ep in range(n_eval_episodes):
+                ep_reward, _, _ = _run_eval_episode(
+                    safe_env, base_trainer, rng, seed=seed + 50000 + int(eval_pv * 1000) + ep)
+                rewards.append(ep_reward)
+            task_perf.append(float(np.mean(rewards)))
+        task_performances.append(task_perf)
+
+    if use_ewc and ewc_wrapper is not None:
+        # TASKS[-1] is only consolidated via the *next* task's register_task()
+        # call, which doesn't exist for the last task -- finalize() alone
+        # would otherwise consolidate it with a zero-information placeholder
+        # Fisher instead of the real one just computed. Same ordering fix
+        # the real Core B applies.
+        ewc_wrapper.ewc_regularizer.update_fisher(prev_task_name, prev_fisher)
+        ewc_wrapper.ewc_regularizer.finalize()
+
+    pv_evaluation = {}
+    for eval_pv in TASKS:
+        env.set_curriculum_stage(int(eval_pv * 5))
+        of_vals, cti_rates = [], []
+        for ep in range(n_eval_episodes):
+            _, TMS, PS = _run_eval_episode(
+                safe_env, base_trainer, rng, seed=seed + 70000 + int(eval_pv * 1000) + ep)
+            of_val, _, _ = objective_function(net, TMS, PS, fault_type=FAULT_TYPE)
+            c = check_constraints(net, TMS, PS, fault_type=FAULT_TYPE)
+            of_vals.append(of_val)
+            cti_rates.append(c["cti_violations"] / net.n_pairs)
+        pv_evaluation[eval_pv] = {
+            "objective": float(np.mean(of_vals)),
+            "cti_rate": float(np.mean(cti_rates)),
+        }
+
+    return {
+        "task_performances": np.array(task_performances),
+        "use_ewc": use_ewc,
+        "final_checkpoint": "saved",
+        "pv_evaluation": pv_evaluation,
+        "fisher": prev_fisher if use_ewc else None,
+        "history": curriculum_history,
+    }
+
+
+def run_core_B_vectorized(n_runs: Optional[int] = None, episodes_per_task: Optional[int] = None,
+                           seed: Optional[int] = None, system: str = "8bus",
+                           cache: Optional[CacheManager] = None,
+                           n_eval_episodes: int = 30) -> Dict:
+    """Vectorized-path counterpart of run_core_training.py's run_core_B().
+
+    Writes to a cache entry under a DIFFERENT name
+    (f"{real_name}_vectorized") so it never collides with or overwrites the
+    real Core B cache entry -- see module docstring. n_eval_episodes
+    defaults to 30 (faithful to the real Core B); tests override it down
+    for runtime -- see _run_curriculum_single_vectorized's docstring.
+    """
+    n_runs = n_runs if n_runs is not None else (N_RUNS_BASELINE_FAST if FAST_MODE else N_RUNS_BASELINE)
+    episodes_per_task = episodes_per_task if episodes_per_task is not None else (
+        (EPISODES_FAST if FAST_MODE else EPISODES_DEFAULT) // 10)
+    seed = seed if seed is not None else SEED
+    cache = cache if cache is not None else CacheManager(CACHE_DIR)
+
+    TASKS = [0.0, 0.20, 0.40, 0.60]
+    base_name = "core_B_curriculum" if system == "8bus" else f"core_B_curriculum_{system}"
+    config = {
+        "name": f"{base_name}_vectorized",
+        "system": system,
+        "tasks": TASKS,
+        "episodes_per_task": episodes_per_task,
+        "n_runs": n_runs,
+        "seed": seed,
+        "fault_type": FAULT_TYPE,
+        "vectorized_path_v14_2": True,
+        "topology_fp": topology_fp(system),
+        "n_eval_episodes": n_eval_episodes,
+    }
+    cached = cache.get(config)
+    if cached is not None:
+        return cached
+
+    with_ewc: List[Optional[Dict]] = [None] * n_runs
+    without_ewc: List[Optional[Dict]] = [None] * n_runs
+    task_evaluations: List[Optional[Dict]] = [None] * n_runs
+
+    for run_idx in range(n_runs):
+        result_ewc = _run_curriculum_single_vectorized(
+            True, seed + run_idx, episodes_per_task, system=system,
+            n_eval_episodes=n_eval_episodes)
+        with_ewc[run_idx] = result_ewc
+        task_evaluations[run_idx] = result_ewc.get("pv_evaluation")
+
+        without_ewc[run_idx] = _run_curriculum_single_vectorized(
+            False, seed + run_idx + 10000, episodes_per_task, system=system,
+            n_eval_episodes=n_eval_episodes)
+
+    all_results = {"with_ewc": with_ewc, "without_ewc": without_ewc, "task_evaluations": task_evaluations}
+    cache.put(config, all_results)
+    return all_results
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--core", choices=["A", "B"], default="A")
     parser.add_argument("--n-runs", type=int, default=None)
-    parser.add_argument("--n-episodes", type=int, default=None)
+    parser.add_argument("--n-episodes", type=int, default=None, help="Core A only")
+    parser.add_argument("--episodes-per-task", type=int, default=None, help="Core B only")
+    parser.add_argument("--system", default="8bus", help="Core B only")
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
-    result = run_core_A_vectorized(n_runs=args.n_runs, n_episodes=args.n_episodes, seed=args.seed)
-    print(f"Core A (vectorized): n_runs={result['n_runs']}  "
-          f"final global_return_mean={result['global_returns_mean'][-1]:.4f}  "
-          f"final cti_violation_rate_mean={result['cti_violation_rates_mean'][-1]:.2f}%")
+    if args.core == "A":
+        result = run_core_A_vectorized(n_runs=args.n_runs, n_episodes=args.n_episodes, seed=args.seed)
+        print(f"Core A (vectorized): n_runs={result['n_runs']}  "
+              f"final global_return_mean={result['global_returns_mean'][-1]:.4f}  "
+              f"final cti_violation_rate_mean={result['cti_violation_rates_mean'][-1]:.2f}%")
+    else:
+        result = run_core_B_vectorized(n_runs=args.n_runs, episodes_per_task=args.episodes_per_task,
+                                        seed=args.seed, system=args.system)
+        last_ewc = result["with_ewc"][-1]
+        print(f"Core B (vectorized, {args.system}): n_runs={len(result['with_ewc'])}  "
+              f"pv_evaluation={last_ewc['pv_evaluation']}")

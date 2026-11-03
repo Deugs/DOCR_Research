@@ -18,7 +18,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 
 from run_core_training import CacheManager, CACHE_DIR
-from run_core_training_vectorized import run_core_A_vectorized, _run_core_A_vectorized_single
+from run_core_training_vectorized import (
+    run_core_A_vectorized, _run_core_A_vectorized_single,
+    run_core_B_vectorized, _run_curriculum_single_vectorized,
+)
 
 
 def test_run_core_A_vectorized_single_schema():
@@ -97,3 +100,90 @@ def test_run_core_A_vectorized_cache_hit_on_second_call():
     second = run_core_A_vectorized(n_runs=1, n_episodes=2, seed=5151, cache=cache)
     assert cache.get_stats()["hits"] == hits_before + 1
     assert np.allclose(first["global_returns_mean"], second["global_returns_mean"])
+
+
+# ═════════════════════════════════════════════════════════════════
+# Core B (Phase V14.2)
+# ═════════════════════════════════════════════════════════════════
+# n_eval_episodes is overridden way down from the real Core B's
+# hardcoded 30 (run_core_training.py:1551,1601) purely for test runtime --
+# see _run_curriculum_single_vectorized's docstring. episodes_per_task=1
+# and n_eval_episodes=2 together keep each full with_ewc/without_ewc pair
+# under a few minutes instead of the ~1.5h a faithful n_eval_episodes=30
+# smoke test took during development.
+
+def test_run_core_B_vectorized_single_schema():
+    """One curriculum run's raw result must carry every field the real
+    _run_curriculum_single() returns, with the shapes run_core_B_vectorized
+    expects to collect into with_ewc/without_ewc/task_evaluations."""
+    result = _run_curriculum_single_vectorized(
+        use_ewc=True, seed=6161, episodes_per_task=1, system="8bus", n_eval_episodes=2)
+
+    for key in ["task_performances", "use_ewc", "final_checkpoint", "pv_evaluation", "fisher", "history"]:
+        assert key in result, f"missing key: {key}"
+
+    TASKS = [0.0, 0.20, 0.40, 0.60]
+    assert result["task_performances"].shape == (len(TASKS), len(TASKS))
+    assert np.all(np.isfinite(result["task_performances"]))
+    assert result["use_ewc"] is True
+    assert result["fisher"] is not None
+    assert set(result["pv_evaluation"].keys()) == set(TASKS)
+    for eval_pv in TASKS:
+        entry = result["pv_evaluation"][eval_pv]
+        assert set(entry.keys()) == {"objective", "cti_rate"}
+        assert np.isfinite(entry["objective"])
+        assert 0.0 <= entry["cti_rate"] <= 1.0
+
+    no_ewc = _run_curriculum_single_vectorized(
+        use_ewc=False, seed=16161, episodes_per_task=1, system="8bus", n_eval_episodes=2)
+    assert no_ewc["fisher"] is None
+    assert no_ewc["use_ewc"] is False
+
+
+def test_run_core_B_vectorized_matches_real_aggregation_schema():
+    """The cached result must carry the exact key set the real run_core_B()
+    produces (with_ewc/without_ewc/task_evaluations), loadable through
+    run_post_processing.py's real load_cache() under its own
+    (non-colliding) cache name."""
+    cache = CacheManager(CACHE_DIR)
+    result = run_core_B_vectorized(
+        n_runs=1, episodes_per_task=1, seed=7171, system="8bus",
+        cache=cache, n_eval_episodes=2)
+
+    assert set(result.keys()) == {"with_ewc", "without_ewc", "task_evaluations"}
+    assert len(result["with_ewc"]) == 1
+    assert len(result["without_ewc"]) == 1
+    assert len(result["task_evaluations"]) == 1
+    assert result["task_evaluations"][0] == result["with_ewc"][0]["pv_evaluation"]
+
+    expected_name = "core_B_curriculum_vectorized"
+    assert expected_name != "core_B_curriculum", (
+        "must never collide with the real Core B cache name"
+    )
+
+    # Same test-isolation lesson as Core A's equivalent test (see its
+    # docstring): load_cache()'s "most recent wins" lookup resolves across
+    # every entry ever cached under this shared name, not scoped to this
+    # call -- assert schema/shape, not bit-for-bit equality against `result`.
+    import run_post_processing as rpp
+    loaded = rpp.load_cache(expected_name)
+    assert loaded is not None
+    assert set(loaded.keys()) == {"with_ewc", "without_ewc", "task_evaluations"}
+    assert loaded["with_ewc"][0]["task_performances"].shape == (4, 4)
+
+
+def test_run_core_B_vectorized_cache_hit_on_second_call():
+    """Calling with an identical config must hit the cache, not retrain."""
+    cache = CacheManager(CACHE_DIR)
+    first = run_core_B_vectorized(
+        n_runs=1, episodes_per_task=1, seed=8181, system="8bus",
+        cache=cache, n_eval_episodes=2)
+    hits_before = cache.get_stats()["hits"]
+    second = run_core_B_vectorized(
+        n_runs=1, episodes_per_task=1, seed=8181, system="8bus",
+        cache=cache, n_eval_episodes=2)
+    assert cache.get_stats()["hits"] == hits_before + 1
+    assert np.allclose(
+        first["with_ewc"][0]["task_performances"],
+        second["with_ewc"][0]["task_performances"],
+    )
