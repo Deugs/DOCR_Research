@@ -15,21 +15,19 @@ Configuration (precedence: CLI > config file > preset > env vars > defaults):
   • --fast              Enable fast mode (reduced iterations)
   • All CLI args from docl_config.py supported
 
-DATA PROVENANCE WARNING (2026-08-07): every fig_NN_* function below that
-follows the pattern `data = load_cache(name); if data is None: data =
-{<hardcoded literals>}` now sets `is_synthetic = data is None`, logs a
-`logger.warning(...)` naming the missing cache, and watermarks the saved
-figure via `mark_synthetic()` whenever that fallback actually triggers (41
-functions total, including fig_18_inference_latency and
-fig_53_model_compression — see tests/test_phase6.py / test_phase7.py for
-regression coverage). Only 3 of the 11 core caches referenced across this file (A/B/C:
-"core_A_mappo_safe_ewc_8bus_60pv", "core_B_curriculum", "core_C_baselines")
-currently exist in results/core_cache/ — see cache_index.json. Caches D
-through K (ablation, hparam, scalability, robustness, transfer, deployment,
-protection, seasonal) are all missing, so most figures generated from a
-fresh checkout will still be synthetic; they are now just honestly labeled
-as such rather than silently presented as real. Run the relevant Core
-training (see EXPERIMENT_GUIDE.md) to replace them with real data.
+DATA PROVENANCE POLICY (2026-11-04, supersedes the 2026-08-07 note below):
+every fig_NN_* function now requires REAL cached experiment data and raises
+`MissingRealDataError` (never fabricates hardcoded/synthetic data) when its
+required cache(s) are missing or unusable. `run_all_figures()`/`--fig`/
+`--phase` in main() already wrap each figure call in a try/except and log
+the failure via `FigureProgress.add_failed()` without aborting the rest of
+the batch, so a missing cache now shows up as an honest "failed" entry in
+the generation report instead of a silently fabricated, watermarked plot.
+Run the corresponding Core via run_core_training.py (see
+EXPERIMENT_GUIDE.md) to populate a missing cache before regenerating that
+figure. (Prior behavior, now removed: fig functions used to fall back to
+`data = {<hardcoded literals>}` and watermark the saved figure via
+`mark_synthetic()`/`_annotate_panel_synthetic()`.)
 """
 
 import argparse
@@ -279,6 +277,14 @@ class FigureProgress:
 # ──────────────────────────────────────────────────────────────────
 # Cache Loading (config-driven paths)
 # ──────────────────────────────────────────────────────────────────
+class MissingRealDataError(RuntimeError):
+    """Raised by a fig_NN_*() function when the real experiment cache(s)
+    it needs are missing or unusable, instead of silently fabricating
+    placeholder data. Caught per-figure by run_all_figures()/--fig/--phase
+    in main(), which already logs it and continues to the next figure —
+    see FigureProgress.add_failed()."""
+
+
 def load_cache1(name: str):
     """Load a cached core result by name."""
     cache_file = get_cache_dir() / f"{name}.pkl"
@@ -576,11 +582,10 @@ def fig_05_objective_vs_pv():
     """Fig 5: Objective vs PV — from Core B curriculum evaluations."""
     logger.info("\\n[Fig 05] Objective Function vs. PV Penetration")
     data = load_cache("core_B_curriculum")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 05: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        pv_levels = [0.0, 0.20, 0.40, 0.60]
-        data = {"task_evaluations": [{pv: {"objective": 1.0 + pv * 1.5 + np.random.rand() * 0.3} for pv in pv_levels} for _ in range(10)]}
+        raise MissingRealDataError(
+            "Fig 05 (objective_vs_pv) requires real cache 'core_B_curriculum' — not found. "
+            "Run Core B via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
 
     # Core B's active sweep trains on [0.0, 0.20, 0.40, 0.60] PV (see
     # run_core_training.py's TASKS) — was [0, .25, .5, .75, 1.0] before
@@ -605,9 +610,6 @@ def fig_05_objective_vs_pv():
     ax.set_xticklabels([f"{int(p*100)}%" for p in pv_levels])
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=11)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(5, "figs_01_10"))
 
 
@@ -619,11 +621,10 @@ def fig_06_cti_vs_pv():
     """Fig 6: CTI vs PV — from Core B curriculum evaluations."""
     logger.info("\\n[Fig 06] CTI Violation Rate vs. PV Penetration")
     data = load_cache("core_B_curriculum")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 06: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        pv_levels = [0.0, 0.20, 0.40, 0.60]
-        data = {"task_evaluations": [{pv: {"cti_rate": max(0, 0.5 - pv * 0.4 + np.random.rand() * 0.1)} for pv in pv_levels} for _ in range(10)]}
+        raise MissingRealDataError(
+            "Fig 06 (cti_vs_pv) requires real cache 'core_B_curriculum' — not found. "
+            "Run Core B via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
 
     pv_levels = [0.0, 0.20, 0.40, 0.60]
     agg = {pv: [] for pv in pv_levels}
@@ -643,9 +644,6 @@ def fig_06_cti_vs_pv():
     ax.set_xticks(pv_levels)
     ax.set_xticklabels([f"{int(p*100)}%" for p in pv_levels])
     ax.grid(True, alpha=0.3)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(6, "figs_01_10"))
 
 
@@ -657,13 +655,17 @@ def fig_07_curriculum():
     """Fig 7: Curriculum progression — from Core B."""
     logger.info("\\n[Fig 07] Curriculum Learning Progression")
     data = load_cache("core_B_curriculum")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 07: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"with_ewc": [{"task_performances": np.array([[0.8,0,0,0],[0.78,0.82,0,0],[0.75,0.80,0.85,0],[0.73,0.78,0.83,0.87]])}]}
+        raise MissingRealDataError(
+            "Fig 07 (curriculum) requires real cache 'core_B_curriculum' — not found. "
+            "Run Core B via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
 
     ewc_mats = [r["task_performances"] for r in data.get("with_ewc", [])]
-    avg_mat = np.mean(ewc_mats, axis=0) if ewc_mats else np.eye(4) * 0.8
+    if not ewc_mats:
+        raise MissingRealDataError(
+            "Fig 07 (curriculum) requires real cache 'core_B_curriculum' with a non-empty "
+            "'with_ewc' list — found cache but no task_performances entries.")
+    avg_mat = np.mean(ewc_mats, axis=0)
     n_tasks = avg_mat.shape[0]
 
     fig, ax = plt.subplots(figsize=(10, 7))
@@ -683,9 +685,6 @@ def fig_07_curriculum():
                 ax.text(j, i, f"{avg_mat[i, j]:.2f}", ha="center", va="center", fontsize=10, 
                        color="white" if avg_mat[i, j] < 0.5 else "black")
     plt.colorbar(im, ax=ax, shrink=0.8, label="Performance")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(7, "figs_01_10"))
 
 
@@ -697,17 +696,17 @@ def fig_08_attention_weights():
     """Fig 8: Attention weights heatmap — from Core A final snapshot."""
     logger.info("\\n[Fig 08] Learned GNN Attention Weights")
     data = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 08: 'core_A_mappo_safe_ewc_8bus_60pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        n_agents = 7
-        data = {f"attention_snap_{n_agents}_mean": np.random.dirichlet(np.ones(n_agents) * 3, n_agents)}
-    
+        raise MissingRealDataError(
+            "Fig 08 (attention_weights) requires real cache 'core_A_mappo_safe_ewc_8bus_60pv' — not found. "
+            "Run Core A via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     snap_keys = [k for k in data if "attention_snap_" in k and "_mean" in k]
-    if snap_keys:
-        attn = data[snap_keys[-1]]
-    else:
-        attn = np.random.dirichlet(np.ones(7) * 3, 7)
+    if not snap_keys:
+        raise MissingRealDataError(
+            "Fig 08 (attention_weights) requires an 'attention_snap_*_mean' entry in "
+            "'core_A_mappo_safe_ewc_8bus_60pv' — found cache but no attention snapshot.")
+    attn = data[snap_keys[-1]]
     
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle("Figure 8 — Learned GNN Attention Weights (8-Bus, 60% PV)", fontsize=13)
@@ -726,10 +725,6 @@ def fig_08_attention_weights():
     ax.set_ylabel("Frequency", fontsize=11)
     ax.set_title("Distribution of Attention Weights", fontsize=12)
     ax.grid(True, alpha=0.3)
-    
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_60pv cache missing")
     save_fig(fig, get_fig_path(8, "figs_01_10"))
 
 
@@ -741,13 +736,11 @@ def fig_09_cti_violations():
     """Fig 9: CTI dynamics — from Core A."""
     logger.info("\\n[Fig 09] CTI Violation Dynamics During Training")
     data = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 09: 'core_A_mappo_safe_ewc_8bus_60pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        n_eps = 2000
-        data = {"episodes": np.arange(n_eps), "cti_violation_rates_mean": np.maximum(0, 80 * np.exp(-np.arange(n_eps) / 400) + np.random.randn(n_eps) * 2),
-                "cumulative_violations_mean": np.cumsum(np.random.poisson(2, n_eps)), "global_returns_mean": -5 + 8 * (1 - np.exp(-np.arange(n_eps) / 300))}
-    
+        raise MissingRealDataError(
+            "Fig 09 (cti_violations) requires real cache 'core_A_mappo_safe_ewc_8bus_60pv' — not found. "
+            "Run Core A via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     eps = data.get("episodes", np.arange(len(data.get("cti_violation_rates_mean", []))))
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))
     fig.suptitle("Figure 9 — CTI Violation Dynamics During Training (8-Bus, 60% PV)", fontsize=13)
@@ -784,10 +777,6 @@ def fig_09_cti_violations():
     ax.set_xlabel("Episode", fontsize=10)
     ax.set_title("Safety Projection Frequency", fontsize=11)
     ax.grid(True, alpha=0.3)
-    
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_60pv cache missing")
     save_fig(fig, get_fig_path(9, "figs_01_10"))
 
 
@@ -799,13 +788,11 @@ def fig_10_lagrange_multipliers():
     """Fig 10: Lagrange evolution — from Core A."""
     logger.info("\\n[Fig 10] Lagrange Multiplier Evolution")
     data = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 10: 'core_A_mappo_safe_ewc_8bus_60pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        n_eps = 2000
-        data = {"episodes": np.arange(n_eps), "lagrange_norms_mean": 0.5 + 8 * (1 - np.exp(-np.arange(n_eps) / 300)) + np.random.randn(n_eps) * 0.2,
-                "lagrange_norms_std": np.ones(n_eps) * 0.5}
-    
+        raise MissingRealDataError(
+            "Fig 10 (lagrange_multipliers) requires real cache 'core_A_mappo_safe_ewc_8bus_60pv' — not found. "
+            "Run Core A via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     eps = data.get("episodes", np.arange(len(data.get("lagrange_norms_mean", []))))
     lag_mean = data.get("lagrange_norms_mean", np.zeros_like(eps))
     lag_std = data.get("lagrange_norms_std", np.zeros_like(eps))
@@ -818,9 +805,6 @@ def fig_10_lagrange_multipliers():
     ax.set_title("Figure 10 — Lagrange Multiplier Evolution per P/B Pair", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_60pv cache missing")
     save_fig(fig, get_fig_path(10, "figs_01_10"))
 
 
@@ -832,12 +816,11 @@ def fig_11_nemenyi():
     """Fig 11: Nemenyi test — from Core C baseline comparison."""
     logger.info("\\n[Fig 11] Nemenyi Critical Difference Diagram")
     data = load_cache("core_C_baselines_8bus")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 11: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
-        data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
-    
+        raise MissingRealDataError(
+            "Fig 11 (nemenyi) requires real cache 'core_C_baselines_8bus' — not found. "
+            "Run Core C via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     methods = list(data.keys())
     n_methods = len(methods)
     final_perf = {m: np.mean(v[-100:] if hasattr(v, '__len__') and len(v) > 100 else v) for m, v in data.items()}
@@ -860,9 +843,6 @@ def fig_11_nemenyi():
     
     ax.set_title("Figure 11 — Nemenyi Critical Difference Diagram (alpha = 0.05)", fontsize=13)
     ax.axis("off")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_C_baselines_8bus cache missing")
     save_fig(fig, get_fig_path(11, "figs_11_20"))
 
 
@@ -875,25 +855,20 @@ def fig_12_convergence_bands():
     logger.info("\\n[Fig 12] Convergence Curves with 95% Confidence Bands")
     core_A = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
     core_C = load_cache("core_C_baselines_8bus")
-    is_synthetic = core_A is None or core_C is None
+    missing = []
+    if core_A is None: missing.append("core_A_mappo_safe_ewc_8bus_60pv")
+    if core_C is None: missing.append("core_C_baselines_8bus")
+    if missing:
+        raise MissingRealDataError(
+            f"Fig 12 (convergence_bands) requires real cache(s) {missing} — not found. "
+            "Run the corresponding Core(s) via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
 
-    if is_synthetic:
-        logger.warning("Fig 12: 'core_A_mappo_safe_ewc_8bus_60pv' and/or 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        n_eps = 2000
-        methods = {
-            "MAPPO-Safe-EWC": {"mean": -5 + 8.5 * (1 - np.exp(-np.arange(n_eps) / 350)), "std": np.ones(n_eps) * 0.8},
-            "MAPPO-Safe": {"mean": -5 + 7.8 * (1 - np.exp(-np.arange(n_eps) / 450)), "std": np.ones(n_eps) * 0.9},
-            "MAPPO": {"mean": -5 + 7.0 * (1 - np.exp(-np.arange(n_eps) / 550)), "std": np.ones(n_eps) * 1.0},
-            "IPPO": {"mean": -5 + 6.5 * (1 - np.exp(-np.arange(n_eps) / 650)), "std": np.ones(n_eps) * 1.1},
-            "Traditional": {"mean": np.ones(n_eps) * 2.0, "std": np.ones(n_eps) * 0.2},
-        }
-    else:
-        methods = {}
-        methods["MAPPO-Safe-EWC"] = {"mean": core_A.get("global_returns_mean", np.zeros(2000)), "std": core_A.get("global_returns_std", np.zeros(2000))}
-        for method, returns in core_C.items():
-            methods[method] = {"mean": returns.mean(axis=0) if hasattr(returns, 'mean') else np.zeros(2000),
-                              "std": returns.std(axis=0) if hasattr(returns, 'std') else np.zeros(2000)}
-    
+    methods = {}
+    methods["MAPPO-Safe-EWC"] = {"mean": core_A.get("global_returns_mean", np.zeros(2000)), "std": core_A.get("global_returns_std", np.zeros(2000))}
+    for method, returns in core_C.items():
+        methods[method] = {"mean": returns.mean(axis=0) if hasattr(returns, 'mean') else np.zeros(2000),
+                          "std": returns.std(axis=0) if hasattr(returns, 'std') else np.zeros(2000)}
+
     colors = {"MAPPO-Safe-EWC": "#2563eb", "MAPPO-Safe": "#39d353", "MAPPO": "#f7c948", "IPPO": "#ff6b35", "Traditional": "#ff6b6b"}
     
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
@@ -914,32 +889,27 @@ def fig_12_convergence_bands():
     ax.grid(True, alpha=0.3)
     
     ax = axes[1]
-    # core_A's "global_returns_all" and core_C's per-method arrays already
-    # hold real raw (n_runs, n_episodes) returns — use them directly
-    # instead of resampling a distribution around mean/std. Falls back to
-    # resampling only if a real cache is present but genuinely lacks these
-    # (e.g. an older cache format).
-    real_boxplot = not is_synthetic and "global_returns_all" in core_A
+    # core_A's "global_returns_all" and core_C's per-method arrays hold the
+    # real raw (n_runs, n_episodes) returns this boxplot needs — resampling
+    # a distribution around mean/std when that raw field is missing would
+    # be exactly the kind of fabricated data this function must not produce,
+    # so that path now raises instead of falling back.
+    if "global_returns_all" not in core_A:
+        raise MissingRealDataError(
+            "Fig 12 (convergence_bands) requires 'global_returns_all' in "
+            "'core_A_mappo_safe_ewc_8bus_60pv' for the final-performance boxplot panel — "
+            "found cache but missing this field (older cache format?).")
     final_returns = []
     labels = []
     last_n = 100
-    if real_boxplot:
-        ewc_all = np.asarray(core_A["global_returns_all"])
-        final_returns.append(ewc_all[:, -last_n:].mean(axis=1) if ewc_all.shape[1] > last_n else ewc_all[:, -1])
-        labels.append("MAPPO-Safe-EWC")
-        for method, arr in core_C.items():
-            if method == "Traditional": continue
-            arr = np.asarray(arr)
-            final_returns.append(arr[:, -last_n:].mean(axis=1) if arr.shape[1] > last_n else arr[:, -1])
-            labels.append(method)
-    else:
-        rng_box = np.random.default_rng(42)
-        for method, data in methods.items():
-            if method == "Traditional": continue
-            final_mean = data["mean"][-100:].mean() if len(data["mean"]) > 100 else data["mean"][-1]
-            final_std = data["std"][-100:].mean() if len(data["std"]) > 100 else data["std"][-1]
-            final_returns.append(rng_box.normal(final_mean, final_std, 50))
-            labels.append(method)
+    ewc_all = np.asarray(core_A["global_returns_all"])
+    final_returns.append(ewc_all[:, -last_n:].mean(axis=1) if ewc_all.shape[1] > last_n else ewc_all[:, -1])
+    labels.append("MAPPO-Safe-EWC")
+    for method, arr in core_C.items():
+        if method == "Traditional": continue
+        arr = np.asarray(arr)
+        final_returns.append(arr[:, -last_n:].mean(axis=1) if arr.shape[1] > last_n else arr[:, -1])
+        labels.append(method)
 
     # `labels=` (not `tick_labels=`, matplotlib 3.9+ only) for compatibility
     # with requirements.txt's matplotlib>=3.7 pin -- confirmed broken on the
@@ -953,12 +923,7 @@ def fig_12_convergence_bands():
     ax.set_title("Final Performance Distribution", fontsize=12)
     ax.set_xticklabels(labels, rotation=15, ha="right", fontsize=9)
     ax.grid(True, alpha=0.3, axis="y")
-    if not real_boxplot:
-        _annotate_panel_synthetic(ax, "resampled from cached mean/std, not raw per-episode returns")
 
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_60pv/core_C_baselines_8bus cache missing")
     save_fig(fig, get_fig_path(12, "figs_11_20"))
 
 # ==================================================================
@@ -969,12 +934,11 @@ def fig_13_communication_stress():
     """Fig 13: Performance under communication stress — from Core G."""
     logger.info("\\n[Fig 13] Communication Stress Robustness")
     data = load_cache("core_G_robustness")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 13: 'core_G_robustness' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"communication": {"packet_loss": {pl: max(0, 0.85 - pl * 0.8) for pl in [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]},
-                "latency": {lat: max(0, 0.85 - lat / 1000 * 0.3) for lat in [0, 100, 200, 300, 400, 500]}}}
-    
+        raise MissingRealDataError(
+            "Fig 13 (communication_stress) requires real cache 'core_G_robustness' — not found. "
+            "Run Core G via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     comm = data.get("communication", {})
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle("Figure 13 — Performance Degradation under Communication Stress", fontsize=13)
@@ -998,10 +962,6 @@ def fig_13_communication_stress():
     ax.set_ylabel("Relative Performance", fontsize=11)
     ax.set_title("Latency Impact", fontsize=12)
     ax.grid(True, alpha=0.3)
-    
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_G_robustness cache missing")
     save_fig(fig, get_fig_path(13, "figs_11_20"))
 
 
@@ -1021,17 +981,19 @@ def fig_14_n1_contingency():
     # before this fix.
     core_g = load_cache("core_G_robustness")
     n1_data = core_g.get("n1_contingency") if core_g else None
-    is_synthetic = not n1_data
 
     npz_path = BASE_DIR / "outputs" / "fig14_n1_contingency.npz"
     legacy_npz = None
-    if is_synthetic and npz_path.exists():
-        try:
-            with np.load(npz_path, allow_pickle=True) as npz:
-                legacy_npz = {k: npz[k] for k in npz.files}
-            is_synthetic = False
-        except Exception as e:
-            logger.warning(f"Fig 14: failed to load {npz_path}: {e}")
+    if not n1_data and npz_path.exists():
+        with np.load(npz_path, allow_pickle=True) as npz:
+            legacy_npz = {k: npz[k] for k in npz.files}
+
+    if not n1_data and not legacy_npz:
+        raise MissingRealDataError(
+            "Fig 14 (n1_contingency) requires an 'n1_contingency' entry in real cache "
+            "'core_G_robustness', or a real legacy results file at "
+            f"'{npz_path}' — neither was found/usable. "
+            "Run Core G via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
 
     if n1_data:
         line_outages = [f"L{i}" for i in sorted(n1_data.keys())]
@@ -1039,21 +1001,13 @@ def fig_14_n1_contingency():
         recovery = [n1_data[i]["recovery_performance"] or n1_data[i]["performance"] for i in sorted(n1_data.keys())]
         ylabel = "Relative Performance (base_of / observed_of)"
         label_impact, label_recovery = "Immediate Impact", "After Recovery"
-    elif legacy_npz:
+    else:
         line_outages = [str(n) for n in legacy_npz["line_names"]]
         baseline_of = float(legacy_npz["baseline_of"][0])
         impact = [baseline_of / max(v, 1e-9) for v in legacy_npz["pretrain_of"]]
         recovery = [baseline_of / max(v, 1e-9) for v in legacy_npz["finetuned_of"]]
         ylabel = "Relative Performance (baseline OF / observed OF)"
         label_impact, label_recovery = "Pre-trained (no adapt)", "After Fine-tuning"
-    else:
-        logger.warning("Fig 14: 'core_G_robustness' cache has no 'n1_contingency' entry — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        rng = np.random.default_rng(42)
-        line_outages = [f"L{i}" for i in range(1, 13)]
-        impact = [rng.uniform(0.1, 0.4) for _ in line_outages]
-        recovery = [rng.uniform(0.7, 0.95) for _ in line_outages]
-        ylabel = "Relative Performance"
-        label_impact, label_recovery = "Immediate Impact", "After Recovery"
 
     fig, ax = plt.subplots(figsize=(12, 6))
     x = np.arange(len(line_outages))
@@ -1067,9 +1021,6 @@ def fig_14_n1_contingency():
     ax.set_xticklabels(line_outages, rotation=45, ha="right")
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3, axis="y")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_G_robustness cache missing 'n1_contingency'")
     save_fig(fig, get_fig_path(14, "figs_11_20"))
 
 
@@ -1081,19 +1032,11 @@ def fig_15_scalability():
     """Fig 15: Scalability — from Core F."""
     logger.info("\\n[Fig 15] Scalability Analysis")
     data = load_cache("core_F_scalability")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 15: 'core_F_scalability' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {
-            "3bus": {"n_relays": 6, "train_time": 45, "final_performance": 0.92},
-            "8bus": {"n_relays": 14, "train_time": 120, "final_performance": 0.85},
-            "14bus": {"n_relays": 20, "train_time": 210, "final_performance": 0.83},
-            "30bus": {"n_relays": 42, "train_time": 350, "final_performance": 0.80},
-            "39bus": {"n_relays": 46, "train_time": 480, "final_performance": 0.78},
-            "57bus": {"n_relays": 80, "train_time": 900, "final_performance": 0.75},
-            "118bus": {"n_relays": 186, "train_time": 2400, "final_performance": 0.68},
-        }
-    
+        raise MissingRealDataError(
+            "Fig 15 (scalability) requires real cache 'core_F_scalability' — not found. "
+            "Run Core F via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     systems = list(data.keys())
     n_relays = [data[s]["n_relays"] for s in systems]
     times = [data[s]["train_time"] for s in systems]
@@ -1125,10 +1068,6 @@ def fig_15_scalability():
     ax.set_title("Performance vs. System Size", fontsize=12)
     ax.set_ylim(0.5, 1.0)
     ax.grid(True, alpha=0.3)
-    
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_F_scalability cache missing")
     save_fig(fig, get_fig_path(15, "figs_11_20"))
 
 # ==================================================================
@@ -1139,16 +1078,19 @@ def fig_16_ewc_effectiveness():
     """Fig 16: EWC effectiveness — from Core B."""
     logger.info("\\n[Fig 16] EWC Effectiveness")
     data = load_cache("core_B_curriculum")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 16: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"with_ewc": [{"task_performances": np.array([[0.85,0,0,0],[0.83,0.84,0,0],[0.82,0.83,0.84,0],[0.81,0.82,0.83,0.84]])}],
-                "without_ewc": [{"task_performances": np.array([[0.85,0,0,0],[0.70,0.84,0,0],[0.55,0.68,0.83,0],[0.45,0.52,0.65,0.82]])}]}
+        raise MissingRealDataError(
+            "Fig 16 (ewc_effectiveness) requires real cache 'core_B_curriculum' — not found. "
+            "Run Core B via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
 
     ewc_mats = [r["task_performances"] for r in data.get("with_ewc", [])]
     noewc_mats = [r["task_performances"] for r in data.get("without_ewc", [])]
-    ewc_avg = np.mean(ewc_mats, axis=0) if ewc_mats else np.eye(4) * 0.8
-    noewc_avg = np.mean(noewc_mats, axis=0) if noewc_mats else np.eye(4) * 0.5
+    if not ewc_mats or not noewc_mats:
+        raise MissingRealDataError(
+            "Fig 16 (ewc_effectiveness) requires non-empty 'with_ewc' and 'without_ewc' lists "
+            "in 'core_B_curriculum' — found cache but missing task_performances entries.")
+    ewc_avg = np.mean(ewc_mats, axis=0)
+    noewc_avg = np.mean(noewc_mats, axis=0)
     n_tasks = ewc_avg.shape[0]
     
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
@@ -1179,10 +1121,6 @@ def fig_16_ewc_effectiveness():
     ax.set_title("Current Task Performance (Forgetting)", fontsize=12)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
-    
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(16, "figs_11_20"))
 
 
@@ -1194,17 +1132,18 @@ def fig_18_inference_latency():
     """Fig 18: Inference latency distribution — from Core I."""
     logger.info("\\n[Fig 18] Inference Latency Distribution")
     data = load_cache("core_I_deployment")
-    is_synthetic = data is None
-    if is_synthetic:
-        logger.warning("Fig 18: 'core_I_deployment' cache not found — using synthetic "
-                        "lognormal latencies, NOT a real measurement.")
-        rng = np.random.default_rng(42)
-        latencies = rng.lognormal(-3, 0.5, 1000) * 1000
-        data = {"latency": {"latencies_ms": latencies, "mean_ms": np.mean(latencies), "p50_ms": np.percentile(latencies, 50), "p99_ms": np.percentile(latencies, 99)}}
+    if data is None:
+        raise MissingRealDataError(
+            "Fig 18 (inference_latency) requires real cache 'core_I_deployment' — not found. "
+            "Run Core I via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
 
     lat = data.get("latency", {})
-    latencies = lat.get("latencies_ms", np.random.lognormal(-3, 0.5, 1000) * 1000)
-    
+    if "latencies_ms" not in lat:
+        raise MissingRealDataError(
+            "Fig 18 (inference_latency) requires a 'latency.latencies_ms' array in "
+            "'core_I_deployment' — found cache but missing this field.")
+    latencies = lat["latencies_ms"]
+
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle("Figure 18 — Inference Latency Distribution (Intel NUC i5, 1000 runs)", fontsize=13)
     
@@ -1228,10 +1167,6 @@ def fig_18_inference_latency():
     ax.set_ylabel("CDF", fontsize=11)
     ax.set_title("Cumulative Distribution", fontsize=12)
     ax.grid(True, alpha=0.3)
-
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_I_deployment cache missing")
     save_fig(fig, get_fig_path(18, "figs_11_20"))
 
 
@@ -1259,11 +1194,11 @@ def fig_20_byzantine():
     """Fig 20: Byzantine resilience — from Core G."""
     logger.info("\\n[Fig 20] Byzantine Agent Detection")
     data = load_cache("core_G_robustness")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 20: 'core_G_robustness' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"byzantine": {"random": 0.72, "collusion": 0.62, "fdi": 0.67}}
-    
+        raise MissingRealDataError(
+            "Fig 20 (byzantine) requires real cache 'core_G_robustness' — not found. "
+            "Run Core G via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     byz = data.get("byzantine", {})
     attacks = list(byz.keys())
     values = list(byz.values())
@@ -1276,12 +1211,7 @@ def fig_20_byzantine():
                 ha="center", va="bottom", fontsize=11, fontweight="bold")
     ax.set_ylabel("Relative Performance", fontsize=12)
     ax.set_title("Figure 20 — Byzantine Agent Detection via Trust Score Evolution", fontsize=13)
-    if is_synthetic:
-        ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3, axis="y")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_G_robustness cache missing")
     save_fig(fig, get_fig_path(20, "figs_11_20"))
 
 
@@ -1293,13 +1223,11 @@ def fig_21_action_projection():
     """Fig 21: Action projection — from Core A safety activation data."""
     logger.info("\\n[Fig 21] Action Projection Efficacy")
     data = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 21: 'core_A_mappo_safe_ewc_8bus_60pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        n_eps = 2000
-        data = {"episodes": np.arange(n_eps), "safety_activations_mean": 50 * np.exp(-np.arange(n_eps) / 300) + np.random.randn(n_eps) * 2,
-                "safety_activations_std": np.ones(n_eps) * 3}
-    
+        raise MissingRealDataError(
+            "Fig 21 (action_projection) requires real cache 'core_A_mappo_safe_ewc_8bus_60pv' — not found. "
+            "Run Core A via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     eps = data.get("episodes", np.arange(len(data.get("safety_activations_mean", []))))
     safe_mean = data.get("safety_activations_mean", np.zeros_like(eps))
     safe_std = data.get("safety_activations_std", np.zeros_like(eps))
@@ -1312,9 +1240,6 @@ def fig_21_action_projection():
     ax.set_title("Figure 21 — Action Projection Efficacy During Training", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_60pv cache missing")
     save_fig(fig, get_fig_path(21, "figs_21_30"))
 
 
@@ -1326,12 +1251,11 @@ def fig_22_bandwidth_tradeoff():
     """Fig 22: Bandwidth tradeoff — from Core G."""
     logger.info("\\n[Fig 22] Bandwidth vs. Performance Trade-off")
     data = load_cache("core_G_robustness")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 22: 'core_G_robustness' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"bandwidth": {1: {"performance": 0.80, "bandwidth_mb": 12}, 2: {"performance": 0.85, "bandwidth_mb": 24},
-                              3: {"performance": 0.84, "bandwidth_mb": 36}, 4: {"performance": 0.82, "bandwidth_mb": 48}}}
-    
+        raise MissingRealDataError(
+            "Fig 22 (bandwidth_tradeoff) requires real cache 'core_G_robustness' — not found. "
+            "Run Core G via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     bw = data.get("bandwidth", {})
     depths = sorted([int(k) for k in bw.keys()])
     perfs = [bw[d]["performance"] for d in depths]
@@ -1341,12 +1265,12 @@ def fig_22_bandwidth_tradeoff():
     # invented "MB/episode" scale. Read whichever key is present and
     # label the axis honestly rather than forcing both onto one
     # (mis-scaled) unit.
-    if depths and "bandwidth_kbps" in bw[depths[0]]:
-        bws = [bw[d]["bandwidth_kbps"] for d in depths]
-        bw_label = "Bandwidth (kbps)"
-    else:
-        bws = [bw[d]["bandwidth_mb"] for d in depths]
-        bw_label = "Bandwidth (MB/episode)"
+    if not depths or "bandwidth_kbps" not in bw[depths[0]]:
+        raise MissingRealDataError(
+            "Fig 22 (bandwidth_tradeoff) requires 'bandwidth.<depth>.bandwidth_kbps' entries in "
+            "'core_G_robustness' — found cache but missing this field.")
+    bws = [bw[d]["bandwidth_kbps"] for d in depths]
+    bw_label = "Bandwidth (kbps)"
 
     fig, ax1 = plt.subplots(figsize=(10, 6))
     color1 = "#2563eb"
@@ -1354,8 +1278,6 @@ def fig_22_bandwidth_tradeoff():
     ax1.set_ylabel("Performance", color=color1, fontsize=12)
     ax1.plot(depths, perfs, 'o-', color=color1, lw=2, markersize=10, label="Performance")
     ax1.tick_params(axis='y', labelcolor=color1)
-    if is_synthetic:
-        ax1.set_ylim(0.7, 0.9)
     ax1.grid(True, alpha=0.3)
 
     ax2 = ax1.twinx()
@@ -1363,12 +1285,9 @@ def fig_22_bandwidth_tradeoff():
     ax2.set_ylabel(bw_label, color=color2, fontsize=12)
     ax2.bar(depths, bws, alpha=0.3, color=color2, width=0.3, label="Bandwidth")
     ax2.tick_params(axis='y', labelcolor=color2)
-    
+
     fig.suptitle("Figure 22 — Bandwidth vs. Performance Trade-off", fontsize=13)
     fig.tight_layout()
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_G_robustness cache missing")
     save_fig(fig, get_fig_path(22, "figs_21_30"))
 
 
@@ -1380,17 +1299,18 @@ def fig_23_unseen_faults():
     """Fig 23: Generalization to unseen fault types — from Core H."""
     logger.info("\\n[Fig 23] Generalization to Unseen Fault Types")
     data = load_cache("core_H_transfer")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 23: 'core_H_transfer' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"unseen_faults": {"bolted": 0.85, "high-impedance": 0.78, "evolving": 0.72, "simultaneous": 0.68}}
-    
+        raise MissingRealDataError(
+            "Fig 23 (unseen_faults) requires real cache 'core_H_transfer' — not found. "
+            "Run Core H via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     # Real shape (see run_core_H) is {real_fault_type_name: relative_perf},
-    # keyed by whichever IEEE fault types weren't used during training —
-    # same {name: float} shape as the synthetic fallback, so no branching
-    # needed here, just an honest axis label/limit (relative performance
-    # can exceed 1.0, unlike the fallback's fixed illustrative scores).
+    # keyed by whichever IEEE fault types weren't used during training.
     faults = data.get("unseen_faults", {})
+    if not faults:
+        raise MissingRealDataError(
+            "Fig 23 (unseen_faults) requires a non-empty 'unseen_faults' dict in "
+            "'core_H_transfer' — found cache but missing/empty field.")
     names = list(faults.keys())
     values = list(faults.values())
 
@@ -1400,14 +1320,9 @@ def fig_23_unseen_faults():
     for bar, val in zip(bars, values):
         ax.text(val + 0.01, bar.get_y() + bar.get_height()/2, f"{val:.2f}",
                 ha="left", va="center", fontsize=11, fontweight="bold")
-    ax.set_xlabel("Performance" if is_synthetic else "Relative Performance (base_of / unseen_of)", fontsize=12)
+    ax.set_xlabel("Relative Performance (base_of / unseen_of)", fontsize=12)
     ax.set_title("Figure 23 — Generalization to Unseen Fault Types", fontsize=13)
-    if is_synthetic:
-        ax.set_xlim(0, 1)
     ax.grid(True, alpha=0.3, axis="x")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_H_transfer cache missing")
     save_fig(fig, get_fig_path(23, "figs_21_30"))
 
 
@@ -1419,13 +1334,11 @@ def fig_24_sensor_robustness():
     """Fig 24: Sensor robustness — from Core G."""
     logger.info("\\n[Fig 24] Sensor Robustness")
     data = load_cache("core_G_robustness")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 24: 'core_G_robustness' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"sensor": {"noise": {0.0: 0.85, 0.05: 0.75, 0.1: 0.65, 0.15: 0.55, 0.2: 0.45},
-                           "bias": {0.0: 0.85, 0.05: 0.78, 0.1: 0.70},
-                           "missing": {0.0: 0.85, 0.1: 0.80, 0.2: 0.72}}}
-    
+        raise MissingRealDataError(
+            "Fig 24 (sensor_robustness) requires real cache 'core_G_robustness' — not found. "
+            "Run Core G via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     sensor = data.get("sensor", {})
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     fig.suptitle("Figure 24 — Sensor Robustness: Performance Under Measurement Degradation", fontsize=13)
@@ -1459,10 +1372,6 @@ def fig_24_sensor_robustness():
     ax.set_ylabel("Relative Performance", fontsize=11)
     ax.set_title("Missing Measurements", fontsize=12)
     ax.grid(True, alpha=0.3)
-    
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_G_robustness cache missing")
     save_fig(fig, get_fig_path(24, "figs_21_30"))
 
 
@@ -1474,80 +1383,53 @@ def fig_25_zero_shot_transfer():
     """Fig 25: Zero-shot transfer — from Core H."""
     logger.info("\\n[Fig 25] Zero-Shot Transfer 8->30 Bus")
     data = load_cache("core_H_transfer")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 25: 'core_H_transfer' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"zero_shot": {"warm_start": {"performance": 0.75, "convergence_ep": 500}, "cold_start": {"performance": 0.20, "convergence_ep": 2000}}}
-    
+        raise MissingRealDataError(
+            "Fig 25 (zero_shot_transfer) requires real cache 'core_H_transfer' — not found. "
+            "Run Core H via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     zs = data.get("zero_shot", {})
     # _eval_zero_shot_transfer's real output (see core_eval_bridge.
     # _extract_fig_data, fig 25) is keyed "transfer_of"/"cti_ok"/"system"
-    # (+ "base_of", added in run_core_H). run_core_H now also trains a
-    # genuine from-scratch policy on the target system
-    # (_run_baseline_single) for a real "cold_start" comparison point —
-    # previously no code path did this at all, so that half of the
-    # comparison was always the fabricated 0.75/0.20 placeholder.
-    if not is_synthetic and "transfer_of" in zs:
-        base_of = zs.get("base_of")
-        transfer_of = zs["transfer_of"]
-        rel_perf = float(base_of / max(transfer_of, 1e-9)) if base_of else None
-        cti_ok = zs.get("cti_ok")
-        cold = zs.get("cold_start")
+    # (+ "base_of", added in run_core_H). run_core_H also trains a genuine
+    # from-scratch policy on the target system (_run_baseline_single) for
+    # a real "cold_start" comparison point when available.
+    if "transfer_of" not in zs:
+        raise MissingRealDataError(
+            "Fig 25 (zero_shot_transfer) requires a 'zero_shot.transfer_of' field in "
+            "'core_H_transfer' — found cache but missing this field.")
 
-        fig, ax = plt.subplots(figsize=(10, 6))
-        categories = [f"Zero-Shot Transfer\\n(learned -> {zs.get('system', 'target')})"]
-        perfs = [rel_perf if rel_perf is not None else 0.0]
-        if cold:
-            categories.append("Cold Start\\n(trained from scratch)")
-            perfs.append(cold["performance"])
-        x = np.arange(len(categories))
-        ax.bar(x, perfs, width=0.5, color=["#2563eb", "#39d353"][:len(categories)], alpha=0.85, edgecolor="white")
-        for xi, p in zip(x, perfs):
-            ax.text(xi, p + 0.02, f"{p:.2f}", ha="center", fontsize=12, fontweight="bold")
-        ax.set_xticks(x)
-        ax.set_xticklabels(categories)
-        ax.set_ylabel("Relative Performance (base_of / observed_of)", fontsize=12)
-        ax.set_title(f"Figure 25 — Zero-Shot Transfer: 8-Bus -> {zs.get('system', 'target')}", fontsize=13)
-        ax.grid(True, alpha=0.3, axis="y")
-        cti_text = "CTI satisfied" if cti_ok else "CTI violated"
-        if cold:
-            ax.text(0.5, -0.15, f"Zero-shot: {cti_text} on transfer  |  "
-                    f"Cold-start convergence: episode {cold['convergence_ep']}",
-                    transform=ax.transAxes, ha="center", fontsize=9, style="italic", color="#555")
-        else:
-            _annotate_panel_synthetic(
-                ax, f"cold-start (train-from-scratch) baseline not measured — {cti_text} on transfer"
-            )
+    base_of = zs.get("base_of")
+    transfer_of = zs["transfer_of"]
+    rel_perf = float(base_of / max(transfer_of, 1e-9)) if base_of else None
+    cti_ok = zs.get("cti_ok")
+    cold = zs.get("cold_start")
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    categories = [f"Zero-Shot Transfer\\n(learned -> {zs.get('system', 'target')})"]
+    perfs = [rel_perf if rel_perf is not None else 0.0]
+    if cold:
+        categories.append("Cold Start\\n(trained from scratch)")
+        perfs.append(cold["performance"])
+    x = np.arange(len(categories))
+    ax.bar(x, perfs, width=0.5, color=["#2563eb", "#39d353"][:len(categories)], alpha=0.85, edgecolor="white")
+    for xi, p in zip(x, perfs):
+        ax.text(xi, p + 0.02, f"{p:.2f}", ha="center", fontsize=12, fontweight="bold")
+    ax.set_xticks(x)
+    ax.set_xticklabels(categories)
+    ax.set_ylabel("Relative Performance (base_of / observed_of)", fontsize=12)
+    ax.set_title(f"Figure 25 — Zero-Shot Transfer: 8-Bus -> {zs.get('system', 'target')}", fontsize=13)
+    ax.grid(True, alpha=0.3, axis="y")
+    cti_text = "CTI satisfied" if cti_ok else "CTI violated"
+    if cold:
+        ax.text(0.5, -0.15, f"Zero-shot: {cti_text} on transfer  |  "
+                f"Cold-start convergence: episode {cold['convergence_ep']}",
+                transform=ax.transAxes, ha="center", fontsize=9, style="italic", color="#555")
     else:
-        warm = zs.get("warm_start", {})
-        cold = zs.get("cold_start", {})
+        _annotate_panel_synthetic(
+            ax, f"cold-start (train-from-scratch) baseline not measured — {cti_text} on transfer"
+        )
 
-        fig, ax = plt.subplots(figsize=(10, 6))
-        categories = ["Warm Start\\n(Transfer)", "Cold Start\\n(Scratch)"]
-        perfs = [warm.get("performance", 0.75), cold.get("performance", 0.20)]
-        convs = [warm.get("convergence_ep", 500), cold.get("convergence_ep", 2000)]
-
-        x = np.arange(len(categories))
-        width = 0.35
-        ax.bar(x - width/2, perfs, width, label="Final Performance", color="#2563eb", alpha=0.8, edgecolor="white")
-        ax2 = ax.twinx()
-        ax2.bar(x + width/2, convs, width, label="Convergence Episodes", color="#ff6b35", alpha=0.8, edgecolor="white")
-
-        ax.set_ylabel("Final Performance", fontsize=12, color="#2563eb")
-        ax2.set_ylabel("Convergence Episodes", fontsize=12, color="#ff6b35")
-        ax.set_xticks(x)
-        ax.set_xticklabels(categories)
-        ax.set_title("Figure 25 — Zero-Shot Transfer: 8-Bus -> 14-Bus (60% PV)", fontsize=13)
-        ax.set_ylim(0, 1)
-        ax.grid(True, alpha=0.3, axis="y")
-
-        lines1, labels1 = ax.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
-
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_H_transfer cache missing")
     save_fig(fig, get_fig_path(25, "figs_21_30"))
 
 # ==================================================================
@@ -1558,16 +1440,19 @@ def fig_29_ewc_continual():
     """Fig 29: EWC visualization — from Core B."""
     logger.info("\\n[Fig 29] EWC Continual Adaptation")
     data = load_cache("core_B_curriculum")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 29: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"with_ewc": [{"task_performances": np.random.rand(5, 5) * 0.3 + 0.6}],
-                "without_ewc": [{"task_performances": np.random.rand(5, 5) * 0.3 + 0.4}]}
-    
+        raise MissingRealDataError(
+            "Fig 29 (ewc_continual) requires real cache 'core_B_curriculum' — not found. "
+            "Run Core B via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     ewc_mats = [r["task_performances"] for r in data.get("with_ewc", [])]
     noewc_mats = [r["task_performances"] for r in data.get("without_ewc", [])]
-    ewc_avg = np.mean(ewc_mats, axis=0) if ewc_mats else np.eye(5) * 0.7
-    noewc_avg = np.mean(noewc_mats, axis=0) if noewc_mats else np.eye(5) * 0.5
+    if not ewc_mats or not noewc_mats:
+        raise MissingRealDataError(
+            "Fig 29 (ewc_continual) requires non-empty 'with_ewc' and 'without_ewc' lists "
+            "in 'core_B_curriculum' — found cache but missing task_performances entries.")
+    ewc_avg = np.mean(ewc_mats, axis=0)
+    noewc_avg = np.mean(noewc_mats, axis=0)
     # Number of curriculum tasks actually trained (run_core_B's real
     # task_performances matrices are n_tasks x n_tasks, e.g. 4x4 in fast
     # mode) — the right panel below previously hardcoded 5 regardless,
@@ -1585,33 +1470,27 @@ def fig_29_ewc_continual():
     # ~50 randomly sampled parameter indices are nonzero per run; average
     # across runs when there's more than one, then show the top 100 by
     # magnitude (sorted descending, matching this panel's original x-range).
-    real_fisher = [r["fisher"] for r in data.get("with_ewc", []) if r.get("fisher") is not None] if not is_synthetic else []
+    real_fisher = [r["fisher"] for r in data.get("with_ewc", []) if r.get("fisher") is not None]
     # `real_fisher` being non-empty only means the cache carries a
     # "fisher" key, not that the values are meaningful -- an upstream
     # finite-difference bug in run_core_training.py's Fisher estimation
     # can (and has) produced an all-zero diagonal, which would otherwise
     # sail through the `if real_fisher:` check, plot a degenerate
     # all-zero bar chart, and blow up ax.set_yscale("log") ("Data has no
-    # positive values, and therefore cannot be log-scaled") -- all with
-    # no synthetic watermark, since presence was the only thing checked.
-    if real_fisher and np.any(np.mean(real_fisher, axis=0) > 0):
-        fisher = np.sort(np.mean(real_fisher, axis=0))[::-1][:100]
-    else:
-        if real_fisher:
-            logger.warning("Fig 29: 'core_B_curriculum' Fisher diagonal is all-zero "
-                            "(upstream estimation bug) — using synthetic/hardcoded "
-                            "fallback data, NOT a real measurement.")
-        real_fisher = []
-        fisher = np.sort(np.random.default_rng(29).exponential(1.0, 100))[::-1]
+    # positive values, and therefore cannot be log-scaled").
+    if not real_fisher or not np.any(np.mean(real_fisher, axis=0) > 0):
+        raise MissingRealDataError(
+            "Fig 29 (ewc_continual) requires a valid (nonzero) per-parameter Fisher diagonal "
+            "in 'core_B_curriculum' ('with_ewc[*].fisher') — found cache but the Fisher "
+            "diagonal is missing or all-zero (known upstream estimation issue).")
+    fisher = np.sort(np.mean(real_fisher, axis=0))[::-1][:100]
     ax.bar(range(len(fisher)), fisher, color="#2563eb", edgecolor="white", alpha=0.8)
     ax.set_xlabel("Parameter Index (sorted)", fontsize=11)
     ax.set_ylabel("Fisher Information F_i", fontsize=11)
     ax.set_title("Parameter Importance", fontsize=12)
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3, axis="y")
-    if not real_fisher:
-        _annotate_panel_synthetic(ax, "no valid (nonzero) per-parameter Fisher diagonal in core_B_curriculum cache")
-    
+
     ax = axes[1]
     x = np.arange(n_tasks)
     ax.plot(x, np.diag(ewc_avg), "o-", color="#2563eb", lw=2, markersize=8, label="With EWC")
@@ -1623,10 +1502,6 @@ def fig_29_ewc_continual():
     ax.set_title("Catastrophic Forgetting Prevention", fontsize=12)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
-    
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(29, "figs_21_30"))
 
 
@@ -1638,12 +1513,11 @@ def fig_31_multi_metric_ranking():
     """Fig 31: Overall performance ranking — from Core C."""
     logger.info("\\n[Fig 31] Multi-Metric Ranking")
     data = load_cache("core_C_baselines_8bus")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 31: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
-        data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
-    
+        raise MissingRealDataError(
+            "Fig 31 (multi_metric_ranking) requires real cache 'core_C_baselines_8bus' — not found. "
+            "Run Core C via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     methods = list(data.keys())
     n_methods = len(methods)
     final_perf = {m: np.mean(v[-100:] if hasattr(v, '__len__') and len(v) > 100 else v) for m, v in data.items()}
@@ -1667,9 +1541,6 @@ def fig_31_multi_metric_ranking():
     
     ax.set_title("Figure 31 — Overall Performance Ranking with Critical Difference", fontsize=13)
     ax.axis("off")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_C_baselines_8bus cache missing")
     save_fig(fig, get_fig_path(31, "figs_31_40"))
 
 
@@ -1681,24 +1552,28 @@ def fig_32_effect_size():
     """Fig 32: Effect size — MAPPO-Safe-EWC vs baselines from Core C."""
     logger.info("\\n[Fig 32] Effect Size Analysis")
     data = load_cache("core_C_baselines_8bus")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 32: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
-        data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
-    
+        raise MissingRealDataError(
+            "Fig 32 (effect_size) requires real cache 'core_C_baselines_8bus' — not found. "
+            "Run Core C via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     baseline = "MAPPO-Safe-EWC"
-    baseline_vals = data.get(baseline, np.random.normal(3.0, 0.5, 50))
-    
+    if baseline not in data:
+        raise MissingRealDataError(
+            f"Fig 32 (effect_size) requires a '{baseline}' entry in 'core_C_baselines_8bus' — "
+            "found cache but missing this method's results.")
+    baseline_vals = data[baseline]
+
     fig, ax = plt.subplots(figsize=(10, 6))
     methods = [m for m in data.keys() if m != baseline]
     cohens_d = []
     for m in methods:
-        vals = data[m] if hasattr(data[m], '__len__') else np.random.normal(2.5, 0.5, 50)
-        if hasattr(vals, '__len__') and len(vals) > 1:
-            d = (np.mean(vals) - np.mean(baseline_vals)) / np.sqrt((np.std(vals)**2 + np.std(baseline_vals)**2) / 2)
-        else:
-            d = np.random.uniform(-0.5, 0.5)
+        vals = data[m]
+        if not hasattr(vals, '__len__') or len(vals) <= 1:
+            raise MissingRealDataError(
+                f"Fig 32 (effect_size) requires a multi-sample results array for method '{m}' "
+                "in 'core_C_baselines_8bus' — found cache but insufficient/malformed data.")
+        d = (np.mean(vals) - np.mean(baseline_vals)) / np.sqrt((np.std(vals)**2 + np.std(baseline_vals)**2) / 2)
         cohens_d.append(d)
     
     colors = ["#39d353" if d > 0 else "#ff6b35" for d in cohens_d]
@@ -1711,9 +1586,6 @@ def fig_32_effect_size():
     ax.set_title("Figure 32 — Effect Size Analysis: MAPPO-Safe-EWC vs. Baselines", fontsize=13)
     ax.legend(fontsize=9, loc="lower right")
     ax.grid(True, alpha=0.3, axis="x")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_C_baselines_8bus cache missing")
     save_fig(fig, get_fig_path(32, "figs_31_40"))
 
 
@@ -1725,12 +1597,11 @@ def fig_33_radar_chart():
     """Fig 33: Multi-dimensional method comparison — from Core C."""
     logger.info("\\n[Fig 33] Multi-Dimensional Method Comparison")
     data = load_cache("core_C_baselines_8bus")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 33: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
-        data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
-    
+        raise MissingRealDataError(
+            "Fig 33 (radar_chart) requires real cache 'core_C_baselines_8bus' — not found. "
+            "Run Core C via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     categories = ["Objective\\nFunction", "CTI\\nSatisfaction", "Convergence\\nSpeed", "Sample\\nEfficiency", "Robustness"]
     N = len(categories)
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
@@ -1745,41 +1616,36 @@ def fig_33_radar_chart():
     # separately as core_C_metrics_{system} (kept out of the main
     # per-method results dict so every OTHER consumer of that cache,
     # which iterates its keys expecting only method names, is unaffected).
-    real_metrics = load_cache("core_C_metrics_8bus") if not is_synthetic else None
-    rng = np.random.default_rng(33)
-    # Tracks whether ANY method fell back to illustrative jitter, not just
-    # whether ANY method got real metrics -- `is_synthetic or not any_real`
-    # only suppressed the watermark when EVERY method lacked real metrics,
-    # so a mix (some methods with core_C_metrics_8bus entries, some
-    # without -- e.g. one method's Core C run failed) would fabricate the
-    # missing methods' 4 illustrative axes with zero disclosure, since one
-    # real method alone made the old `any_real` true. Mirrors Fig 55's
-    # `any_illustrative` pattern, which already gets this right.
-    any_illustrative = False
+    real_metrics = load_cache("core_C_metrics_8bus")
+    if real_metrics is None:
+        raise MissingRealDataError(
+            "Fig 33 (radar_chart) requires real cache 'core_C_metrics_8bus' — not found. "
+            "Run Core C via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     for method in ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]:
         if method not in data:
             continue
         vals = data[method]
         obj = np.mean(vals[-100:] if hasattr(vals, '__len__') and len(vals) > 100 else vals)
-        m = real_metrics.get(method) if real_metrics else None
-        if m:
-            # Normalize each real axis to roughly [0, 1] for the shared
-            # radial scale: objective via a fixed reference range (same
-            # convergence-band values used elsewhere for this system),
-            # CTI satisfaction is already a 0-1 rate, convergence speed
-            # as "fraction of episode budget saved", sample efficiency
-            # and robustness are already ~0-1 relative-performance ratios.
-            n_episodes_eval = len(vals) if hasattr(vals, '__len__') else 200
-            values = [
-                float(np.clip((obj + 5) / 10, 0, 1)),
-                m["cti_satisfaction_rate"] if m["cti_satisfaction_rate"] is not None else 0.0,
-                float(np.clip(1 - m["convergence_ep"] / max(n_episodes_eval, 1), 0, 1)),
-                float(np.clip(m["sample_efficiency"], 0, 1)) if m["sample_efficiency"] is not None else 0.0,
-                float(np.clip(m["robustness"], 0, 1)) if m["robustness"] is not None else 0.0,
-            ]
-        else:
-            any_illustrative = True
-            values = [obj / 5.0 + rng.uniform(-0.1, 0.1) for _ in range(N)]
+        m = real_metrics.get(method)
+        if not m:
+            raise MissingRealDataError(
+                f"Fig 33 (radar_chart) requires a '{method}' entry in 'core_C_metrics_8bus' — "
+                "found cache but missing this method's metrics.")
+        # Normalize each real axis to roughly [0, 1] for the shared
+        # radial scale: objective via a fixed reference range (same
+        # convergence-band values used elsewhere for this system),
+        # CTI satisfaction is already a 0-1 rate, convergence speed
+        # as "fraction of episode budget saved", sample efficiency
+        # and robustness are already ~0-1 relative-performance ratios.
+        n_episodes_eval = len(vals) if hasattr(vals, '__len__') else 200
+        values = [
+            float(np.clip((obj + 5) / 10, 0, 1)),
+            m["cti_satisfaction_rate"] if m["cti_satisfaction_rate"] is not None else 0.0,
+            float(np.clip(1 - m["convergence_ep"] / max(n_episodes_eval, 1), 0, 1)),
+            float(np.clip(m["sample_efficiency"], 0, 1)) if m["sample_efficiency"] is not None else 0.0,
+            float(np.clip(m["robustness"], 0, 1)) if m["robustness"] is not None else 0.0,
+        ]
         values += values[:1]
         ax.plot(angles, values, 'o-', color=colors.get(method, "#333"), lw=2, label=method, markersize=6)
         ax.fill(angles, values, alpha=0.1, color=colors.get(method, "#333"))
@@ -1790,13 +1656,6 @@ def fig_33_radar_chart():
     ax.set_title("Figure 33 — Multi-Dimensional Method Comparison (8-Bus, 60% PV)", fontsize=13, y=1.08)
     ax.legend(fontsize=9, loc="upper right", bbox_to_anchor=(1.3, 1.1))
     ax.grid(True)
-    if is_synthetic or any_illustrative:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        note = ("core_C_baselines cache missing" if is_synthetic else
-                "core_C_metrics_8bus cache missing or incomplete for one or more "
-                "methods — those methods' 4 of 5 axes are illustrative jitter "
-                "around the one real scalar (mean objective)")
-        mark_synthetic(fig, note=note)
     save_fig(fig, get_fig_path(33, "figs_31_40"))
 
 
@@ -1888,26 +1747,16 @@ def fig_36_action_space_geometry():
     # was an illustrative formula.
     core_a = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
     samples = core_a.get("action_projection_samples") if core_a else None
-    is_synthetic = not samples or not samples.get("raw")
+    if not samples or not samples.get("raw"):
+        raise MissingRealDataError(
+            "Fig 36 (action_space_geometry) requires 'action_projection_samples' in "
+            "real cache 'core_A_mappo_safe_ewc_8bus_60pv' — not found or empty. "
+            "Run Core A via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
 
-    if not is_synthetic:
-        raw_actions = np.array(samples["raw"])
-        proj_actions = np.array(samples["projected"])
-        n_arrows = min(len(raw_actions), 50)
-        arrow_idx = np.linspace(0, len(raw_actions) - 1, n_arrows, dtype=int)
-    else:
-        logger.warning("Fig 36: 'core_A_mappo_safe_ewc_8bus_60pv' cache has no 'action_projection_samples' — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        tms_range = np.linspace(0.1, 2.0, 100)
-        ps_range = np.linspace(1.0, 10.0, 100)
-        TMS, PS = np.meshgrid(tms_range, ps_range)
-        constraint = TMS * 0.5 + PS * 0.05 >= 0.3
-        ax.contourf(TMS, PS, constraint.astype(float), levels=[0, 0.5, 1], colors=["#ff6b35", "#39d353"], alpha=0.3)
-        ax.contour(TMS, PS, constraint.astype(float), levels=[0.5], colors="white", linewidths=2)
-        rng = np.random.default_rng(36)
-        raw_actions = rng.random((50, 2)) * [1.9, 9.0] + [0.1, 1.0]
-        proj_actions = raw_actions.copy()
-        proj_actions[:, 0] = np.maximum(proj_actions[:, 0], 0.3)
-        arrow_idx = range(0, 50, 5)
+    raw_actions = np.array(samples["raw"])
+    proj_actions = np.array(samples["projected"])
+    n_arrows = min(len(raw_actions), 50)
+    arrow_idx = np.linspace(0, len(raw_actions) - 1, n_arrows, dtype=int)
 
     ax.scatter(raw_actions[:, 0], raw_actions[:, 1], c="#ff6b35", s=50, alpha=0.6, label="Raw Actions", edgecolors="white")
     ax.scatter(proj_actions[:, 0], proj_actions[:, 1], c="#39d353", s=50, alpha=0.6, label="Projected (Safe)", edgecolors="white")
@@ -1921,9 +1770,6 @@ def fig_36_action_space_geometry():
     ax.set_title("Figure 36 — Action Space Bounds & Safety Projection Geometry", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_60pv cache missing 'action_projection_samples'")
     save_fig(fig, get_fig_path(36, "figs_31_40"))
 
 
@@ -1935,14 +1781,17 @@ def fig_37_per_agent_curves():
     """Fig 37: Per-agent curves — from Core A per-agent reward data."""
     logger.info("\\n[Fig 37] Per-Agent Learning Curves")
     data = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 37: 'core_A_mappo_safe_ewc_8bus_60pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        n_eps, n_agents = 2000, 7
-        data = {"episodes": np.arange(n_eps), "per_agent_returns_mean": np.random.randn(n_eps, n_agents).cumsum(axis=0) * 0.01 + np.linspace(-1, 1, n_eps)[:, None]}
-    
-    eps = data.get("episodes", np.arange(len(data.get("per_agent_returns_mean", []))))
-    per_agent = data.get("per_agent_returns_mean", np.zeros((len(eps), 7)))
+        raise MissingRealDataError(
+            "Fig 37 (per_agent_curves) requires real cache 'core_A_mappo_safe_ewc_8bus_60pv' — not found. "
+            "Run Core A via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+    if "per_agent_returns_mean" not in data:
+        raise MissingRealDataError(
+            "Fig 37 (per_agent_curves) requires 'per_agent_returns_mean' in "
+            "'core_A_mappo_safe_ewc_8bus_60pv' — found cache but missing this field.")
+
+    eps = data.get("episodes", np.arange(len(data["per_agent_returns_mean"])))
+    per_agent = data["per_agent_returns_mean"]
     n_agents = per_agent.shape[1] if len(per_agent.shape) > 1 else 7
     
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -1984,10 +1833,6 @@ def fig_37_per_agent_curves():
     ax.set_title("Convergence Speed Ranking", fontsize=12)
     ax.grid(True, alpha=0.3, axis="x")
     ax.invert_yaxis()
-    
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_60pv cache missing")
     save_fig(fig, get_fig_path(37, "figs_31_40"))
 
 
@@ -1999,17 +1844,11 @@ def fig_38_attention_evolution():
     """Fig 38: Attention evolution — from Core A attention snapshots."""
     logger.info("\\n[Fig 38] Attention Weight Evolution")
     data = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 38: 'core_A_mappo_safe_ewc_8bus_60pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        n_agents = 14
-        data = {f"attention_snap_0": np.ones((n_agents, n_agents)) / n_agents,
-                f"attention_snap_100": np.random.dirichlet(np.ones(n_agents), n_agents),
-                f"attention_snap_500": np.random.dirichlet(np.ones(n_agents) * 2, n_agents),
-                f"attention_snap_1000": np.random.dirichlet(np.ones(n_agents) * 3, n_agents),
-                f"attention_snap_5000": np.random.dirichlet(np.ones(n_agents) * 4, n_agents),
-                "attention_entropy_mean": 1.5 * np.exp(-np.arange(5000) / 1000) + 0.5}
-    
+        raise MissingRealDataError(
+            "Fig 38 (attention_evolution) requires real cache 'core_A_mappo_safe_ewc_8bus_60pv' — not found. "
+            "Run Core A via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     # Real aggregation (run_core_training.py's _aggregate_core_A_results)
     # stores keys as "attention_snap_{ep}_mean" (averaged across runs);
     # only the hardcoded synthetic fallback above uses the bare
@@ -2031,21 +1870,13 @@ def fig_38_attention_evolution():
         # never calls the per-step attention-snapshot capture in
         # marl_agents.py (that capture only fires along the rollout-based
         # training path) — so a real cache can legitimately carry zero
-        # attention_snap_* keys. Fall back to the labeled placeholder
-        # rather than crashing on an empty gridspec.
-        logger.warning("Fig 38: no 'attention_snap_*' entries in real data — "
-                        "using synthetic/hardcoded fallback data, NOT a real measurement.")
-        n_agents = 14
-        data = {"attention_snap_0": np.ones((n_agents, n_agents)) / n_agents,
-                "attention_snap_100": np.random.dirichlet(np.ones(n_agents), n_agents),
-                "attention_snap_500": np.random.dirichlet(np.ones(n_agents) * 2, n_agents),
-                "attention_snap_1000": np.random.dirichlet(np.ones(n_agents) * 3, n_agents),
-                "attention_snap_5000": np.random.dirichlet(np.ones(n_agents) * 4, n_agents),
-                "attention_entropy_mean": 1.5 * np.exp(-np.arange(5000) / 1000) + 0.5}
-        snapshots = {0: data["attention_snap_0"], 100: data["attention_snap_100"],
-                     500: data["attention_snap_500"], 1000: data["attention_snap_1000"],
-                     5000: data["attention_snap_5000"]}
-        is_synthetic = True
+        # attention_snap_* keys. That's a real limitation of the ES
+        # training path, not grounds to fabricate placeholder snapshots.
+        raise MissingRealDataError(
+            "Fig 38 (attention_evolution) requires 'attention_snap_*' entries in "
+            "'core_A_mappo_safe_ewc_8bus_60pv' — found cache but no attention snapshots "
+            "(the ES training path does not capture these; a rollout-based training run "
+            "is required for this figure).")
 
     entropy = data.get("attention_entropy_mean", np.array([]))
 
@@ -2081,10 +1912,6 @@ def fig_38_attention_evolution():
     ax.set_title("Attention Distribution Evolution", fontsize=12)
     ax.legend(fontsize=8, ncol=len(snapshots))
     ax.grid(True, alpha=0.3)
-    
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_60pv cache missing")
     save_fig(fig, get_fig_path(38, "figs_31_40"))
 
 
@@ -2096,12 +1923,11 @@ def fig_39_ablation():
     """Fig 39: Ablation — from Core D."""
     logger.info("\\n[Fig 39] Systematic Ablation Study")
     data = load_cache("core_D_ablation")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 39: 'core_D_ablation' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        configs = ["MAPPO", "MAPPO+GNN", "MAPPO+GNN+Safe", "MAPPO+GNN+Safe+EWC", "MAPPO+GNN+Safe+EWC+Curr"]
-        data = {cfg: [{"OF": 5.0 - i * 0.5 + np.random.rand() * 0.2, "CTI": 5.0 - i * 0.8 + np.random.rand() * 0.5} for _ in range(10)] for i, cfg in enumerate(configs)}
-    
+        raise MissingRealDataError(
+            "Fig 39 (ablation) requires real cache 'core_D_ablation' — not found. "
+            "Run Core D via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     configs = list(data.keys())
     of_means = [np.mean([r["OF"] for r in data[cfg]]) for cfg in configs]
     of_stds = [np.std([r["OF"] for r in data[cfg]]) for cfg in configs]
@@ -2143,10 +1969,6 @@ def fig_39_ablation():
     ax.set_title("Component Contribution", fontsize=12)
     ax.axvline(0, color="white", lw=1)
     ax.grid(True, alpha=0.3, axis="x")
-    
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_D_ablation cache missing")
     save_fig(fig, get_fig_path(39, "figs_31_40"))
 
 
@@ -2158,16 +1980,11 @@ def fig_40_hyperparameter():
     """Fig 40: Hyperparameter grid — from Core E."""
     logger.info("\\n[Fig 40] Hyperparameter Sensitivity Heatmap")
     data = load_cache("core_E_hparam")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 40: 'core_E_hparam' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = []
-        for lamb in [1e2, 1e3, 1e4, 1e5, 1e6]:
-            for alpha in [1e-5, 1e-4, 1e-3, 1e-2]:
-                for hid in [16, 32, 64, 128]:
-                    of_val = 2.0 + np.exp(-lamb / 1e5) + alpha * 100 + 1.0 / hid + np.random.rand() * 0.1
-                    data.append({"lambda_ewc": lamb, "alpha_lambda": alpha, "hidden_dim": hid, "OF": of_val})
-    
+        raise MissingRealDataError(
+            "Fig 40 (hyperparameter) requires real cache 'core_E_hparam' — not found. "
+            "Run Core E via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     lambdas = sorted(set(d["lambda_ewc"] for d in data))
     alphas = sorted(set(d["alpha_lambda"] for d in data))
     hiddens = sorted(set(d["hidden_dim"] for d in data))
@@ -2193,10 +2010,6 @@ def fig_40_hyperparameter():
         ax.set_ylabel("lambda_ewc", fontsize=9)
         ax.set_title(f"d_h = {hidden}", fontsize=10)
         plt.colorbar(im, ax=ax, shrink=0.7, label="OF (s)")
-    
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_E_hparam cache missing")
     save_fig(fig, get_fig_path(40, "figs_31_40"))
 
 
@@ -2208,13 +2021,16 @@ def fig_41_sample_efficiency():
     """Fig 41: Sample efficiency — from Core A convergence data."""
     logger.info("\\n[Fig 41] Sample Efficiency Comparison")
     data = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 41: 'core_A_mappo_safe_ewc_8bus_60pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        n_eps = 2000
-        data = {"global_returns_mean": -5 + 8 * (1 - np.exp(-np.arange(n_eps) / 300))}
-    
-    returns = data.get("global_returns_mean", np.zeros(2000))
+        raise MissingRealDataError(
+            "Fig 41 (sample_efficiency) requires real cache 'core_A_mappo_safe_ewc_8bus_60pv' — not found. "
+            "Run Core A via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+    if "global_returns_mean" not in data:
+        raise MissingRealDataError(
+            "Fig 41 (sample_efficiency) requires 'global_returns_mean' in "
+            "'core_A_mappo_safe_ewc_8bus_60pv' — found cache but missing this field.")
+
+    returns = data["global_returns_mean"]
     cum_steps = np.cumsum(np.ones(len(returns)) * 50)
     
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -2231,9 +2047,6 @@ def fig_41_sample_efficiency():
     ax.set_title("Figure 41 — Sample Efficiency Comparison", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_60pv cache missing")
     save_fig(fig, get_fig_path(41, "figs_31_40"))
 
 
@@ -2245,17 +2058,34 @@ def fig_42_warm_start():
     """Fig 42: Warm-start vs cold-start — from Core B extension."""
     logger.info("\\n[Fig 42] Warm-Start vs. Cold-Start Initialization")
     data = load_cache("core_B_curriculum")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 42: 'core_B_curriculum' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"with_ewc": [{"task_performances": np.array([[0.85,0,0,0],[0.83,0.84,0,0],[0.82,0.83,0.84,0],[0.81,0.82,0.83,0.84]])}]}
+        raise MissingRealDataError(
+            "Fig 42 (warm_start) requires real cache 'core_B_curriculum' — not found. "
+            "Run Core B via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
 
     ewc_mats = [r["task_performances"] for r in data.get("with_ewc", [])]
-    avg_mat = np.mean(ewc_mats, axis=0) if ewc_mats else np.eye(4) * 0.8
+    if not ewc_mats:
+        raise MissingRealDataError(
+            "Fig 42 (warm_start) requires a non-empty 'with_ewc' list in 'core_B_curriculum' — "
+            "found cache but no task_performances entries.")
+    avg_mat = np.mean(ewc_mats, axis=0)
     n_tasks = avg_mat.shape[0]
 
     warm_start = np.diag(avg_mat)
-    cold_start = [0.3, 0.35, 0.4, 0.45][:n_tasks]
+    # 'core_B_curriculum' has no real "trained from scratch at each PV
+    # level, no curriculum" comparison point -- the prior code plotted a
+    # hardcoded [0.3, 0.35, 0.4, 0.45] cold-start series unconditionally,
+    # even when warm_start was real, which is exactly the kind of
+    # fabricated data this function must not produce. No cold-start
+    # baseline is drawn until a real one is measured and cached.
+    cold_start = data.get("cold_start_task_performance")
+    if cold_start is None:
+        raise MissingRealDataError(
+            "Fig 42 (warm_start) requires a real 'cold_start_task_performance' "
+            "(per-PV-level, trained-from-scratch-without-curriculum) series in "
+            "'core_B_curriculum' for the cold-start comparison bars — this measurement does "
+            "not currently exist anywhere in the pipeline; no fabricated placeholder is used.")
+    cold_start = cold_start[:n_tasks]
 
     fig, ax = plt.subplots(figsize=(10, 6))
     x = np.arange(n_tasks)
@@ -2270,9 +2100,6 @@ def fig_42_warm_start():
     ax.legend(fontsize=11)
     ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3, axis="y")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_B_curriculum cache missing")
     save_fig(fig, get_fig_path(42, "figs_31_40"))
 
 # ==================================================================
@@ -2283,20 +2110,20 @@ def fig_43_coordination_diagram():
     """Fig 43: Coordination diagram — from Core J."""
     logger.info("\\n[Fig 43] Relay Coordination Time-Distance Diagram")
     data = load_cache("core_J_protection")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 43: 'core_J_protection' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        n_pairs = 21
-        distances = np.linspace(0, 10, n_pairs)
-        op_times_primary = 0.1 + 0.05 * distances + np.random.normal(0, 0.01, n_pairs)
-        op_times_backup = 0.3 + 0.08 * distances + np.random.normal(0, 0.01, n_pairs)
-        data = {"coordination": {"distances": distances, "primary": op_times_primary, "backup": op_times_backup}}
-    
+        raise MissingRealDataError(
+            "Fig 43 (coordination_diagram) requires real cache 'core_J_protection' — not found. "
+            "Run Core J via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     coord = data.get("coordination", {})
-    distances = coord.get("distances", np.linspace(0, 10, 21))
-    primary = coord.get("primary", 0.1 + 0.05 * distances)
-    backup = coord.get("backup", 0.3 + 0.08 * distances)
-    
+    if not all(k in coord for k in ("distances", "primary", "backup")):
+        raise MissingRealDataError(
+            "Fig 43 (coordination_diagram) requires 'coordination.distances'/'primary'/'backup' "
+            "in 'core_J_protection' — found cache but missing one or more fields.")
+    distances = coord["distances"]
+    primary = coord["primary"]
+    backup = coord["backup"]
+
     fig, ax = plt.subplots(figsize=(12, 7))
     ax.plot(distances, primary, 'o-', color="#2563eb", lw=2, markersize=6, label="Primary Relay")
     ax.plot(distances, backup, 's-', color="#ff6b35", lw=2, markersize=6, label="Backup Relay")
@@ -2308,9 +2135,6 @@ def fig_43_coordination_diagram():
     ax.set_title("Figure 43 — Relay Coordination Time-Distance Diagram (8-Bus, 60% PV)", fontsize=13)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_J_protection cache missing")
     save_fig(fig, get_fig_path(43, "figs_41_50"))
 
 
@@ -2322,21 +2146,22 @@ def fig_44_fault_contribution():
     """Fig 44: Fault current contribution pie chart — from Core J."""
     logger.info("\\n[Fig 44] Fault Current Contribution Pie Chart")
     data = load_cache("core_J_protection")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 44: 'core_J_protection' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"fault_contribution": {"PV": 35, "Grid": 45, "Synchronous": 20}}
-    
-    contrib = data.get("fault_contribution", {"PV": 35, "Grid": 45, "Synchronous": 20})
+        raise MissingRealDataError(
+            "Fig 44 (fault_contribution) requires real cache 'core_J_protection' — not found. "
+            "Run Core J via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
+    contrib = data.get("fault_contribution", {})
     # The real evaluator (training_pipeline.py's _eval_fault_contributions)
     # legitimately can't compute this without pandapower installed, and
-    # records {"error": "..."} rather than crashing — but that sentinel
-    # isn't plottable as pie-slice sizes, so treat it the same as a
-    # missing cache: fall back to the honest placeholder.
+    # records {"error": "..."} rather than crashing — that sentinel isn't
+    # plottable as pie-slice sizes, and is now treated as missing real
+    # data rather than a cue to fabricate a placeholder.
     if not contrib or "error" in contrib or not all(isinstance(v, (int, float)) for v in contrib.values()):
-        logger.warning(f"Fig 44: 'fault_contribution' data unusable ({contrib}) — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        contrib = {"PV": 35, "Grid": 45, "Synchronous": 20}
-        is_synthetic = True
+        raise MissingRealDataError(
+            f"Fig 44 (fault_contribution) requires a usable numeric 'fault_contribution' dict in "
+            f"'core_J_protection' — found {contrib!r} (pandapower may not be installed, or the "
+            "evaluator recorded an error; see training_pipeline.py's _eval_fault_contributions).")
     labels = list(contrib.keys())
     sizes = list(contrib.values())
     palette = ["#f7c948", "#2563eb", "#39d353", "#ff6b35", "#8b5cf6", "#14b8a6"]
@@ -2350,9 +2175,6 @@ def fig_44_fault_contribution():
         autotext.set_color('white')
         autotext.set_fontweight('bold')
     ax.set_title("Figure 44 — Fault Current Contribution Pie Chart (60% PV)", fontsize=13)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_J_protection cache missing")
     save_fig(fig, get_fig_path(44, "figs_41_50"))
 
 
@@ -2364,35 +2186,24 @@ def fig_45_daily_profile():
     """Fig 45: Daily PV generation profile — from Core J."""
     logger.info("\\n[Fig 45] Daily PV Profile & Adaptive Relay Response")
     data = load_cache("core_J_protection")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 45: 'core_J_protection' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        hours = np.arange(24)
-        pv_gen = np.maximum(0, np.sin(np.pi * hours / 12) * 100)
-        relay_response = 0.2 + 0.1 * (1 - pv_gen / 100)
-        data = {"daily_profile": {"hours": hours, "pv_generation": pv_gen, "relay_response": relay_response}}
-    
+        raise MissingRealDataError(
+            "Fig 45 (daily_profile) requires real cache 'core_J_protection' — not found. "
+            "Run Core J via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     profile = data.get("daily_profile", {})
     # _eval_daily_pv's real output (see core_eval_bridge._extract_fig_data,
-    # fig 45) is keyed "tms"/"ps"/"of"/"irradiance" — completely different
-    # keys from the synthetic fallback's "hours"/"pv_generation"/
-    # "relay_response". Reading the fallback's key names against a REAL
-    # cache hit silently missed every .get() and fell back to the exact
-    # same fabricated sinusoidal formulas — undisclosed, since is_synthetic
-    # stayed False. Branch on which shape is actually present instead.
-    if not is_synthetic and "irradiance" in profile:
-        irradiance = np.asarray(profile["irradiance"], dtype=float)
-        hours = np.arange(len(irradiance))
-        pv_gen = 100.0 * irradiance / max(float(np.max(irradiance)), 1e-9)
-        relay_response = np.asarray(profile.get("of", []), dtype=float)
-        response_label = "Objective Function (learned TMS/PS that hour)"
-        response_ylim = None
-    else:
-        hours = profile.get("hours", np.arange(24))
-        pv_gen = profile.get("pv_generation", np.maximum(0, np.sin(np.pi * hours / 12) * 100))
-        relay_response = profile.get("relay_response", 0.2 + 0.1 * (1 - pv_gen / 100))
-        response_label = "Relay Response Time (s)"
-        response_ylim = (0.1, 0.4)
+    # fig 45) is keyed "tms"/"ps"/"of"/"irradiance".
+    if "irradiance" not in profile:
+        raise MissingRealDataError(
+            "Fig 45 (daily_profile) requires 'daily_profile.irradiance' in 'core_J_protection' — "
+            "found cache but missing this field.")
+    irradiance = np.asarray(profile["irradiance"], dtype=float)
+    hours = np.arange(len(irradiance))
+    pv_gen = 100.0 * irradiance / max(float(np.max(irradiance)), 1e-9)
+    relay_response = np.asarray(profile.get("of", []), dtype=float)
+    response_label = "Objective Function (learned TMS/PS that hour)"
+    response_ylim = None
 
     fig, ax1 = plt.subplots(figsize=(12, 6))
     color1 = "#f7c948"
@@ -2417,9 +2228,6 @@ def fig_45_daily_profile():
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
     ax1.grid(True, alpha=0.3)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_J_protection cache missing")
     save_fig(fig, get_fig_path(45, "figs_41_50"))
 
 
@@ -2431,41 +2239,31 @@ def fig_46_relay_curves():
     """Fig 46: Relay operating curves — from Core J."""
     logger.info("\\n[Fig 46] Relay Operating Characteristic Curves")
     data = load_cache("core_J_protection")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 46: 'core_J_protection' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        current_multiples = np.linspace(1, 20, 100)
-        tds, psm = 0.5, 2.0
-        op_time = tds * 0.14 / ((current_multiples / psm) ** 0.02 - 1)
-        data = {"relay_curves": {"current_multiples": current_multiples, "operating_time": op_time, "TDS": tds, "PSM": psm}}
-    
+        raise MissingRealDataError(
+            "Fig 46 (relay_curves) requires real cache 'core_J_protection' — not found. "
+            "Run Core J via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     curves = data.get("relay_curves", {})
     # _eval_relay_curves's real output (see core_eval_bridge._extract_fig_data,
     # fig 46) is keyed "relay_0".."relay_{n-1}", each holding "If_range_A"
-    # (Amps, not current multiples) / "t_op_s" / "TDS" / "PSM" — none of
-    # curves.get("current_multiples"/"operating_time"/"TDS"/"PSM") exist on
-    # a real cache hit, so every .get() silently missed and fell back to
-    # the identical fabricated IDMT formula even when real per-relay curves
-    # were available. Plot relay 0's real curve (converting Amps to current
-    # multiples via I/PSM) when present.
+    # (Amps, not current multiples) / "t_op_s" / "TDS" / "PSM". Plot relay
+    # 0's real curve (converting Amps to current multiples via I/PSM).
     real_relay_keys = sorted(k for k in curves.keys() if str(k).startswith("relay_"))
-    if not is_synthetic and real_relay_keys:
-        relay0 = curves[real_relay_keys[0]]
-        tds = relay0["TDS"]
-        psm = relay0["PSM"]
-        if_range_a = np.asarray(relay0["If_range_A"], dtype=float)
-        current_multiples = if_range_a / psm
-        # t_op_s is +inf for If <= PS (relay does not trip) — replace with
-        # NaN so matplotlib leaves a real gap instead of plotting garbage.
-        op_time = np.asarray(relay0["t_op_s"], dtype=float)
-        op_time[~np.isfinite(op_time)] = np.nan
-        relay_note = f" (relay 0 of {len(real_relay_keys)})"
-    else:
-        current_multiples = curves.get("current_multiples", np.linspace(1, 20, 100))
-        op_time = curves.get("operating_time", 0.5 * 0.14 / ((current_multiples / 2.0) ** 0.02 - 1))
-        tds = curves.get("TDS", 0.5)
-        psm = curves.get("PSM", 2.0)
-        relay_note = ""
+    if not real_relay_keys:
+        raise MissingRealDataError(
+            "Fig 46 (relay_curves) requires 'relay_curves.relay_0' (etc.) entries in "
+            "'core_J_protection' — found cache but no per-relay curve data.")
+    relay0 = curves[real_relay_keys[0]]
+    tds = relay0["TDS"]
+    psm = relay0["PSM"]
+    if_range_a = np.asarray(relay0["If_range_A"], dtype=float)
+    current_multiples = if_range_a / psm
+    # t_op_s is +inf for If <= PS (relay does not trip) — replace with
+    # NaN so matplotlib leaves a real gap instead of plotting garbage.
+    op_time = np.asarray(relay0["t_op_s"], dtype=float)
+    op_time[~np.isfinite(op_time)] = np.nan
+    relay_note = f" (relay 0 of {len(real_relay_keys)})"
 
     fig, ax = plt.subplots(figsize=(10, 7))
     ax.plot(current_multiples, op_time, color="#2563eb", lw=2,
@@ -2481,15 +2279,8 @@ def fig_46_relay_curves():
     ax.set_xlabel("Current Multiple (I / I_pickup)", fontsize=12)
     ax.set_ylabel("Operating Time (s)", fontsize=12)
     ax.set_title("Figure 46 — Relay Operating Characteristic Curves with Learned Settings", fontsize=13)
-    if is_synthetic:
-        # Fixed range/scale the synthetic formula above was authored for.
-        ax.set_xlim(1, 20)
-        ax.set_ylim(0, 5)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_J_protection cache missing")
     save_fig(fig, get_fig_path(46, "figs_41_50"))
 
 
@@ -2510,12 +2301,12 @@ def fig_47_sympathetic_tripping():
     # fig44/45/46/47's cache files happens to exist first, which can
     # silently hand this function a different figure's data.
     real = load_bridge_cache(47)
-    is_synthetic = real is None or "sympathetic" not in real or "traditional" not in real
-    if is_synthetic:
-        logger.warning("Fig 47: 'core_eval_fig47.json' cache not found/incomplete — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        marl_viol, trad_viol = 5, 20
-    else:
-        marl_viol, trad_viol = int(real["sympathetic"]), int(real["traditional"])
+    if real is None or "sympathetic" not in real or "traditional" not in real:
+        raise MissingRealDataError(
+            "Fig 47 (sympathetic_tripping) requires 'sympathetic'/'traditional' fields in real "
+            "cache 'core_eval_fig47.json' — not found or incomplete. "
+            "Run Core J via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+    marl_viol, trad_viol = int(real["sympathetic"]), int(real["traditional"])
 
     # Honest reframing: the real signal is a CTI-violation COUNT (lower
     # is better) for MARL vs. traditional settings, not a discrete
@@ -2543,22 +2334,21 @@ def fig_47_sympathetic_tripping():
     # "3ph"/3-Phase — there is no fault-impedance model anywhere for a
     # "High-Z" category, so it's intentionally not shown).
     ax = axes[1]
-    by_type = real.get("by_fault_type") if not is_synthetic else None
+    by_type = real.get("by_fault_type")
     fault_type_labels = {"1ph": "Line-to-Ground", "LL": "Line-to-Line", "3ph": "3-Phase"}
-    if by_type:
-        scenarios = [fault_type_labels[ft] for ft in fault_type_labels if ft in by_type]
-        prevented_by_type = []
-        not_prevented_by_type = []
-        for ft in fault_type_labels:
-            if ft not in by_type: continue
-            t = max(by_type[ft]["traditional"], by_type[ft]["marl"], 1)
-            p = max(t - by_type[ft]["marl"], 0)
-            prevented_by_type.append(p)
-            not_prevented_by_type.append(t - p)
-    else:
-        scenarios = ["Line-to-Ground", "Line-to-Line", "3-Phase"]
-        prevented_by_type = [4, 5, 3]
-        not_prevented_by_type = [1, 0, 1]
+    if not by_type:
+        raise MissingRealDataError(
+            "Fig 47 (sympathetic_tripping) requires 'by_fault_type' in real cache "
+            "'core_eval_fig47.json' — found cache but missing this field.")
+    scenarios = [fault_type_labels[ft] for ft in fault_type_labels if ft in by_type]
+    prevented_by_type = []
+    not_prevented_by_type = []
+    for ft in fault_type_labels:
+        if ft not in by_type: continue
+        t = max(by_type[ft]["traditional"], by_type[ft]["marl"], 1)
+        p = max(t - by_type[ft]["marl"], 0)
+        prevented_by_type.append(p)
+        not_prevented_by_type.append(t - p)
     x = np.arange(len(scenarios))
     width = 0.35
     ax.bar(x - width/2, prevented_by_type, width, label="Prevented", color="#39d353", alpha=0.8, edgecolor="white")
@@ -2569,12 +2359,6 @@ def fig_47_sympathetic_tripping():
     ax.set_title("By Fault Type", fontsize=12)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3, axis="y")
-    if not by_type:
-        _annotate_panel_synthetic(ax, "no per-fault-type breakdown in core_eval_fig47.json cache")
-
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_eval_fig47.json cache missing — entire figure fabricated")
     save_fig(fig, get_fig_path(47, "figs_41_50"))
 
 
@@ -2599,43 +2383,41 @@ def fig_48_shap():
     shap_arr = None
     if real is not None and real.get("shap") is not None:
         shap_arr = np.asarray(real["shap"])
-    is_synthetic = shap_arr is None or shap_arr.size == 0
-
-    if is_synthetic:
-        logger.warning("Fig 48: 'core_eval_fig48.json' cache not found/empty — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        rng = np.random.default_rng(42)
-        shap_values = np.sort(rng.exponential(0.1, len(features)))[::-1]
-        order = np.arange(len(features))
-    else:
-        # shap.KernelExplainer's returned array axis order for a
-        # multi-output function is version-dependent -- verified directly
-        # against the installed shap==0.51.0 (upgraded this session from
-        # the numpy-2.x-incompatible 0.41.0 pin): shap_values() returns
-        # (n_explain, n_features, n_actions), NOT the (n_actions,
-        # n_explain, n_features) this code previously assumed (a stale
-        # assumption from the old pinned version, never actually verified
-        # against 0.51.0's real output). Averaging over
-        # `range(ndim - 1)` blindly assumed n_features was the LAST axis
-        # -- on the real (20, 12, 2) shape that instead averaged over
-        # (n_explain, n_features) and kept n_actions=2, so every SHAP
-        # figure generated after the shap upgrade silently plotted 2
-        # meaningless "feature" bars (mean_abs.shape[0]=2) hard-resized up
-        # to 12 real feature names via the fallback below, rather than
-        # ever hitting a shape mismatch loud enough to notice.
-        #
-        # Fixed by locating the feature axis by its actual SIZE (matches
-        # len(features)) instead of assuming a fixed position, so this
-        # stays correct regardless of which axis order a given
-        # shap/explainer version happens to use.
-        feature_axis = next((ax for ax, size in enumerate(shap_arr.shape) if size == len(features)),
-                             shap_arr.ndim - 1)
-        other_axes = tuple(ax for ax in range(shap_arr.ndim) if ax != feature_axis)
-        mean_abs = np.abs(shap_arr).mean(axis=other_axes) if other_axes else np.abs(shap_arr)
-        if mean_abs.shape[0] != len(features):
-            logger.warning(f"Fig 48: cached SHAP feature count ({mean_abs.shape[0]}) != known obs schema ({len(features)}); truncating/padding to match.")
-            mean_abs = np.resize(mean_abs, len(features))
-        order = np.argsort(mean_abs)[::-1]
-        shap_values = mean_abs[order]
+    if shap_arr is None or shap_arr.size == 0:
+        raise MissingRealDataError(
+            "Fig 48 (shap) requires real cache 'core_eval_fig48.json' with a non-empty 'shap' "
+            "array — not found or empty. Run the bridge-CLI SHAP evaluation first "
+            "(see EXPERIMENT_GUIDE.md); note this is a core_eval_bridge.py-only evaluation with "
+            "no vectorized-path equivalent.")
+    # shap.KernelExplainer's returned array axis order for a
+    # multi-output function is version-dependent -- verified directly
+    # against the installed shap==0.51.0 (upgraded this session from
+    # the numpy-2.x-incompatible 0.41.0 pin): shap_values() returns
+    # (n_explain, n_features, n_actions), NOT the (n_actions,
+    # n_explain, n_features) this code previously assumed (a stale
+    # assumption from the old pinned version, never actually verified
+    # against 0.51.0's real output). Averaging over
+    # `range(ndim - 1)` blindly assumed n_features was the LAST axis
+    # -- on the real (20, 12, 2) shape that instead averaged over
+    # (n_explain, n_features) and kept n_actions=2, so every SHAP
+    # figure generated after the shap upgrade silently plotted 2
+    # meaningless "feature" bars (mean_abs.shape[0]=2) hard-resized up
+    # to 12 real feature names via the fallback below, rather than
+    # ever hitting a shape mismatch loud enough to notice.
+    #
+    # Fixed by locating the feature axis by its actual SIZE (matches
+    # len(features)) instead of assuming a fixed position, so this
+    # stays correct regardless of which axis order a given
+    # shap/explainer version happens to use.
+    feature_axis = next((ax for ax, size in enumerate(shap_arr.shape) if size == len(features)),
+                         shap_arr.ndim - 1)
+    other_axes = tuple(ax for ax in range(shap_arr.ndim) if ax != feature_axis)
+    mean_abs = np.abs(shap_arr).mean(axis=other_axes) if other_axes else np.abs(shap_arr)
+    if mean_abs.shape[0] != len(features):
+        logger.warning(f"Fig 48: cached SHAP feature count ({mean_abs.shape[0]}) != known obs schema ({len(features)}); truncating/padding to match.")
+        mean_abs = np.resize(mean_abs, len(features))
+    order = np.argsort(mean_abs)[::-1]
+    shap_values = mean_abs[order]
 
     ordered_features = [features[i] for i in order]
 
@@ -2648,9 +2430,6 @@ def fig_48_shap():
     ax.set_title("Figure 48 — SHAP Feature Importance for Relay Decisions", fontsize=13)
     ax.invert_yaxis()
     ax.grid(True, alpha=0.3, axis="x")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_eval_fig48.json cache missing")
     save_fig(fig, get_fig_path(48, "figs_41_50"))
 
 
@@ -2668,40 +2447,27 @@ def fig_49_decision_boundary():
         act = real.get("actions")
         if emb is not None and act is not None and len(emb) > 0:
             embeddings, actions = np.asarray(emb), np.asarray(act)
-    is_synthetic = embeddings is None
+    if embeddings is None:
+        raise MissingRealDataError(
+            "Fig 49 (decision_boundary) requires real cache 'core_eval_fig49.json' with non-empty "
+            "'embeddings'/'actions' — not found or empty. Run the bridge-CLI t-SNE evaluation "
+            "first (see EXPERIMENT_GUIDE.md); note this is a core_eval_bridge.py-only evaluation "
+            "with no vectorized-path equivalent.")
 
-    if is_synthetic:
-        logger.warning("Fig 49: 'core_eval_fig49.json' cache not found/empty — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        rng = np.random.default_rng(42)
-        n_points = 500
-        x = rng.standard_normal(n_points)
-        y = rng.standard_normal(n_points)
-        labels = (x + y > 0).astype(int)
-    else:
-        x, y = embeddings[:, 0], embeddings[:, 1]
-        # Real per-point "action class": whether the trained policy's
-        # aggregate action pushes settings up or down at that sampled
-        # observation — the sign of the summed action vector.
-        labels = (actions.sum(axis=-1) > 0).astype(int)
+    x, y = embeddings[:, 0], embeddings[:, 1]
+    # Real per-point "action class": whether the trained policy's
+    # aggregate action pushes settings up or down at that sampled
+    # observation — the sign of the summed action vector.
+    labels = (actions.sum(axis=-1) > 0).astype(int)
 
     fig, ax = plt.subplots(figsize=(10, 8))
     scatter = ax.scatter(x, y, c=labels, cmap="RdYlGn", alpha=0.6, s=30, edgecolors="white", linewidth=0.5)
-
-    if is_synthetic:
-        x_line = np.linspace(-3, 3, 100)
-        ax.plot(x_line, -x_line, 'k--', lw=2, label="Decision Boundary")
-        ax.contourf(np.linspace(-3, 3, 50), np.linspace(-3, 3, 50),
-                    np.zeros((50, 50)), levels=[0, 0.5, 1], colors=["#ff6b35", "#39d353"], alpha=0.1)
-        ax.legend(fontsize=11)
 
     ax.set_xlabel("t-SNE Dimension 1", fontsize=12)
     ax.set_ylabel("t-SNE Dimension 2", fontsize=12)
     ax.set_title("Figure 49 — Decision Boundary Visualization (2D Projection)", fontsize=13)
     ax.grid(True, alpha=0.3)
     plt.colorbar(scatter, ax=ax, label="Action Class")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_eval_fig49.json cache missing")
     save_fig(fig, get_fig_path(49, "figs_41_50"))
 
 
@@ -2713,28 +2479,24 @@ def fig_50_critical_pairs():
     """Fig 50: Critical pair identification — from core_eval_fig50 (real _eval_critical_pairs output)."""
     logger.info("\\n[Fig 50] Critical P/B Pair Identification")
     real = load_bridge_cache(50)
-    real_pairs = None
-    if isinstance(real, list) and len(real) > 0:
-        real_pairs = real
-    is_synthetic = real_pairs is None
+    real_pairs = real if isinstance(real, list) and len(real) > 0 else None
+    if real_pairs is None:
+        raise MissingRealDataError(
+            "Fig 50 (critical_pairs) requires real cache 'core_eval_fig50.json' with a non-empty "
+            "list — not found or empty. Run the bridge-CLI critical-pairs evaluation first "
+            "(see EXPERIMENT_GUIDE.md); note this is a core_eval_bridge.py-only evaluation with "
+            "no vectorized-path equivalent.")
 
-    if is_synthetic:
-        logger.warning("Fig 50: 'core_eval_fig50.json' cache not found/empty — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        rng = np.random.default_rng(42)
-        pairs = [f"P{i}-B{j}" for i in range(1, 8) for j in range(i + 1, 8)]
-        metric = np.sort(rng.poisson(5, len(pairs)))[::-1]
-        xlabel = "CTI Violation Count"
-    else:
-        # Real signal is a per-pair CTI margin (distance_to_violation:
-        # t_bkp - t_pri - CTI; negative = violating), not a violation
-        # COUNT — there's no repeated-trial tally in
-        # _eval_critical_pairs, just one margin per pair at the
-        # evaluated operating point. Sort most-critical (smallest
-        # margin) first, matching the figure's "priority ranking" intent.
-        ordered = sorted(real_pairs, key=lambda p: p.get("distance_to_violation", 0.0))
-        pairs = [f"P{p['primary']}-B{p['backup']}" for p in ordered]
-        metric = np.array([p.get("distance_to_violation", 0.0) for p in ordered])
-        xlabel = "CTI Margin (s) — negative = violating"
+    # Real signal is a per-pair CTI margin (distance_to_violation:
+    # t_bkp - t_pri - CTI; negative = violating), not a violation
+    # COUNT — there's no repeated-trial tally in
+    # _eval_critical_pairs, just one margin per pair at the
+    # evaluated operating point. Sort most-critical (smallest
+    # margin) first, matching the figure's "priority ranking" intent.
+    ordered = sorted(real_pairs, key=lambda p: p.get("distance_to_violation", 0.0))
+    pairs = [f"P{p['primary']}-B{p['backup']}" for p in ordered]
+    metric = np.array([p.get("distance_to_violation", 0.0) for p in ordered])
+    xlabel = "CTI Margin (s) — negative = violating"
 
     fig, ax = plt.subplots(figsize=(12, 8))
     colors = plt.cm.Reds(np.linspace(0.3, 1.0, len(pairs)))[::-1]
@@ -2745,9 +2507,6 @@ def fig_50_critical_pairs():
     ax.set_title("Figure 50 — Critical P/B Pair Identification & Priority Ranking", fontsize=13)
     ax.invert_yaxis()
     ax.grid(True, alpha=0.3, axis="x")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_eval_fig50.json cache missing")
     save_fig(fig, get_fig_path(50, "figs_41_50"))
 
 
@@ -2792,26 +2551,21 @@ def fig_53_model_compression():
     """Fig 53: Model compression impact — from Core I."""
     logger.info("\\n[Fig 53] Model Compression & Quantization Impact")
     data = load_cache("core_I_deployment")
-    is_synthetic = data is None
-    if is_synthetic:
-        logger.warning("Fig 53: 'core_I_deployment' cache not found — using hardcoded "
-                        "placeholder compression numbers, NOT a real measurement.")
-        data = {"compression": {"original": {"size_mb": 45, "performance": 0.85}, "int8": {"size_mb": 12, "performance": 0.84},
-                              "pruning": {"size_mb": 22, "performance": 0.83}, "distillation": {"size_mb": 18, "performance": 0.82}}}
+    if data is None:
+        raise MissingRealDataError(
+            "Fig 53 (model_compression) requires real cache 'core_I_deployment' — not found. "
+            "Run Core I via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
 
     comp = data.get("compression", {})
-    # Core I now runs _eval_compression once per method (original/int8/
+    # Core I runs _eval_compression once per method (original/int8/
     # pruning — see run_core_training.py:run_core_I) and reports each as
     # real {"size_mb", "performance"}. "distillation" is intentionally
     # absent: no student-network training exists anywhere in this
-    # codebase, so it's not part of the real comparison. Still fall back
-    # to the labeled placeholder if an older cache predates this shape.
+    # codebase, so it's not part of the real comparison.
     if not comp or not all(isinstance(v, dict) and "size_mb" in v and "performance" in v for v in comp.values()):
-        logger.warning(f"Fig 53: 'compression' data not in per-method {{size_mb, performance}} form ({comp}) — "
-                        "using hardcoded placeholder compression numbers, NOT a real measurement.")
-        comp = {"original": {"size_mb": 45, "performance": 0.85}, "int8": {"size_mb": 12, "performance": 0.84},
-                "pruning": {"size_mb": 22, "performance": 0.83}, "distillation": {"size_mb": 18, "performance": 0.82}}
-        is_synthetic = True
+        raise MissingRealDataError(
+            f"Fig 53 (model_compression) requires 'compression' data in per-method "
+            f"{{size_mb, performance}} form in 'core_I_deployment' — found {comp!r}.")
     methods = list(comp.keys())
     sizes = [comp[m]["size_mb"] for m in methods]
     perfs = [comp[m]["performance"] for m in methods]
@@ -2830,20 +2584,12 @@ def fig_53_model_compression():
     bars2 = ax2.bar(x + width/2, perfs, width, label="Performance", color="#39d353", alpha=0.8, edgecolor="white")
     ax2.set_ylabel("Performance", color="#39d353", fontsize=12)
     ax2.tick_params(axis='y', labelcolor="#39d353")
-    if is_synthetic:
-        # Fixed range the hardcoded placeholder above was authored for;
-        # real performance ratios (base_of / compressed_of) aren't
-        # guaranteed to fall in this window.
-        ax2.set_ylim(0.75, 0.9)
 
     ax1.set_title("Figure 53 — Model Compression & Quantization Impact", fontsize=13)
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
     ax1.grid(True, alpha=0.3, axis="y")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_I_deployment cache missing")
     save_fig(fig, get_fig_path(53, "figs_51_58"))
 
 
@@ -2855,11 +2601,11 @@ def fig_54_adversarial():
     """Fig 54: Adversarial robustness — from Core G."""
     logger.info("\\n[Fig 54] Adversarial Robustness")
     data = load_cache("core_G_robustness")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 54: 'core_G_robustness' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"adversarial": {"fgsm": {0.01: 0.82, 0.05: 0.70, 0.1: 0.55, 0.2: 0.35}, "pgd": {0.01: 0.80, 0.05: 0.65, 0.1: 0.45, 0.2: 0.20}}}
-    
+        raise MissingRealDataError(
+            "Fig 54 (adversarial) requires real cache 'core_G_robustness' — not found. "
+            "Run Core G via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     adv = data.get("adversarial", {})
     fig, ax = plt.subplots(figsize=(10, 6))
     
@@ -2873,12 +2619,7 @@ def fig_54_adversarial():
     ax.set_ylabel("Relative Performance", fontsize=12)
     ax.set_title("Figure 54 — Adversarial Robustness: Perturbed Observation Response", fontsize=13)
     ax.legend(fontsize=11)
-    if is_synthetic:
-        ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_G_robustness cache missing")
     save_fig(fig, get_fig_path(54, "figs_51_58"))
 
 
@@ -2890,45 +2631,39 @@ def fig_55_comparison_table():
     """Fig 55: Comprehensive method comparison table — from Core C."""
     logger.info("\\n[Fig 55] Comprehensive Method Comparison Table")
     data = load_cache("core_C_baselines_8bus")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 55: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
-        data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
-    
+        raise MissingRealDataError(
+            "Fig 55 (comparison_table) requires real cache 'core_C_baselines_8bus' — not found. "
+            "Run Core C via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
+    real_metrics = load_cache("core_C_metrics_8bus")
+    if real_metrics is None:
+        raise MissingRealDataError(
+            "Fig 55 (comparison_table) requires real cache 'core_C_metrics_8bus' — not found. "
+            "Run Core C via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
     methods = list(data.keys())
     fig, ax = plt.subplots(figsize=(14, 6))
     ax.axis('off')
 
-    # core_C_metrics_8bus (run_core_training.py's _run_baseline_single) now
-    # carries a real per-method CTI satisfaction rate and convergence
-    # episode — previously these two columns were always
-    # np.random.uniform/randint, unconditionally, and only footnoted as
-    # illustrative. Fall back to that footnoted placeholder per-cell only
-    # for a method genuinely missing real metrics.
-    real_metrics = load_cache("core_C_metrics_8bus") if not is_synthetic else None
-    rng = np.random.default_rng(55)
-    any_illustrative = False
     table_data = []
     for method in methods:
         vals = data[method]
-        if hasattr(vals, '__len__') and len(vals) > 0:
-            mean_val = np.mean(vals[-100:] if len(vals) > 100 else vals)
-            std_val = np.std(vals[-100:] if len(vals) > 100 else vals)
-            m = real_metrics.get(method) if real_metrics else None
-            if m and m.get("cti_satisfaction_rate") is not None:
-                cti_cell = f"{m['cti_satisfaction_rate']*100:.0f}"
-            else:
-                any_illustrative = True
-                cti_cell = f"{rng.uniform(0.7, 0.95)*100:.0f}*"
-            if m and m.get("convergence_ep") is not None:
-                conv_cell = f"{m['convergence_ep']}"
-            else:
-                any_illustrative = True
-                conv_cell = f"{rng.integers(500, 5000)}*"
-            table_data.append([method, f"{mean_val:.3f}", f"{std_val:.3f}", cti_cell, conv_cell])
-        else:
-            table_data.append([method, "N/A", "N/A", "N/A", "N/A"])
+        if not hasattr(vals, '__len__') or len(vals) == 0:
+            raise MissingRealDataError(
+                f"Fig 55 (comparison_table) requires a non-empty results array for method "
+                f"'{method}' in 'core_C_baselines_8bus' — found cache but empty/malformed data.")
+        mean_val = np.mean(vals[-100:] if len(vals) > 100 else vals)
+        std_val = np.std(vals[-100:] if len(vals) > 100 else vals)
+        m = real_metrics.get(method)
+        if not m or m.get("cti_satisfaction_rate") is None or m.get("convergence_ep") is None:
+            raise MissingRealDataError(
+                f"Fig 55 (comparison_table) requires 'cti_satisfaction_rate' and 'convergence_ep' "
+                f"for method '{method}' in 'core_C_metrics_8bus' — found cache but missing these "
+                "fields for this method.")
+        cti_cell = f"{m['cti_satisfaction_rate']*100:.0f}"
+        conv_cell = f"{m['convergence_ep']}"
+        table_data.append([method, f"{mean_val:.3f}", f"{std_val:.3f}", cti_cell, conv_cell])
 
     columns = ["Method", "Final OF (s)", "Std Dev", "CTI Satisfied (%)", "Conv. Episodes"]
     table = ax.table(cellText=table_data, colLabels=columns, cellLoc='center', loc='center',
@@ -2941,14 +2676,7 @@ def fig_55_comparison_table():
         table[(0, i)].set_facecolor("#2563eb")
         table[(0, i)].set_text_props(weight='bold', color='white')
 
-    if any_illustrative:
-        ax.text(0.5, 0.02, "* illustrative — core_C_metrics_8bus cache missing for this "
-                "method's CTI satisfaction / convergence episode", transform=ax.transAxes,
-                ha="center", fontsize=8, style="italic", color="#555")
     ax.set_title("Figure 55 — Comprehensive Method Comparison Table (8-Bus, 60% PV)", fontsize=13, pad=20)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_C_baselines_8bus cache missing")
     save_fig(fig, get_fig_path(55, "figs_51_58"))
 
 
@@ -2960,76 +2688,53 @@ def fig_56_pareto_front():
     """Fig 56: Multi-objective Pareto front — from Core C."""
     logger.info("\\n[Fig 56] Multi-Objective Pareto Front")
     data = load_cache("core_C_baselines_8bus")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 56: 'core_C_baselines_8bus' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        methods = ["MAPPO-Safe-EWC", "MAPPO-Safe", "MAPPO", "IPPO", "Traditional"]
-        data = {m: np.random.normal(3.0 - i * 0.3, 0.5, 50) for i, m in enumerate(methods)}
-    
-    # core_C_metrics_8bus (run_core_training.py's _run_baseline_single) now
+        raise MissingRealDataError(
+            "Fig 56 (pareto_front) requires real cache 'core_C_baselines_8bus' — not found. "
+            "Run Core C via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+
+    # core_C_metrics_8bus (run_core_training.py's _run_baseline_single)
     # carries each method's real final-state mean primary operating time
     # ("speed": lower is faster) and mean CTI margin ("selectivity":
-    # higher is safer/more selective) — 5 real points, one per method,
-    # rather than a fabricated 100-point cloud + fixed method positions.
-    real_metrics = load_cache("core_C_metrics_8bus") if not is_synthetic else None
+    # higher is safer/more selective).
+    real_metrics = load_cache("core_C_metrics_8bus")
     method_points = {}
     if real_metrics:
         for method, m in real_metrics.items():
             if m.get("top_pri_mean") is not None and m.get("delta_cti_mean") is not None:
                 method_points[method] = (m["top_pri_mean"], m["delta_cti_mean"])
-    has_real = len(method_points) >= 2
+    if len(method_points) < 2:
+        raise MissingRealDataError(
+            "Fig 56 (pareto_front) requires at least 2 methods with real 'top_pri_mean'/"
+            "'delta_cti_mean' in 'core_C_metrics_8bus' — not found or insufficient.")
 
     fig, ax = plt.subplots(figsize=(10, 8))
-    if has_real:
-        xs = np.array([p[0] for p in method_points.values()])
-        ys = np.array([p[1] for p in method_points.values()])
-        # Non-dominated subset (lower operating time AND higher CTI
-        # margin both better) of these 5 real points, rather than a
-        # smooth fabricated curve implying far more measured points than
-        # actually exist.
-        names = list(method_points.keys())
-        pareto_mask = [
-            not any((xs[j] <= xs[i] and ys[j] >= ys[i]) and (xs[j] < xs[i] or ys[j] > ys[i])
-                    for j in range(len(names)))
-            for i in range(len(names))
-        ]
-        order = np.argsort(xs[pareto_mask])
-        px = xs[pareto_mask][order]
-        py = ys[pareto_mask][order]
-        ax.plot(px, py, 'r--', lw=2, marker='o', label="Pareto Front (non-dominated methods)")
-        for method, (x, y) in method_points.items():
-            ax.scatter([x], [y], s=200, marker='*', edgecolors='black', linewidths=1.5, zorder=5,
-                      c="#39d353" if method in names and pareto_mask[names.index(method)] else "#ff6b35")
-            ax.annotate(method, (x, y), textcoords="offset points", xytext=(10, 10), fontsize=9, fontweight='bold')
-        ax.set_xlabel("Mean Primary Operating Time (s) — lower is faster", fontsize=12)
-        ax.set_ylabel("Mean CTI Margin (s) — higher is more selective", fontsize=12)
-    else:
-        rng = np.random.default_rng(56)
-        n_points = 100
-        speed = rng.uniform(0.1, 0.9, n_points)
-        selectivity = 1 - speed + rng.normal(0, 0.05, n_points)
-        selectivity = np.clip(selectivity, 0, 1)
-        scatter = ax.scatter(speed, selectivity, c=speed + selectivity, cmap="RdYlGn", s=100, alpha=0.6, edgecolors="white")
-        pareto_x = np.linspace(0.2, 0.8, 50)
-        pareto_y = 1 - pareto_x * 0.8
-        ax.plot(pareto_x, pareto_y, 'r--', lw=2, label="Pareto Front")
-        fallback_points = {"MAPPO-Safe-EWC": (0.75, 0.85), "MAPPO-Safe": (0.65, 0.75),
-                         "MAPPO": (0.55, 0.65), "IPPO": (0.45, 0.55), "Traditional": (0.3, 0.4)}
-        for method, (x, y) in fallback_points.items():
-            ax.scatter([x], [y], s=200, marker='*', edgecolors='black', linewidths=1.5, zorder=5)
-            ax.annotate(method, (x, y), textcoords="offset points", xytext=(10, 10), fontsize=9, fontweight='bold')
-        plt.colorbar(scatter, ax=ax, label="Combined Score")
-        ax.set_xlabel("Operating Speed (normalized)", fontsize=12)
-        ax.set_ylabel("Selectivity (normalized)", fontsize=12)
+    xs = np.array([p[0] for p in method_points.values()])
+    ys = np.array([p[1] for p in method_points.values()])
+    # Non-dominated subset (lower operating time AND higher CTI
+    # margin both better) of these real points, rather than a
+    # smooth fabricated curve implying far more measured points than
+    # actually exist.
+    names = list(method_points.keys())
+    pareto_mask = [
+        not any((xs[j] <= xs[i] and ys[j] >= ys[i]) and (xs[j] < xs[i] or ys[j] > ys[i])
+                for j in range(len(names)))
+        for i in range(len(names))
+    ]
+    order = np.argsort(xs[pareto_mask])
+    px = xs[pareto_mask][order]
+    py = ys[pareto_mask][order]
+    ax.plot(px, py, 'r--', lw=2, marker='o', label="Pareto Front (non-dominated methods)")
+    for method, (x, y) in method_points.items():
+        ax.scatter([x], [y], s=200, marker='*', edgecolors='black', linewidths=1.5, zorder=5,
+                  c="#39d353" if method in names and pareto_mask[names.index(method)] else "#ff6b35")
+        ax.annotate(method, (x, y), textcoords="offset points", xytext=(10, 10), fontsize=9, fontweight='bold')
+    ax.set_xlabel("Mean Primary Operating Time (s) — lower is faster", fontsize=12)
+    ax.set_ylabel("Mean CTI Margin (s) — higher is more selective", fontsize=12)
 
     ax.set_title("Figure 56 — Multi-Objective Pareto Front (Speed vs. Selectivity)", fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    if not has_real:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        note = ("core_C_baselines_8bus cache missing" if is_synthetic else
-                "core_C_metrics_8bus cache missing — entire plot is illustrative")
-        mark_synthetic(fig, note=note)
     save_fig(fig, get_fig_path(56, "figs_51_58"))
 
 
@@ -3041,15 +2746,16 @@ def fig_57_bootstrap_ci():
     """Fig 57: Bootstrap CI convergence — from Core A."""
     logger.info("\\n[Fig 57] Bootstrap Confidence Interval Convergence")
     data = load_cache("core_A_mappo_safe_ewc_8bus_60pv")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 57: 'core_A_mappo_safe_ewc_8bus_60pv' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        n_eps = 2000
-        data = {"global_returns_mean": -5 + 8 * (1 - np.exp(-np.arange(n_eps) / 300)),
-                "global_returns_std": np.ones(n_eps) * 0.8}
-    
-    returns = data.get("global_returns_mean", np.zeros(2000))
-    std = data.get("global_returns_std", np.ones(len(returns)) * 0.5)
+        raise MissingRealDataError(
+            "Fig 57 (bootstrap_ci) requires real cache 'core_A_mappo_safe_ewc_8bus_60pv' — not found. "
+            "Run Core A via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
+    if "global_returns_mean" not in data:
+        raise MissingRealDataError(
+            "Fig 57 (bootstrap_ci) requires 'global_returns_mean' in "
+            "'core_A_mappo_safe_ewc_8bus_60pv' — found cache but missing this field.")
+
+    returns = data["global_returns_mean"]
     
     np.random.seed(42)
     sample_sizes = np.logspace(1, np.log10(len(returns)), 50).astype(int)
@@ -3069,9 +2775,6 @@ def fig_57_bootstrap_ci():
     ax.set_xscale("log")
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_A_mappo_safe_ewc_8bus_60pv cache missing")
     save_fig(fig, get_fig_path(57, "figs_51_58"))
 
 
@@ -3083,24 +2786,21 @@ def fig_58_seasonal():
     """Fig 58: Seasonal generalization — from Core K."""
     logger.info("\\n[Fig 58] Seasonal/Weather Generalization")
     data = load_cache("core_K_seasonal")
-    is_synthetic = data is None
     if data is None:
-        logger.warning("Fig 58: 'core_K_seasonal' cache not found — using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"spring": {"performance": 0.83, "pv_variability": 0.3}, "summer": {"performance": 0.80, "pv_variability": 0.5},
-                "autumn": {"performance": 0.84, "pv_variability": 0.25}, "winter": {"performance": 0.82, "pv_variability": 0.15}}
+        raise MissingRealDataError(
+            "Fig 58 (seasonal) requires real cache 'core_K_seasonal' — not found. "
+            "Run Core K via run_core_training.py first (see EXPERIMENT_GUIDE.md).")
 
-    # core_eval_bridge.py's fig-58 extractor now also reports
-    # "pv_variability" (std of the season's real intra-day PV level,
-    # training_pipeline.py's _eval_seasonal) and Core K adds "performance"
-    # (base_of / seasonal_of, the same relative-performance ratio Core
-    # G/H use elsewhere) alongside the original "of"/"cti_ok". Older
-    # caches predating this won't have these keys — fall back honestly.
+    # core_eval_bridge.py's fig-58 extractor reports "pv_variability" (std
+    # of the season's real intra-day PV level, training_pipeline.py's
+    # _eval_seasonal) and Core K adds "performance" (base_of / seasonal_of,
+    # the same relative-performance ratio Core G/H use elsewhere) alongside
+    # the original "of"/"cti_ok". Older caches predating this won't have
+    # these keys.
     if not data or not all(isinstance(v, dict) and "performance" in v and "pv_variability" in v for v in data.values()):
-        logger.warning(f"Fig 58: season data missing 'performance'/'pv_variability' ({data}) — "
-                        "using synthetic/hardcoded fallback data, NOT a real measurement.")
-        data = {"spring": {"performance": 0.83, "pv_variability": 0.3}, "summer": {"performance": 0.80, "pv_variability": 0.5},
-                "autumn": {"performance": 0.84, "pv_variability": 0.25}, "winter": {"performance": 0.82, "pv_variability": 0.15}}
-        is_synthetic = True
+        raise MissingRealDataError(
+            f"Fig 58 (seasonal) requires 'performance'/'pv_variability' per season in "
+            f"'core_K_seasonal' — found {data!r}.")
 
     seasons = list(data.keys())
     perfs = [data[s]["performance"] for s in seasons]
@@ -3128,9 +2828,6 @@ def fig_58_seasonal():
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
     ax1.grid(True, alpha=0.3, axis="y")
-    if is_synthetic:
-        from evaluation.experiments._synthetic_label import mark_synthetic
-        mark_synthetic(fig, note="core_K_seasonal cache missing")
     save_fig(fig, get_fig_path(58, "figs_51_58"))
 
 # ═════════════════════════════════════════════════════════════════

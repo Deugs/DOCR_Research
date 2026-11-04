@@ -10,10 +10,19 @@ had zero real test coverage despite PHASE6_7_8_COMPLETE.md claiming full
 coverage, and test_phase8.py's actual subject (evaluation/thesis_validation.py)
 was being exercised twice under two different filenames.
 
+Policy update (2026-11-04): run_post_processing.py no longer fabricates
+synthetic/hardcoded data when a cache is missing — every fig_NN_*()
+function now raises MissingRealDataError instead (see the data provenance
+policy note at the top of run_post_processing.py). Test 2 below exercises
+each real fig_NN_* function against minimal but real-schema-shaped fixtures
+(this repo has no real core_J_protection/core_K_seasonal/core_eval_fig*
+caches for most of these figures) rather than relying on fallback data to
+produce a figure unconditionally.
+
 Tests:
 1. PHASE_FIGURES[7] matches the documented figure set (43-50, 58)
 2. Each real fig_NN_* function in run_post_processing.py for this phase
-   runs end-to-end and produces a file
+   runs end-to-end against a real-schema-shaped fixture and produces a file
 3. Each of the standalone "CLI Adapter" scripts for this phase (which plot
    hand-typed synthetic data — see EXPERIMENT_GUIDE.md section 2.2.1) still
    emits its synthetic-data warning, locking in the fix applied alongside
@@ -77,11 +86,99 @@ def test_phase7_figure_set_matches_guide():
     print("    OK")
 
 
+def _fake_core_J_protection_cache():
+    """Minimal but real-schema-shaped core_J_protection fixture covering
+    figs 43 (coordination), 44 (fault_contribution), 45 (daily_profile),
+    46 (relay_curves) — field names match run_post_processing.py's own
+    MissingRealDataError messages for each figure."""
+    import numpy as np
+    n = 24
+    return {
+        "coordination": {
+            "distances": list(np.linspace(0, 10, 10)),
+            "primary": list(0.1 + 0.05 * np.linspace(0, 10, 10)),
+            "backup": list(0.3 + 0.08 * np.linspace(0, 10, 10)),
+        },
+        "fault_contribution": {"PV": 35.0, "Grid": 45.0, "Synchronous": 20.0},
+        "daily_profile": {
+            "irradiance": list(np.maximum(0, np.sin(np.pi * np.arange(n) / 12))),
+            "of": list(np.full(n, 1.0)),
+        },
+        "relay_curves": {
+            "relay_0": {
+                "TDS": 0.5, "PSM": 2.0,
+                "If_range_A": list(np.linspace(2.0, 40.0, 20)),
+                "t_op_s": list(np.full(20, 0.5)),
+            },
+        },
+    }
+
+
+def _fake_core_K_seasonal_cache():
+    """Minimal but real-schema-shaped core_K_seasonal fixture (fig 58)."""
+    return {
+        season: {"performance": 0.9, "pv_variability": 0.2, "of": 100.0, "cti_ok": True}
+        for season in ("spring", "summer", "autumn", "winter")
+    }
+
+
+def _fake_bridge_cache(fig_num: int):
+    """Minimal but real-schema-shaped core_eval_fig{NN}.json fixtures for
+    figs 47 (sympathetic_tripping), 48 (shap), 49 (decision_boundary),
+    50 (critical_pairs) — these are read via load_bridge_cache(fig_num),
+    not load_cache(name)."""
+    import numpy as np
+    if fig_num == 47:
+        return {
+            "sympathetic": 5, "traditional": 20,
+            "by_fault_type": {
+                "1ph": {"traditional": 10, "marl": 2},
+                "LL": {"traditional": 8, "marl": 1},
+                "3ph": {"traditional": 5, "marl": 1},
+            },
+        }
+    if fig_num == 48:
+        # 12 real obs features (see fig_48_shap's own `features` list);
+        # shape (n_explain, n_features, n_actions).
+        return {"shap": np.random.default_rng(0).random((5, 12, 2)).tolist()}
+    if fig_num == 49:
+        rng = np.random.default_rng(0)
+        return {
+            "embeddings": rng.standard_normal((50, 2)).tolist(),
+            "actions": rng.standard_normal((50, 2)).tolist(),
+        }
+    if fig_num == 50:
+        return [
+            {"primary": 1, "backup": 2, "distance_to_violation": 0.1},
+            {"primary": 2, "backup": 3, "distance_to_violation": -0.05},
+        ]
+    return None
+
+
 def test_post_processing_functions_exist_and_run():
-    """Test 2: every fig_NN_* function for Phase 7 runs and saves a file."""
+    """Test 2: every fig_NN_* function for Phase 7 runs and saves a file,
+    against real-schema-shaped fixtures (this repo has no real
+    core_J_protection/core_K_seasonal/core_eval_fig* caches for most of
+    these figures, and the functions now raise rather than fabricate data
+    on a genuine miss)."""
     print("  Test 2: Phase 7 post-processing functions...")
     pp = _load_post_processing()
     tmp_dir = tempfile.mkdtemp()
+
+    core_j = _fake_core_J_protection_cache()
+    core_k = _fake_core_K_seasonal_cache()
+
+    def fake_load_cache(name):
+        if name == "core_J_protection":
+            return core_j
+        if name == "core_K_seasonal":
+            return core_k
+        return None
+
+    orig_load_cache = pp.load_cache
+    orig_load_bridge_cache = pp.load_bridge_cache
+    pp.load_cache = fake_load_cache
+    pp.load_bridge_cache = _fake_bridge_cache
     try:
         pp._config = None
         orig_get_figures_dir = pp.get_figures_dir
@@ -96,8 +193,30 @@ def test_post_processing_functions_exist_and_run():
         finally:
             pp.get_figures_dir = orig_get_figures_dir
     finally:
+        pp.load_cache = orig_load_cache
+        pp.load_bridge_cache = orig_load_bridge_cache
         shutil.rmtree(tmp_dir, ignore_errors=True)
     print(f"    OK ({len(PHASE7_POST_PROCESSING_FUNCS)} functions)")
+
+
+def test_fig58_raises_on_missing_cache():
+    """Test 2b: fig_58_seasonal() raises MissingRealDataError when
+    core_K_seasonal is genuinely absent, instead of fabricating placeholder
+    seasonal data (2026-11-04 policy change)."""
+    print("  Test 2b: Fig 58 raises on missing cache...")
+    pp = _load_post_processing()
+    orig_load_cache = pp.load_cache
+    pp.load_cache = lambda name: None
+    try:
+        raised = False
+        try:
+            pp.fig_58_seasonal()
+        except pp.MissingRealDataError:
+            raised = True
+        assert raised, "expected MissingRealDataError when core_K_seasonal cache is missing"
+    finally:
+        pp.load_cache = orig_load_cache
+    print("    OK")
 
 
 def test_cli_adapters_flag_synthetic_data():
@@ -126,5 +245,6 @@ def test_cli_adapters_flag_synthetic_data():
 if __name__ == "__main__":
     test_phase7_figure_set_matches_guide()
     test_post_processing_functions_exist_and_run()
+    test_fig58_raises_on_missing_cache()
     test_cli_adapters_flag_synthetic_data()
     print("All Phase 7 tests passed.")
