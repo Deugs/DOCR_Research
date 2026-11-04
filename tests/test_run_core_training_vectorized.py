@@ -28,6 +28,14 @@ from run_core_training_vectorized import (
     run_core_D_vectorized, _run_ablation_single_vectorized, _CORE_D_CONFIGS,
     run_core_E_vectorized, _run_hparam_single_vectorized,
     run_core_F_vectorized, _run_scalability_single_vectorized,
+    _train_base_policy_vectorized, _get_eval_pipeline,
+    run_core_G_vectorized, _eval_comm_stress_vectorized, _eval_n1_contingency_vectorized,
+    _eval_byzantine_vectorized, _eval_bandwidth_vectorized, _eval_sensor_robustness_vectorized,
+    _eval_adversarial_vectorized,
+    run_core_H_vectorized, _eval_unseen_faults_vectorized, _eval_zero_shot_transfer_vectorized,
+    run_core_I_vectorized, _measure_latency_vectorized, _eval_compression_vectorized,
+    run_core_J_vectorized, _eval_daily_pv_vectorized, _eval_sympathetic_tripping_vectorized,
+    run_core_K_vectorized, _eval_seasonal_vectorized,
 )
 
 
@@ -463,3 +471,268 @@ def test_run_core_F_vectorized_cache_hit_on_second_call():
     second = run_core_F_vectorized(systems=["8bus"], seed=19190, cache=cache)
     assert cache.get_stats()["hits"] == hits_before + 1
     assert first["8bus"]["final_performance"] == second["8bus"]["final_performance"]
+
+
+# ═════════════════════════════════════════════════════════════════
+# Core G (Phase V14.7) -- robustness evaluation
+# ═════════════════════════════════════════════════════════════════
+# Every _eval_*_vectorized function is pure inference against a FROZEN,
+# already-trained base policy -- so each test below trains exactly ONE
+# base policy (fast_mode=True) and exercises several eval functions
+# against it, rather than retraining per assertion.
+
+def test_core_G_eval_functions_schema():
+    """Every Core G eval function must return finite, correctly-keyed
+    output when run against a real (fast_mode) trained base policy."""
+    net = load_network("8bus")
+    result = _train_base_policy_vectorized(system="8bus", seed=21210, fast_mode=True)
+    assert result.use_comm is True
+    assert result.actor_params is not None
+    assert result.comm_graph_params is not None
+
+    d = _eval_comm_stress_vectorized(net, result, packet_loss_rate=0.2, seed=21210)
+    assert np.isfinite(d["packet_loss"])
+
+    d = _eval_n1_contingency_vectorized(net, result, line_idx=0, recovery=True, seed=21210)
+    assert np.isfinite(d["n1_of"])
+    assert np.isfinite(d["n1_recovery_of"])
+
+    d = _eval_byzantine_vectorized(net, result, byzantine_agents=[1], strategy="fdi", seed=21210)
+    assert np.isfinite(d["byzantine_of"])
+    assert d["byzantine_trust_scores"].shape == (net.n_relays,)
+
+    d = _eval_bandwidth_vectorized(net, result, compression_ratio=0.5, seed=21210)
+    assert np.isfinite(d["of"])
+    assert d["bandwidth"] > 0
+
+    d = _eval_sensor_robustness_vectorized(net, result, noise_std=0.1, seed=21210)
+    assert np.isfinite(d["noisy_of"])
+
+    d = _eval_adversarial_vectorized(net, result, attack="FGSM", epsilon=0.05, seed=21210)
+    assert np.isfinite(d["of"])
+    assert 0.0 <= d["success"] <= 1.0
+
+
+def test_run_core_G_vectorized_matches_schema():
+    """The cached result must carry the real run_core_G()'s stress-type
+    key set, loadable through run_post_processing.py's real load_cache()."""
+    cache = CacheManager(CACHE_DIR)
+    result = run_core_G_vectorized(seed=22220, cache=cache, fast_mode=True)
+
+    assert set(result.keys()) == {"communication", "byzantine", "bandwidth", "sensor",
+                                   "adversarial", "n1_contingency"}
+    assert set(result["communication"].keys()) == {"packet_loss", "latency"}
+
+    expected_name = "core_G_robustness_vectorized"
+    assert expected_name != "core_G_robustness"
+
+    import run_post_processing as rpp
+    loaded = rpp.load_cache(expected_name)
+    assert loaded is not None
+    assert set(loaded.keys()) == set(result.keys())
+
+
+def test_run_core_G_vectorized_cache_hit_on_second_call():
+    cache = CacheManager(CACHE_DIR)
+    first = run_core_G_vectorized(seed=23230, cache=cache, fast_mode=True)
+    hits_before = cache.get_stats()["hits"]
+    second = run_core_G_vectorized(seed=23230, cache=cache, fast_mode=True)
+    assert cache.get_stats()["hits"] == hits_before + 1
+    assert first["byzantine"] == second["byzantine"]
+
+
+# ═════════════════════════════════════════════════════════════════
+# Core H (Phase V14.7) -- transfer learning
+# ═════════════════════════════════════════════════════════════════
+
+def test_core_H_eval_functions_schema():
+    """_eval_unseen_faults_vectorized/_eval_zero_shot_transfer_vectorized
+    must return finite output against a real (fast_mode) trained policy."""
+    net = load_network("8bus")
+    result = _train_base_policy_vectorized(system="8bus", seed=24240, fast_mode=True)
+
+    d = _eval_unseen_faults_vectorized(net, result, unseen_fault_type="LL", seed=24240)
+    assert np.isfinite(d["unseen_of"])
+
+    d = _eval_zero_shot_transfer_vectorized(result, eval_system="14bus", seed=24240)
+    assert np.isfinite(d["transfer_of"])
+    assert d["transfer_system"] == "14bus"
+
+
+def test_run_core_H_vectorized_matches_schema():
+    """The cached result must carry the real run_core_H()'s key set
+    (unseen_faults + zero_shot, including the cold-start baseline),
+    loadable through run_post_processing.py's real load_cache()."""
+    cache = CacheManager(CACHE_DIR)
+    result = run_core_H_vectorized(seed=25250, n_episodes=2, cache=cache, fast_mode=True)
+
+    assert set(result.keys()) == {"unseen_faults", "zero_shot"}
+    assert set(result["zero_shot"].keys()) >= {
+        "transfer_of", "transfer_cti_ok", "transfer_system", "base_of", "cold_start"}
+    assert set(result["zero_shot"]["cold_start"].keys()) == {"performance", "convergence_ep"}
+
+    expected_name = "core_H_transfer_vectorized"
+    assert expected_name != "core_H_transfer"
+
+    import run_post_processing as rpp
+    loaded = rpp.load_cache(expected_name)
+    assert loaded is not None
+    assert set(loaded.keys()) == set(result.keys())
+
+
+def test_run_core_H_vectorized_cache_hit_on_second_call():
+    cache = CacheManager(CACHE_DIR)
+    first = run_core_H_vectorized(seed=26260, n_episodes=2, cache=cache, fast_mode=True)
+    hits_before = cache.get_stats()["hits"]
+    second = run_core_H_vectorized(seed=26260, n_episodes=2, cache=cache, fast_mode=True)
+    assert cache.get_stats()["hits"] == hits_before + 1
+    assert first["unseen_faults"] == second["unseen_faults"]
+
+
+# ═════════════════════════════════════════════════════════════════
+# Core I (Phase V14.7) -- deployment benchmark
+# ═════════════════════════════════════════════════════════════════
+
+def test_core_I_eval_functions_schema():
+    """_measure_latency_vectorized/_eval_compression_vectorized must
+    return finite output against a real (fast_mode) trained policy."""
+    net = load_network("8bus")
+    result = _train_base_policy_vectorized(system="8bus", seed=27270, fast_mode=True)
+
+    latency = _measure_latency_vectorized(net, result, seed=27270)
+    assert set(latency.keys()) == {"latencies_ms", "mean_ms", "p50_ms", "p99_ms"}
+    assert latency["mean_ms"] > 0
+
+    comp = _eval_compression_vectorized(net, result, quantize_bits=8, prune_ratio=0.0, seed=27270)
+    assert np.isfinite(comp["of"])
+    assert comp["size_kb"] > 0
+
+
+def test_run_core_I_vectorized_matches_schema():
+    """The cached result must carry the real run_core_I()'s key set
+    (latency, latency_39bus, compression with 3 methods), loadable
+    through run_post_processing.py's real load_cache()."""
+    cache = CacheManager(CACHE_DIR)
+    result = run_core_I_vectorized(seed=28280, cache=cache, fast_mode=True)
+
+    assert set(result.keys()) == {"latency", "latency_39bus", "compression"}
+    assert set(result["compression"].keys()) == {"original", "int8", "pruning"}
+    for method_result in result["compression"].values():
+        assert "size_mb" in method_result
+
+    expected_name = "core_I_deployment_vectorized"
+    assert expected_name != "core_I_deployment"
+
+    import run_post_processing as rpp
+    loaded = rpp.load_cache(expected_name)
+    assert loaded is not None
+    assert set(loaded.keys()) == set(result.keys())
+
+
+def test_run_core_I_vectorized_cache_hit_on_second_call():
+    cache = CacheManager(CACHE_DIR)
+    first = run_core_I_vectorized(seed=29290, cache=cache, fast_mode=True)
+    hits_before = cache.get_stats()["hits"]
+    second = run_core_I_vectorized(seed=29290, cache=cache, fast_mode=True)
+    assert cache.get_stats()["hits"] == hits_before + 1
+    assert first["compression"]["int8"]["size_mb"] == second["compression"]["int8"]["size_mb"]
+
+
+# ═════════════════════════════════════════════════════════════════
+# Core J (Phase V14.7) -- protection engineering
+# ═════════════════════════════════════════════════════════════════
+
+def test_core_J_eval_functions_schema():
+    """_eval_daily_pv_vectorized/_eval_sympathetic_tripping_vectorized
+    must return finite, correctly-shaped output against a real
+    (fast_mode) trained policy. Fig 44/46 (_eval_fault_contributions/
+    _eval_relay_curves) are exercised via run_core_J_vectorized below,
+    since they are reused UNMODIFIED from the real TrainingPipeline, not
+    reimplemented here."""
+    net = load_network("8bus")
+    result = _train_base_policy_vectorized(system="8bus", seed=30300, fast_mode=True)
+
+    daily = _eval_daily_pv_vectorized(net, result, seed=30300)
+    assert daily["tms"].shape == (24, net.n_relays)
+    assert daily["of"].shape == (24,)
+
+    sym = _eval_sympathetic_tripping_vectorized(net, result, seed=30300)
+    assert set(sym["by_fault_type"].keys()) == {"1ph", "LL", "3ph"}
+    for counts in sym["by_fault_type"].values():
+        assert counts["marl"] >= 0 and counts["traditional"] >= 0
+
+
+def test_run_core_J_vectorized_matches_schema():
+    """The cached result must carry the real run_core_J()'s 5-analysis
+    key set, loadable through run_post_processing.py's real
+    load_cache(). fault_contribution/relay_curves come from the real,
+    unmodified TrainingPipeline._eval_fault_contributions/_eval_relay_curves."""
+    cache = CacheManager(CACHE_DIR)
+    result = run_core_J_vectorized(seed=31310, cache=cache, fast_mode=True)
+
+    assert set(result.keys()) == {"coordination", "fault_contribution", "daily_profile",
+                                   "relay_curves", "sympathetic"}
+    assert "error" not in result["fault_contribution"], result["fault_contribution"]
+    assert len(result["relay_curves"]) > 0
+
+    expected_name = "core_J_protection_vectorized"
+    assert expected_name != "core_J_protection"
+
+    import run_post_processing as rpp
+    loaded = rpp.load_cache(expected_name)
+    assert loaded is not None
+    assert set(loaded.keys()) == set(result.keys())
+
+
+def test_run_core_J_vectorized_cache_hit_on_second_call():
+    cache = CacheManager(CACHE_DIR)
+    first = run_core_J_vectorized(seed=32320, cache=cache, fast_mode=True)
+    hits_before = cache.get_stats()["hits"]
+    second = run_core_J_vectorized(seed=32320, cache=cache, fast_mode=True)
+    assert cache.get_stats()["hits"] == hits_before + 1
+    assert first["sympathetic"] == second["sympathetic"]
+
+
+# ═════════════════════════════════════════════════════════════════
+# Core K (Phase V14.7) -- seasonal generalization
+# ═════════════════════════════════════════════════════════════════
+
+def test_core_K_eval_seasonal_schema():
+    """_eval_seasonal_vectorized must return finite output for every
+    season, against a real (fast_mode) trained policy."""
+    net = load_network("8bus")
+    result = _train_base_policy_vectorized(system="8bus", seed=33330, fast_mode=True)
+
+    for season in ["spring", "summer", "autumn", "winter"]:
+        d = _eval_seasonal_vectorized(net, result, season=season, seed=33330)
+        assert np.isfinite(d["of"])
+        assert np.isfinite(d["pv_variability"])
+
+
+def test_run_core_K_vectorized_matches_schema():
+    """The cached result must carry the real run_core_K()'s 4-season
+    key set, loadable through run_post_processing.py's real load_cache()."""
+    cache = CacheManager(CACHE_DIR)
+    result = run_core_K_vectorized(seed=34340, cache=cache, fast_mode=True)
+
+    assert set(result.keys()) == {"spring", "summer", "autumn", "winter"}
+    for season_result in result.values():
+        assert "performance" in season_result
+        assert np.isfinite(season_result["of"])
+
+    expected_name = "core_K_seasonal_vectorized"
+    assert expected_name != "core_K_seasonal"
+
+    import run_post_processing as rpp
+    loaded = rpp.load_cache(expected_name)
+    assert loaded is not None
+    assert set(loaded.keys()) == set(result.keys())
+
+
+def test_run_core_K_vectorized_cache_hit_on_second_call():
+    cache = CacheManager(CACHE_DIR)
+    first = run_core_K_vectorized(seed=35350, cache=cache, fast_mode=True)
+    hits_before = cache.get_stats()["hits"]
+    second = run_core_K_vectorized(seed=35350, cache=cache, fast_mode=True)
+    assert cache.get_stats()["hits"] == hits_before + 1
+    assert first["summer"]["of"] == second["summer"]["of"]
