@@ -11,6 +11,20 @@ coordination with PV penetration.
 commands, figure generation, reproducibility steps, and how to run the pipeline
 in Docker / on a remote server. Do not duplicate it here.
 
+**GPU-vectorized-environment redesign (2026-11-02 → 2026-11-04, additional/opt-in,
+not a replacement):** `run_core_training_vectorized.py` and
+`run_post_processing_vectorized.py` are a second, parallel implementation of
+Cores A–K and figure generation, built as new files specifically so the real,
+already-verified single-environment path (`run_core_training.py`,
+`marl/marl_agents.py`, `marl/safe_rl.py`, `experiments/training_pipeline.py`,
+`core_eval_bridge.py`) stays completely untouched. Status: correctness/schema-
+verified at small scale on CPU only — no GPU benchmark has ever been run on
+this redesign, and it is NOT used to produce any real thesis figure. Full
+detail (scope, cache/figure-directory conventions, what's excluded, and the
+standing non-goal) is in `EXPERIMENT_GUIDE.md` §12 — read it before touching
+any `*_vectorized.py` file or anything under `marl/vectorized_*.py`,
+`network/vectorized_*.py`, `environment/vectorized_*.py`.
+
 **Correction (2026-08-08):** this file previously also documented "Programme 2:
 USS v2.0 Research Papers" — a University Scheduling System publication effort
 that shared this repository. That programme's code was already reverted in an
@@ -41,12 +55,22 @@ DOCR_Research/
 ├── run_core_training.py             ← the 11 core training runs (A–K)
 ├── run_thesis_experiments.py        ← main orchestrator (phases 1–9)
 ├── run_post_processing.py           ← figure generation dispatch
+├── run_core_training_vectorized.py  ← additional/opt-in: vectorized-env Cores A–K
+│                                       (see EXPERIMENT_GUIDE §12 — never touch the
+│                                       real run_core_training.py path from here)
+├── run_post_processing_vectorized.py ← additional/opt-in: figures from the
+│                                       vectorized path's own "_vectorized" caches only
 ├── results/
 │   ├── core_cache/                  ← Core A–K training cache (cleared 2026-08-08; Cores
 │   │                                   have since been re-run — populated with real
-│   │                                   results again, see EXPERIMENT_GUIDE §2.2.1)
-│   ├── figures/, logs/, reports/    ← generated output
-└── tests/                           ← pytest suite (151 tests as of 2026-08-20)
+│   │                                   results again, see EXPERIMENT_GUIDE §2.2.1).
+│   │                                   Also holds the vectorized path's own
+│   │                                   "<name>_vectorized" entries, coexisting
+│   │                                   with the real ones under distinct names.
+│   ├── figures/, logs/, reports/    ← generated output (real pipeline only)
+│   └── figures_vectorized/          ← vectorized-path figures ONLY; never the real ones
+└── tests/                           ← pytest suite (299 tests as of 2026-11-04, run
+                                        `pytest tests/ -q` for the current count)
 ```
 
 ---
@@ -60,3 +84,11 @@ DOCR_Research/
   explicitly (see `EXPERIMENT_GUIDE.md` for the convention)
 - Do not add USS v2.0 (or any other unrelated research programme's) code,
   papers, or scaffolding to this repository — see the correction above
+- Do not modify `run_core_training.py`, `marl/marl_agents.py`, `marl/safe_rl.py`,
+  `experiments/training_pipeline.py`, or `core_eval_bridge.py` when working on
+  the vectorized redesign — new work there goes in `*_vectorized.py` files or
+  `marl/vectorized_*.py`/`network/vectorized_*.py`/`environment/vectorized_*.py`
+  (new, parallel files), per EXPERIMENT_GUIDE §12
+- Do not treat a figure under `results/figures_vectorized/` as a real thesis
+  result, cite its numbers, or let it overwrite/collide with anything under
+  `results/figures/` — see EXPERIMENT_GUIDE §12's non-goal note

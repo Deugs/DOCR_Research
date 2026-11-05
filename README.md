@@ -12,6 +12,13 @@ troubleshooting, and the reproducibility checklist — see
 **[EXPERIMENT_GUIDE.md](EXPERIMENT_GUIDE.md)**. Repository layout and
 active scope are documented in **[CLAUDE.md](CLAUDE.md)**.
 
+There is also an additional, opt-in GPU-vectorized-environment path
+(`run_core_training_vectorized.py` / `run_post_processing_vectorized.py`)
+— a separate, parallel implementation that does not touch or replace
+anything below, is verified only at small scale on CPU, and is not used
+for any real thesis result. See **[EXPERIMENT_GUIDE.md §12](EXPERIMENT_GUIDE.md#12-gpu-vectorized-environment-redesign-2026-11-02--2026-11-04-additionalopt-in)**
+before using or extending it.
+
 ---
 
 ## 1. Setup
