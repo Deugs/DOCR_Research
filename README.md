@@ -208,9 +208,11 @@ python3 run_post_processing.py --all
 python3 run_post_processing.py --fig 45 46
 ```
 
-Any figure whose backing Core cache is missing/empty falls back to a
-clearly-watermarked synthetic placeholder rather than failing silently —
-see `EXPERIMENT_GUIDE.md` §2.2.1 for the full data-provenance table.
+Any figure whose backing Core cache is missing/incomplete raises a clear
+error (`MissingRealDataError`) naming the missing cache and the command to
+populate it — it no longer falls back to synthetic/hardcoded data (that
+behavior was removed 2026-11-04; see `EXPERIMENT_GUIDE.md` §2.2.1 for the
+full data-provenance policy).
 
 ---
 
@@ -236,10 +238,97 @@ other Core training runs feed single-condition figures better read via
 
 ---
 
+## 6a. Running the full vectorized pipeline (training + plots) — opt-in, additional
+
+A second, parallel implementation of Cores A–K and figure generation
+(`run_core_training_vectorized.py` / `run_post_processing_vectorized.py`).
+Read `EXPERIMENT_GUIDE.md` §12 first — it covers what's verified vs. not
+(no GPU benchmark has ever been run on this path, and no real thesis
+figure has been generated from it), why it exists as new files rather than
+changes to anything above, and the full figure-scope table. **Treat
+everything below as additional capability to try, not a replacement for
+sections 1–8.**
+
+### Train every Core (A–K)
+
+```bash
+for core in A B C D E F G H I J K; do
+    python3 run_core_training_vectorized.py --core "$core" --seed 42
+done
+```
+
+```powershell
+# Windows PowerShell
+foreach ($c in 'A','B','C','D','E','F','G','H','I','J','K') {
+    python run_core_training_vectorized.py --core $c --seed 42
+}
+```
+
+**Read this before running it unattended.** Cores A–F reuse the real
+pipeline's own `FAST_MODE`/`N_RUNS_DEFAULT`/`EPISODES_DEFAULT` constants
+(imported directly from `run_core_training.py`), which default to
+**full thesis scale** (e.g. Core A: 50 runs × 5000 episodes) when no
+override is passed — exactly as slow as the real pipeline's own full run
+(§4), not a quick check. For a fast smoke pass instead, override explicitly:
+
+```bash
+python3 run_core_training_vectorized.py --core A --n-runs 2 --n-episodes 500 --seed 42
+python3 run_core_training_vectorized.py --core B --episodes-per-task 50 --seed 42
+python3 run_core_training_vectorized.py --core C --n-runs 2 --n-episodes 500 --seed 42
+```
+
+Cores G–K's CLI does **not** currently expose a `--fast`/`fast_mode`
+flag at all (a known gap, not yet wired up) — `python3
+run_core_training_vectorized.py --core G` always runs at that Core's own
+non-fast budget (e.g. Core G: 50,000 training steps + 100 eval episodes
+per representative stress point). To get the smaller, schema-verification
+scale this redesign's own test suite uses instead, call the function
+directly:
+
+```bash
+python3 -c "from run_core_training_vectorized import run_core_G_vectorized; run_core_G_vectorized(seed=42, fast_mode=True)"
+```
+
+(same pattern for `run_core_H_vectorized` through `run_core_K_vectorized`).
+
+Each Core writes to its own `<real_core_name>_vectorized` entry in
+`results/core_cache/` — never colliding with or overwriting the real
+Core's own cache. Re-running the identical `--core`/`--seed`/override
+combination is a cache hit (no retraining).
+
+### Generate every vectorized-path figure
+
+```bash
+python3 run_post_processing_vectorized.py --all
+python3 run_post_processing_vectorized.py --fig 8 13 18 39 58   # just a few
+python3 run_post_processing_vectorized.py --list                # see all 41 covered figure numbers
+```
+
+Figures land in `results/figures_vectorized/` as PDF + PNG — **never**
+`results/figures/` (the real thesis figures directory is untouched by this
+path entirely). A figure whose backing `_vectorized` cache is missing or
+structurally incomplete raises `VectorizedDataMissingError` naming the
+exact Core/command that would populate it; it never fabricates a
+placeholder.
+
+### Before reading anything into the numbers
+
+Regardless of scale, **no GPU benchmark has ever been run on this path** —
+everything above runs on CPU, and whether vectorizing the environment
+actually helps on real GPU hardware is still an open question (see
+`EXPERIMENT_GUIDE.md` §12.1). And a full-scale run here is a *correctness*
+exercise (does the pipeline run end-to-end and produce schema-correct
+output), not a validated substitute for the real pipeline's thesis
+results — the two paths were built and verified independently, but only
+`run_core_training.py`'s own output has been used for any real thesis
+claim.
+
+---
+
 ## 7. Tests
 
 ```bash
-python3 -m pytest tests/ -q          # full suite (221 tests as of 2026-10-22, growing)
+python3 -m pytest tests/ -q          # full suite (299 tests as of 2026-11-04, growing)
 python3 -m pytest tests/test_phase4.py -q   # one phase's tests
 ```
 
